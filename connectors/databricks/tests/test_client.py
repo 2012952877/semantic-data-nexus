@@ -529,6 +529,75 @@ async def test_external_json_chunks_omit_databricks_authorization() -> None:
     assert external_requests[0].headers == {"x-synthetic-key": "synthetic-value"}
 
 
+async def test_external_link_batch_continues_after_highest_consumed_chunk() -> None:
+    transport = FakeTransport()
+    first = response(
+        "SUCCEEDED",
+        result={
+            "chunk_index": 0,
+            "external_links": [
+                {
+                    "chunk_index": 0,
+                    "external_link": "https://results.example.invalid/chunk-a",
+                    "next_chunk_index": 1,
+                },
+                {
+                    "chunk_index": 1,
+                    "external_link": "https://results.example.invalid/chunk-b",
+                    "next_chunk_index": 2,
+                },
+            ],
+        },
+    )
+    transport.enqueue("POST", f"{BASE}/api/2.0/sql/statements", json_body=first)
+    transport.enqueue(
+        "GET",
+        "https://results.example.invalid/chunk-a",
+        content=json.dumps([["north", "42.50"]]).encode(),
+    )
+    transport.enqueue(
+        "GET",
+        "https://results.example.invalid/chunk-b",
+        content=json.dumps([["south", "7.00"]]).encode(),
+    )
+    transport.enqueue(
+        "GET",
+        f"{BASE}/api/2.0/sql/statements/statement-test/result/chunks/2",
+        json_body={
+            "chunk_index": 2,
+            "external_links": [
+                {
+                    "chunk_index": 2,
+                    "external_link": "https://results.example.invalid/chunk-c",
+                }
+            ],
+        },
+    )
+    transport.enqueue(
+        "GET",
+        "https://results.example.invalid/chunk-c",
+        content=json.dumps([["west", "9.00"]]).encode(),
+    )
+    client = StatementExecutionClient(
+        config(
+            disposition=FetchDisposition.EXTERNAL_LINKS,
+            result_format=ResultFormat.JSON_ARRAY,
+        ),
+        SyntheticTokenProvider(),
+        transport=transport,
+    )
+
+    result = await client.execute("SELECT region, amount FROM orders")
+
+    assert result.rows == (
+        ("north", "42.50"),
+        ("south", "7.00"),
+        ("west", "9.00"),
+    )
+    assert not any(request.url.endswith("/result/chunks/1") for request in transport.requests)
+    transport.assert_drained()
+
+
 async def test_arrow_external_payload_is_exposed_without_interpretation() -> None:
     transport = FakeTransport()
     succeeded = response(

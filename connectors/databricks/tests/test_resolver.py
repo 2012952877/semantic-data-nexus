@@ -35,6 +35,9 @@ BASE = "https://workspace.example.invalid"
         "SELECT region FROM orders WHERE id = $1",
         "SELECT region FROM orders WHERE id = @1",
         "SELECT * INTO persisted_copy FROM source_table",
+        "SELECT http_request('DELETE', 'https://service.example.invalid/resource')",
+        "SELECT synthetic_sql_udf(amount) FROM orders",
+        "SELECT synthetic.python_udf(amount) FROM orders",
     ],
 )
 def test_unsafe_or_multi_statement_sql_is_rejected(sql: str) -> None:
@@ -59,6 +62,25 @@ def test_literals_comments_and_read_only_ctes_are_safe(sql: str) -> None:
             sql=sql,
         )
     )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT SUM(amount), COUNT(*), AVG(amount), MIN(amount), MAX(amount) FROM orders",
+        (
+            "SELECT CURRENT_DATE(), DATE_ADD(order_date, 1), DATE_SUB(order_date, 1), "
+            "DATEDIFF(CURRENT_DATE(), order_date), DATE_TRUNC('month', order_date), "
+            "YEAR(order_date), MONTH(order_date), DAY(order_date) FROM orders"
+        ),
+        (
+            "SELECT LOWER(region), UPPER(region), COALESCE(region, 'unknown'), "
+            "ABS(amount), ROUND(amount, 2), CAST(amount AS STRING) FROM orders"
+        ),
+    ],
+)
+def test_safe_m0_functions_are_allowed(sql: str) -> None:
+    validate_fragment(PhysicalSourceFragment(source_name="demo_sales", sql=sql))
 
 
 def test_parameter_markers_must_match() -> None:

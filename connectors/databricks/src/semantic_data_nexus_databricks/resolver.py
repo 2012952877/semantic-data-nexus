@@ -15,6 +15,30 @@ from .models import (
     TabularResult,
 )
 
+_SAFE_FUNCTIONS = frozenset(
+    {
+        "ABS",
+        "AVG",
+        "CAST",
+        "COALESCE",
+        "COUNT",
+        "CURRENT_DATE",
+        "DATEDIFF",
+        "DAY",
+        "LOWER",
+        "MAX",
+        "MIN",
+        "MONTH",
+        "ROUND",
+        "SUM",
+        "TIMESTAMP_TRUNC",
+        "TS_OR_DS_ADD",
+        "TS_OR_DS_TO_DATE",
+        "UPPER",
+        "YEAR",
+    }
+)
+
 
 def validate_fragment(fragment: PhysicalSourceFragment) -> None:
     if not fragment.source_name.strip():
@@ -46,6 +70,11 @@ def validate_fragment(fragment: PhysicalSourceFragment) -> None:
         raise UnsafeStatementError("Every CTE body must be a read-only query")
     if statement.find(exp.Parameter) is not None:
         raise UnsafeStatementError("Only named parameter markers are supported")
+    if any(
+        function.sql_name() not in _SAFE_FUNCTIONS
+        for function in statement.find_all(exp.Func)
+    ):
+        raise UnsafeStatementError("Query contains a function outside the M0 allowlist")
 
     placeholders = tuple(statement.find_all(exp.Placeholder))
     if any(placeholder.name == "?" or not placeholder.this for placeholder in placeholders):

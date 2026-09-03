@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Never, cast
 from urllib.parse import urlsplit
 
@@ -48,6 +49,13 @@ _REQUEST_ID_HEADERS = (
 
 class _DeadlineExceeded(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class _Continuation:
+    next_index: int | None
+    internal_link: str | None
+    source_chunk_index: int | None
 
 
 class StatementExecutionClient:
@@ -305,16 +313,20 @@ class StatementExecutionClient:
         seen_chunks: set[int] = set()
 
         while current is not None:
+            current_index = self._optional_int(current.get("chunk_index"))
+            if current_index is not None and current_index in seen_chunks:
+                raise ProtocolError("Result chunk sequence contains a cycle")
             (
                 chunk_rows,
                 chunk_payloads,
                 measured_bytes,
-                external_next_index,
-                external_next_internal,
+                chunk_indexes,
+                external_continuations,
             ) = await self._consume_chunk(
                 current,
                 manifest.result_format,
                 deadline,
+                seen_chunks,
             )
             if self._clock() >= deadline:
                 await self._handle_timeout(response.statement_id, started, cancel=False)
@@ -324,30 +336,21 @@ class StatementExecutionClient:
             if len(rows) > self._config.row_limit or byte_count > self._config.byte_limit:
                 raise ResultLimitExceededError("Downloaded result exceeds the configured boundary")
 
-            next_index = self._optional_int(current.get("next_chunk_index"))
-            next_internal = self._optional_str(current.get("next_chunk_internal_link"))
-            if (
-                next_index is not None
-                and external_next_index is not None
-                and next_index != external_next_index
-            ):
-                raise ProtocolError("Result chunk has conflicting next_chunk_index values")
-            if (
-                next_internal is not None
-                and external_next_internal is not None
-                and next_internal != external_next_internal
-            ):
-                raise ProtocolError(
-                    "Result chunk has conflicting next_chunk_internal_link values"
-                )
-            next_index = next_index if next_index is not None else external_next_index
-            next_internal = (
-                next_internal if next_internal is not None else external_next_internal
+            if current_index is not None:
+                chunk_indexes.add(current_index)
+            seen_chunks.update(chunk_indexes)
+
+            result_continuation = _Continuation(
+                next_index=self._optional_int(current.get("next_chunk_index")),
+                internal_link=self._optional_str(current.get("next_chunk_internal_link")),
+                source_chunk_index=current_index,
+            )
+            next_index, next_internal = self._select_continuation(
+                result_continuation,
+                external_continuations,
+                seen_chunks,
             )
             if next_index is not None:
-                if next_index in seen_chunks:
-                    raise ProtocolError("Result chunk sequence contains a cycle")
-                seen_chunks.add(next_index)
                 current = await self._get_chunk(
                     response.statement_id,
                     next_index,
@@ -373,55 +376,94 @@ class StatementExecutionClient:
         chunk: Mapping[str, object],
         result_format: ResultFormat,
         deadline: float,
+        consumed_indexes: set[int],
     ) -> tuple[
         list[tuple[CellValue, ...]],
         list[bytes],
         int,
-        int | None,
-        str | None,
+        set[int],
+        list[_Continuation],
     ]:
         rows = self._parse_rows(chunk.get("data_array"))
         payloads: list[bytes] = []
         byte_count = len(json.dumps(rows, separators=(",", ":")).encode()) if rows else 0
-        next_index: int | None = None
-        next_internal: str | None = None
+        chunk_indexes: set[int] = set()
+        continuations: list[_Continuation] = []
         external_links = chunk.get("external_links")
         if external_links is not None:
             if not isinstance(external_links, list):
                 raise ProtocolError("external_links must be an array")
             for raw_link in external_links:
-                payload, link_next_index, link_next_internal = await self._fetch_external_link(
-                    raw_link,
-                    deadline,
-                )
-                if (
-                    next_index is not None
-                    and link_next_index is not None
-                    and next_index != link_next_index
+                if not isinstance(raw_link, dict):
+                    raise ProtocolError("external link must be an object")
+                link_index = self._optional_int(raw_link.get("chunk_index"))
+                if link_index is not None and (
+                    link_index in consumed_indexes or link_index in chunk_indexes
                 ):
-                    raise ProtocolError("External links have conflicting continuation indexes")
-                if (
-                    next_internal is not None
-                    and link_next_internal is not None
-                    and next_internal != link_next_internal
-                ):
-                    raise ProtocolError("External links have conflicting continuation paths")
-                next_index = next_index if next_index is not None else link_next_index
-                next_internal = (
-                    next_internal if next_internal is not None else link_next_internal
-                )
+                    raise ProtocolError("External result contains a duplicate chunk index")
+                payload, continuation = await self._fetch_external_link(raw_link, deadline)
+                if continuation.source_chunk_index is not None:
+                    chunk_indexes.add(continuation.source_chunk_index)
+                continuations.append(continuation)
                 byte_count += len(payload)
                 if result_format is ResultFormat.JSON_ARRAY:
                     rows.extend(self._decode_external_json(payload))
                 else:
                     payloads.append(payload)
-        return rows, payloads, byte_count, next_index, next_internal
+        return rows, payloads, byte_count, chunk_indexes, continuations
+
+    @staticmethod
+    def _select_continuation(
+        result_continuation: _Continuation,
+        external_continuations: list[_Continuation],
+        consumed_indexes: set[int],
+    ) -> tuple[int | None, str | None]:
+        candidates = [result_continuation, *external_continuations]
+        remaining = [
+            candidate
+            for candidate in candidates
+            if candidate.next_index is None or candidate.next_index not in consumed_indexes
+        ]
+        indexed = [
+            candidate for candidate in remaining if candidate.next_index is not None
+        ]
+        if indexed:
+            highest_index = max(
+                candidate.next_index for candidate in indexed if candidate.next_index is not None
+            )
+            matching = [
+                candidate for candidate in indexed if candidate.next_index == highest_index
+            ]
+            internal_links = {
+                candidate.internal_link
+                for candidate in matching
+                if candidate.internal_link is not None
+            }
+            if len(internal_links) > 1:
+                raise ProtocolError("Result continuation has conflicting paths")
+            return highest_index, next(iter(internal_links), None)
+
+        internal = [
+            candidate for candidate in remaining if candidate.internal_link is not None
+        ]
+        if not internal:
+            return None, None
+        selected = max(
+            internal,
+            key=lambda candidate: (
+                candidate is result_continuation,
+                candidate.source_chunk_index
+                if candidate.source_chunk_index is not None
+                else -1,
+            ),
+        )
+        return None, selected.internal_link
 
     async def _fetch_external_link(
         self,
         raw_link: object,
         deadline: float,
-    ) -> tuple[bytes, int | None, str | None]:
+    ) -> tuple[bytes, _Continuation]:
         if not isinstance(raw_link, dict):
             raise ProtocolError("external link must be an object")
         url = raw_link.get("external_link")
@@ -452,8 +494,13 @@ class StatementExecutionClient:
         )
         return (
             response.content,
-            self._optional_int(raw_link.get("next_chunk_index")),
-            self._optional_str(raw_link.get("next_chunk_internal_link")),
+            _Continuation(
+                next_index=self._optional_int(raw_link.get("next_chunk_index")),
+                internal_link=self._optional_str(
+                    raw_link.get("next_chunk_internal_link")
+                ),
+                source_chunk_index=self._optional_int(raw_link.get("chunk_index")),
+            ),
         )
 
     @staticmethod
