@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 
@@ -42,4 +43,12 @@ class ResultStoreFailure(RuntimeFailure):
 
 class ResolverFailure(RuntimeFailure):
     pass
+
+
+class DeferredCleanupCancellation(asyncio.CancelledError):
+    """Cancellation whose background cleanup still owns runtime resources."""
+
+    def __init__(self, cleanup: asyncio.Task[None]) -> None:
+        super().__init__()
+        self.cleanup = cleanup
     pass

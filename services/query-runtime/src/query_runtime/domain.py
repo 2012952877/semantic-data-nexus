@@ -223,6 +223,11 @@ class SourceFragment(FrozenModel):
     bound_columns: tuple[BoundColumn, ...] = ()
 
 
+class LogicalOperationRef(FrozenModel):
+    logical_node_id: str
+    operation: OperatorKind
+
+
 class PhysicalNode(FrozenModel):
     id: str
     kind: PhysicalNodeKind
@@ -230,11 +235,18 @@ class PhysicalNode(FrozenModel):
     dependencies: tuple[str, ...] = ()
     wave: int = Field(ge=0)
     logical_node_ids: tuple[str, ...]
+    logical_operations: tuple[LogicalOperationRef, ...] = ()
     source_fragment: SourceFragment | None = None
     operator: OperatorSpec | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> PhysicalNode:
+        if len(self.logical_node_ids) > 1 and not self.logical_operations:
+            raise ValueError("fused nodes require logical operation metadata")
+        if self.logical_operations and tuple(
+            item.logical_node_id for item in self.logical_operations
+        ) != self.logical_node_ids:
+            raise ValueError("logical operation metadata must match logical node IDs")
         if self.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
             if self.source_fragment is None or self.operator is not None:
                 raise ValueError("source fragment node requires only source_fragment")

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import pyarrow as pa
 
 from query_runtime.domain import (
+    TERMINAL_STATES,
     CommittedManifest,
     DiagnosticEvent,
     ExecutionState,
@@ -21,7 +22,13 @@ from query_runtime.domain import (
     PhysicalPlan,
     ResultSummary,
 )
-from query_runtime.errors import PlanFailure, ResolverFailure, RuntimeFailure
+from query_runtime.errors import (
+    DeferredCleanupCancellation,
+    PlanFailure,
+    ResolverFailure,
+    ResourceLimitFailure,
+    RuntimeFailure,
+)
 from query_runtime.events import EventStore, InMemoryEventStore, StateMachine
 from query_runtime.lineage import LineageRecorder
 from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits
@@ -44,6 +51,53 @@ class _NodeOutcome:
     table: pa.Table | None = None
     manifest: CommittedManifest | None = None
     diagnostic_code: str | None = None
+
+
+class _MemoryBudget:
+    def __init__(self, maximum: int) -> None:
+        self.maximum = maximum
+        self.current = 0
+        self._reservations: dict[tuple[str, str], int] = {}
+        self._deferred: set[tuple[str, str]] = set()
+        self._lock = asyncio.Lock()
+
+    async def reserve(self, run_id: str, node_id: str, size: int) -> None:
+        async with self._lock:
+            if self.current + size > self.maximum:
+                raise ResourceLimitFailure(
+                    "LIMIT_IN_FLIGHT_BYTES_EXCEEDED",
+                    "Run exceeded its global in-flight table memory budget",
+                    details={
+                        "current_bytes": self.current,
+                        "requested_bytes": size,
+                        "limit": self.maximum,
+                    },
+                )
+            self.current += size
+            self._reservations[(run_id, node_id)] = size
+
+    async def release(self, run_id: str, node_id: str) -> None:
+        async with self._lock:
+            key = (run_id, node_id)
+            size = self._reservations.pop(key, 0)
+            self._deferred.discard(key)
+            self.current = max(0, self.current - size)
+
+    async def defer(self, run_id: str, node_id: str) -> None:
+        async with self._lock:
+            key = (run_id, node_id)
+            if key in self._reservations:
+                self._deferred.add(key)
+
+    async def release_run(self, run_id: str) -> None:
+        async with self._lock:
+            keys = [
+                key
+                for key in self._reservations
+                if key[0] == run_id and key not in self._deferred
+            ]
+            released = sum(self._reservations.pop(key) for key in keys)
+            self.current = max(0, self.current - released)
 
 
 class _Emitter:
@@ -92,8 +146,12 @@ class QueryCoordinator:
         limits: ResourceLimits | None = None,
         max_concurrency: int = 4,
     ) -> None:
-        if max_concurrency <= 0:
-            raise ValueError("max_concurrency must be positive")
+        if (
+            isinstance(max_concurrency, bool)
+            or not isinstance(max_concurrency, int)
+            or max_concurrency <= 0
+        ):
+            raise ValueError("max_concurrency must be a positive integer")
         self.resolver = resolver
         self.result_store = result_store
         self.event_store = event_store or InMemoryEventStore()
@@ -102,25 +160,33 @@ class QueryCoordinator:
         self.max_concurrency = max_concurrency
         self._cancellations: dict[str, asyncio.Event] = {}
         self._accepting_cancellation: set[str] = set()
+        self._known_run_ids: set[str] = set()
+        self._claiming_run_ids: set[str] = set()
+        self._run_lock = asyncio.Lock()
+        self._memory = _MemoryBudget(self.limits.max_in_flight_bytes)
+        self._deferred_releases: set[asyncio.Task[None]] = set()
 
     async def cancel(self, run_id: str) -> bool:
-        event = self._cancellations.get(run_id)
-        if event is None or run_id not in self._accepting_cancellation:
-            return False
-        event.set()
-        return True
+        async with self._run_lock:
+            event = self._cancellations.get(run_id)
+            if event is None or run_id not in self._accepting_cancellation:
+                return False
+            event.set()
+            return True
 
     async def run(self, plan: PhysicalPlan, *, run_id: str | None = None) -> RunOutcome:
         validate_physical_plan(plan)
         run_id = run_id or f"run-{uuid.uuid4().hex}"
         cancel_event = asyncio.Event()
-        self._cancellations[run_id] = cancel_event
-        self._accepting_cancellation.add(run_id)
         emitter = _Emitter(run_id, self.event_store)
         run_machine = StateMachine()
         recorder = LineageRecorder(run_id, plan)
         tables: dict[str, pa.Table] = {}
         manifests: dict[str, CommittedManifest] = {}
+        remaining_consumers = {node.id: 0 for node in plan.nodes}
+        for node in plan.nodes:
+            for dependency in node.dependencies:
+                remaining_consumers[dependency] += 1
         final_state = ExecutionState.FAILED
         diagnostic_code: str | None = None
         run_started = time.monotonic()
@@ -129,6 +195,7 @@ class QueryCoordinator:
             nodes_by_wave[node.wave].append(node)
 
         try:
+            await self._claim_run(run_id, cancel_event)
             run_machine.transition(ExecutionState.READY)
             await emitter.emit(
                 scope="run",
@@ -188,16 +255,40 @@ class QueryCoordinator:
                             cancel_event=cancel_event,
                             semaphore=semaphore,
                             emitter=emitter,
+                            memory=self._memory,
                         )
                         for node in wave_nodes
                     )
                 )
+                stage_state = _terminal_stage_state(outcomes)
+                stage_diagnostic = next(
+                    (
+                        item.diagnostic_code
+                        for item in outcomes
+                        if item.diagnostic_code is not None
+                    ),
+                    f"RUN_{stage_state.value}",
+                )
+                release_outputs: list[str] = []
                 for outcome in outcomes:
                     if outcome.table is not None and outcome.manifest is not None:
-                        tables[outcome.node_id] = outcome.table
                         manifests[outcome.node_id] = outcome.manifest
                         recorder.record_result(outcome.node_id, outcome.manifest)
-                stage_state = _terminal_stage_state(outcomes)
+                        if remaining_consumers[outcome.node_id] > 0:
+                            tables[outcome.node_id] = outcome.table
+                        else:
+                            release_outputs.append(outcome.node_id)
+                del outcome
+                del outcomes
+                for node_id in release_outputs:
+                    await self._memory.release(run_id, node_id)
+                await self._release_consumed_tables(
+                    wave_nodes,
+                    remaining_consumers,
+                    tables,
+                    self._memory,
+                    run_id,
+                )
                 stage_machine.transition(stage_state)
                 await emitter.emit(
                     scope="stage",
@@ -211,14 +302,7 @@ class QueryCoordinator:
                 if stage_state is not ExecutionState.SUCCEEDED:
                     cancel_event.set()
                     final_state = stage_state
-                    diagnostic_code = next(
-                        (
-                            item.diagnostic_code
-                            for item in outcomes
-                            if item.diagnostic_code is not None
-                        ),
-                        f"RUN_{stage_state.value}",
-                    )
+                    diagnostic_code = stage_diagnostic
                     await self._terminalize_waves(
                         nodes_by_wave,
                         first_wave=wave + 1,
@@ -231,14 +315,17 @@ class QueryCoordinator:
                     )
                     break
             else:
-                self._accepting_cancellation.discard(run_id)
-                if cancel_event.is_set():
-                    final_state = ExecutionState.CANCELLED
-                    diagnostic_code = "RUN_CANCELLED"
-                else:
-                    final_state = ExecutionState.SUCCEEDED
+                final_state = ExecutionState.SUCCEEDED
 
-            self._accepting_cancellation.discard(run_id)
+            async with self._run_lock:
+                self._accepting_cancellation.discard(run_id)
+                cancelled_before_terminal = cancel_event.is_set()
+            if (
+                final_state is ExecutionState.SUCCEEDED
+                and cancelled_before_terminal
+            ):
+                final_state = ExecutionState.CANCELLED
+                diagnostic_code = "RUN_CANCELLED"
             run_machine.transition(final_state)
             await emitter.emit(
                 scope="run",
@@ -248,9 +335,29 @@ class QueryCoordinator:
                 message=f"Run {final_state.value.lower()}",
                 duration_ms=_duration(run_started),
             )
+        except asyncio.CancelledError:
+            cancel_event.set()
+            if await self._owns_run(run_id, cancel_event):
+                async with self._run_lock:
+                    self._accepting_cancellation.discard(run_id)
+                finalizer = asyncio.create_task(
+                    self._finalize_outer_cancellation(plan, emitter)
+                )
+                while not finalizer.done():
+                    try:
+                        await asyncio.shield(finalizer)
+                    except asyncio.CancelledError:
+                        continue
+                finalizer.result()
+            raise
         finally:
-            self._accepting_cancellation.discard(run_id)
-            self._cancellations.pop(run_id, None)
+            if await self._owns_run(run_id, cancel_event):
+                await self._memory.release_run(run_id)
+                tables.clear()
+                async with self._run_lock:
+                    self._accepting_cancellation.discard(run_id)
+                    if self._cancellations.get(run_id) is cancel_event:
+                        self._cancellations.pop(run_id, None)
 
         manifest = (
             manifests.get(plan.output_node_id)
@@ -284,9 +391,11 @@ class QueryCoordinator:
         cancel_event: asyncio.Event,
         semaphore: asyncio.Semaphore,
         emitter: _Emitter,
+        memory: _MemoryBudget,
     ) -> _NodeOutcome:
         machine = StateMachine()
         started = time.monotonic()
+        reserved = False
         machine.transition(ExecutionState.READY)
         await emitter.emit(
             scope="node",
@@ -312,11 +421,14 @@ class QueryCoordinator:
                 inputs = tuple(tables[dependency] for dependency in node.dependencies)
                 table, manifest = await asyncio.wait_for(
                     self._perform_and_commit(
-                        node, run_id, inputs, cancel_event
+                        node, run_id, inputs, cancel_event, memory
                     ),
                     timeout=self.limits.node_timeout_seconds,
                 )
+                reserved = True
                 if cancel_event.is_set():
+                    await memory.release(run_id, node.id)
+                    reserved = False
                     raise asyncio.CancelledError
                 machine.transition(ExecutionState.SUCCEEDED)
                 await emitter.emit(
@@ -332,8 +444,15 @@ class QueryCoordinator:
                         "rows": table.num_rows,
                     },
                 )
-                return _NodeOutcome(node.id, machine.state, table, manifest)
+                return _NodeOutcome(
+                    node.id,
+                    machine.state,
+                    table,
+                    manifest,
+                )
         except TimeoutError:
+            if reserved:
+                await memory.release(run_id, node.id)
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                 await self._cancel_resolver(run_id, node.id, emitter)
@@ -350,6 +469,8 @@ class QueryCoordinator:
                 node.id, machine.state, diagnostic_code="NODE_TIMEOUT"
             )
         except asyncio.CancelledError:
+            if reserved:
+                await memory.release(run_id, node.id)
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                 await self._cancel_resolver(run_id, node.id, emitter)
@@ -366,6 +487,8 @@ class QueryCoordinator:
                 node.id, machine.state, diagnostic_code="NODE_CANCELLED"
             )
         except Exception as exc:
+            if reserved:
+                await memory.release(run_id, node.id)
             cancel_event.set()
             code = exc.code if isinstance(exc, RuntimeFailure) else "NODE_FAILED"
             if isinstance(exc, ResolverFailure):
@@ -403,15 +526,190 @@ class QueryCoordinator:
         run_id: str,
         inputs: tuple[pa.Table, ...],
         cancel_event: asyncio.Event,
+        memory: _MemoryBudget,
     ) -> tuple[pa.Table, CommittedManifest]:
         table = await self._perform_node(node, inputs, cancel_event)
         self.executor.enforce_limits(table)
         if cancel_event.is_set():
             raise asyncio.CancelledError
-        manifest = await self.result_store.commit(
-            run_id, node.id, table, cancel_event
-        )
-        return table, manifest
+        await memory.reserve(run_id, node.id, table.nbytes)
+        try:
+            manifest = await self.result_store.commit(
+                run_id, node.id, table, cancel_event
+            )
+            return table, manifest
+        except DeferredCleanupCancellation as exc:
+            await memory.defer(run_id, node.id)
+            deferred = asyncio.create_task(
+                self._release_after_cleanup(
+                    exc.cleanup,
+                    memory,
+                    run_id,
+                    node.id,
+                )
+            )
+            self._deferred_releases.add(deferred)
+            deferred.add_done_callback(self._finish_deferred_release)
+            raise asyncio.CancelledError from None
+        except asyncio.CancelledError:
+            await memory.release(run_id, node.id)
+            raise
+        except Exception:
+            await memory.release(run_id, node.id)
+            raise
+
+    async def _claim_run(
+        self, run_id: str, cancel_event: asyncio.Event
+    ) -> None:
+        async with self._run_lock:
+            if (
+                run_id in self._known_run_ids
+                or run_id in self._claiming_run_ids
+            ):
+                raise RuntimeFailure(
+                    "RUN_ID_CONFLICT",
+                    "Run ID has already been used by this coordinator",
+                )
+            self._claiming_run_ids.add(run_id)
+        claim = asyncio.create_task(self.event_store.claim(run_id))
+        was_cancelled = False
+        while not claim.done():
+            try:
+                await asyncio.shield(claim)
+            except asyncio.CancelledError:
+                was_cancelled = True
+        if claim.cancelled():
+            async with self._run_lock:
+                self._claiming_run_ids.discard(run_id)
+            raise asyncio.CancelledError
+        try:
+            claimed = claim.result()
+        except Exception:
+            async with self._run_lock:
+                self._claiming_run_ids.discard(run_id)
+            raise
+        if not claimed:
+            async with self._run_lock:
+                self._claiming_run_ids.discard(run_id)
+            if was_cancelled:
+                raise asyncio.CancelledError
+            raise RuntimeFailure(
+                "RUN_ID_CONFLICT",
+                "Run ID has already been used by this coordinator",
+            )
+        async with self._run_lock:
+            self._claiming_run_ids.discard(run_id)
+            self._register_run(run_id, cancel_event)
+        if was_cancelled:
+            raise asyncio.CancelledError
+
+    def _register_run(self, run_id: str, cancel_event: asyncio.Event) -> None:
+        self._known_run_ids.add(run_id)
+        self._cancellations[run_id] = cancel_event
+        self._accepting_cancellation.add(run_id)
+
+    async def _owns_run(
+        self, run_id: str, cancel_event: asyncio.Event
+    ) -> bool:
+        async with self._run_lock:
+            return self._cancellations.get(run_id) is cancel_event
+
+    async def _release_after_cleanup(
+        self,
+        cleanup: asyncio.Task[None],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+    ) -> None:
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        while True:
+            try:
+                await memory.release(run_id, node_id)
+                break
+            except asyncio.CancelledError:
+                continue
+
+    def _finish_deferred_release(self, task: asyncio.Task[None]) -> None:
+        self._deferred_releases.discard(task)
+        with suppress(asyncio.CancelledError, Exception):
+            task.result()
+
+    async def _release_consumed_tables(
+        self,
+        wave_nodes: list[PhysicalNode],
+        remaining_consumers: dict[str, int],
+        tables: dict[str, pa.Table],
+        memory: _MemoryBudget,
+        run_id: str,
+    ) -> None:
+        for node in wave_nodes:
+            for dependency in node.dependencies:
+                remaining_consumers[dependency] -= 1
+        releasable = [
+            node_id
+            for node_id in tables
+            if remaining_consumers[node_id] == 0
+        ]
+        for node_id in releasable:
+            tables.pop(node_id, None)
+            await memory.release(run_id, node_id)
+
+    async def _finalize_outer_cancellation(
+        self, plan: PhysicalPlan, emitter: _Emitter
+    ) -> None:
+        events = await self.event_store.list(emitter.run_id)
+        terminal_nodes = {
+            event.scope_id
+            for event in events
+            if event.scope == "node" and event.state in TERMINAL_STATES
+        }
+        terminal_stages = {
+            event.scope_id
+            for event in events
+            if event.scope == "stage" and event.state in TERMINAL_STATES
+        }
+        for wave in sorted({node.wave for node in plan.nodes}):
+            stage_id = f"wave-{wave}"
+            if stage_id not in terminal_stages:
+                await emitter.emit(
+                    scope="stage",
+                    scope_id=stage_id,
+                    state=ExecutionState.CANCELLED,
+                    code="STAGE_CANCELLED",
+                    message="Stage cancelled by caller",
+                    metadata={"wave": wave},
+                )
+            for node in sorted(
+                (item for item in plan.nodes if item.wave == wave),
+                key=lambda item: item.id,
+            ):
+                if node.id not in terminal_nodes:
+                    await emitter.emit(
+                        scope="node",
+                        scope_id=node.id,
+                        state=ExecutionState.CANCELLED,
+                        code="NODE_CANCELLED",
+                        message="Node cancelled by caller",
+                        metadata={
+                            "wave": wave,
+                            "operation": node.operation.value,
+                        },
+                    )
+        if not any(
+            event.scope == "run" and event.state in TERMINAL_STATES
+            for event in events
+        ):
+            await emitter.emit(
+                scope="run",
+                scope_id=emitter.run_id,
+                state=ExecutionState.CANCELLED,
+                code="RUN_CANCELLED",
+                message="Run cancelled by caller",
+            )
 
     async def _cancel_resolver(
         self, run_id: str, node_id: str, emitter: _Emitter

@@ -20,6 +20,7 @@ from query_runtime.expressions import quote_identifier, render_expression
 class ResourceLimits:
     max_rows: int = 1_000_000
     max_bytes: int = 256 * 1024 * 1024
+    max_in_flight_bytes: int = 512 * 1024 * 1024
     memory_limit_bytes: int = 256 * 1024 * 1024
     node_timeout_seconds: float = 30.0
 
@@ -27,6 +28,7 @@ class ResourceLimits:
         integer_limits = (
             self.max_rows,
             self.max_bytes,
+            self.max_in_flight_bytes,
             self.memory_limit_bytes,
         )
         if any(

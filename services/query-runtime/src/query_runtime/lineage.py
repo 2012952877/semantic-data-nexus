@@ -52,10 +52,19 @@ class LineageRecorder:
             source_type=source_type,
             parameter_metadata=parameters,
         )
-        for logical_id in node.logical_node_ids:
+        if node.logical_operations:
+            logical_operations = tuple(
+                (item.logical_node_id, item.operation)
+                for item in node.logical_operations
+            )
+        else:
+            logical_operations = tuple(
+                (logical_id, node.operation) for logical_id in node.logical_node_ids
+            )
+        for logical_id, operation in logical_operations:
             lineage_id = f"logical:{logical_id}"
             self._nodes[lineage_id] = LineageNode(
-                id=lineage_id, kind="logical", operation=node.operation.value
+                id=lineage_id, kind="logical", operation=operation.value
             )
             self._edge(lineage_id, physical_id, "realized_as")
         for dependency in node.dependencies:

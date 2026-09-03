@@ -35,6 +35,9 @@ demonstrates two concurrent source nodes followed by a local join and sort.
 - `EventStore` and `ResultStore` are replaceable protocols. M0 provides in-memory events with an
   async heartbeat stream plus inline and atomic filesystem Parquet stores. Azure Blob is an
   interface only.
+- Runtime limits apply both per table and across all in-flight Arrow tables. Consumer reference
+  counts release intermediates after their final dependent node, while cancelled Parquet writers
+  retain their reservation until deferred temporary-file cleanup completes.
 
 ## M0 planning heuristic
 

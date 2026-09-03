@@ -13,6 +13,7 @@ from query_runtime.domain import (
     BoundSource,
     CapabilityCatalog,
     ExpressionKind,
+    LogicalOperationRef,
     OperatorKind,
     OperatorSpec,
     PhysicalNode,
@@ -190,6 +191,13 @@ class CapabilityPlanner:
                         operation,
                     )
                     fused_logical_ids = (*predecessor.logical_node_ids, logical.id)
+                    logical_operations = (
+                        *predecessor.logical_operations,
+                        LogicalOperationRef(
+                            logical_node_id=logical.id,
+                            operation=operation.kind,
+                        ),
+                    )
                     physical_dependencies = predecessor.dependencies
                     bound_columns = _deduplicate_columns(
                         (*predecessor.source_fragment.bound_columns, *bindings[logical.id])
@@ -197,6 +205,12 @@ class CapabilityPlanner:
                 else:
                     operations = (operation,)
                     fused_logical_ids = (logical.id,)
+                    logical_operations = (
+                        LogicalOperationRef(
+                            logical_node_id=logical.id,
+                            operation=operation.kind,
+                        ),
+                    )
                     physical_dependencies = dependency_ids
                     bound_columns = bindings[logical.id]
                 physical_node = PhysicalNode(
@@ -206,6 +220,7 @@ class CapabilityPlanner:
                     dependencies=physical_dependencies,
                     wave=0,
                     logical_node_ids=fused_logical_ids,
+                    logical_operations=logical_operations,
                     source_fragment=SourceFragment(
                         source=source,
                         operations=operations,
@@ -220,6 +235,12 @@ class CapabilityPlanner:
                     dependencies=dependency_ids,
                     wave=0,
                     logical_node_ids=(logical.id,),
+                    logical_operations=(
+                        LogicalOperationRef(
+                            logical_node_id=logical.id,
+                            operation=operation.kind,
+                        ),
+                    ),
                     operator=operation,
                 )
             physical[node_id] = physical_node

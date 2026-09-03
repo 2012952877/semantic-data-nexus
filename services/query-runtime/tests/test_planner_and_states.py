@@ -14,9 +14,11 @@ from query_runtime.domain import (
     PhysicalNode,
     PhysicalNodeKind,
     ScalarType,
+    SourceFragment,
 )
 from query_runtime.errors import BindingFailure, RuntimeFailure
 from query_runtime.events import StateMachine
+from query_runtime.lineage import LineageRecorder
 from query_runtime.planner import (
     CapabilityPlanner,
     ExactConceptBinder,
@@ -111,6 +113,20 @@ def test_capability_routing_and_deterministic_waves() -> None:
     assert plan.nodes[0].source_fragment.bound_columns == (
         _column("sales.region"),
     )
+    assert [item.operation for item in plan.nodes[0].logical_operations] == [
+        OperatorKind.SOURCE,
+        OperatorKind.AGGREGATE,
+    ]
+    lineage = LineageRecorder("run-routing", plan).graph()
+    logical_operations = {
+        node.id: node.operation for node in lineage.nodes if node.kind == "logical"
+    }
+    assert logical_operations == {
+        "logical:source": OperatorKind.SOURCE.value,
+        "logical:aggregate": OperatorKind.AGGREGATE.value,
+        "logical:pivot": OperatorKind.PIVOT.value,
+        "logical:project": OperatorKind.PROJECT.value,
+    }
     assert topological_order(tuple(reversed(graph.nodes))) == graph.nodes
 
 
@@ -166,6 +182,28 @@ def test_physical_node_operation_must_match_payload() -> None:
             wave=0,
             logical_node_ids=("logical",),
             operator=OperatorSpec(kind=OperatorKind.SELECT, columns=("x",)),
+        )
+
+
+def test_fused_physical_node_requires_each_logical_operation() -> None:
+    with pytest.raises(ValidationError, match="fused nodes require"):
+        PhysicalNode(
+            id="fused-missing-lineage",
+            kind=PhysicalNodeKind.SOURCE_FRAGMENT,
+            operation=OperatorKind.FILTER,
+            wave=0,
+            logical_node_ids=("source", "filter"),
+            source_fragment=SourceFragment(
+                source=BoundSource(
+                    alias="source",
+                    source_type="synthetic",
+                    object_name="facts",
+                ),
+                operations=(
+                    OperatorSpec(kind=OperatorKind.SOURCE),
+                    OperatorSpec(kind=OperatorKind.FILTER),
+                ),
+            ),
         )
 
 

@@ -113,4 +113,65 @@ async def test_slow_event_subscriber_cannot_abort_publish() -> None:
             )
         )
     assert len(await store.list("run-slow")) == 400
-    await subscriber.aclose()
+    with pytest.raises(StopAsyncIteration):
+        await anext(subscriber)
+
+
+@pytest.mark.asyncio
+async def test_event_subscription_closes_at_terminal_run() -> None:
+    store = InMemoryEventStore()
+    subscriber = store.subscribe("run-terminal")
+    waiting = asyncio.create_task(anext(subscriber))
+    await asyncio.sleep(0)
+    terminal = DiagnosticEvent(
+        sequence=0,
+        run_id="run-terminal",
+        scope="run",
+        scope_id="run-terminal",
+        state=ExecutionState.SUCCEEDED,
+        code="RUN_SUCCEEDED",
+        message="done",
+    )
+    await store.append(terminal)
+    assert await waiting == terminal
+    with pytest.raises(StopAsyncIteration):
+        await anext(subscriber)
+    late = store.subscribe("run-terminal")
+    with pytest.raises(StopAsyncIteration):
+        await anext(late)
+
+
+@pytest.mark.asyncio
+async def test_terminal_close_preserves_full_subscriber_queue() -> None:
+    store = InMemoryEventStore()
+    subscriber = store.subscribe("run-full-terminal")
+    waiting = asyncio.create_task(anext(subscriber))
+    await asyncio.sleep(0)
+    first = DiagnosticEvent(
+        sequence=0,
+        run_id="run-full-terminal",
+        scope="run",
+        scope_id="run-full-terminal",
+        state=ExecutionState.RUNNING,
+        code="RUNNING",
+        message="running",
+    )
+    await store.append(first)
+    assert await waiting == first
+    for sequence in range(1, 256):
+        await store.append(
+            first.model_copy(update={"sequence": sequence})
+        )
+    terminal = first.model_copy(
+        update={
+            "sequence": 256,
+            "state": ExecutionState.SUCCEEDED,
+            "code": "RUN_SUCCEEDED",
+            "message": "done",
+        }
+    )
+    await store.append(terminal)
+    drained = [await anext(subscriber) for _ in range(256)]
+    assert [event.sequence for event in drained] == list(range(1, 257))
+    with pytest.raises(StopAsyncIteration):
+        await anext(subscriber)

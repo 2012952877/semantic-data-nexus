@@ -23,7 +23,7 @@ from query_runtime.domain import (
     TableSchema,
     utc_now,
 )
-from query_runtime.errors import ResultStoreFailure
+from query_runtime.errors import DeferredCleanupCancellation, ResultStoreFailure
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -141,6 +141,7 @@ class ParquetResultStore:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
 
     async def commit(
         self,
@@ -176,11 +177,12 @@ class ParquetResultStore:
             self._commit_directory(temporary, final)
             return manifest
         except asyncio.CancelledError:
-            with suppress(asyncio.CancelledError, Exception):
-                await asyncio.shield(write_task)
-            if temporary.exists():  # noqa: ASYNC240
-                shutil.rmtree(temporary)
-            raise
+            cleanup = asyncio.create_task(
+                self._cleanup_cancelled_write(write_task, temporary)
+            )
+            self._cleanup_tasks.add(cleanup)
+            cleanup.add_done_callback(self._finish_cleanup)
+            raise DeferredCleanupCancellation(cleanup) from None
         except Exception as exc:
             if temporary.exists():  # noqa: ASYNC240
                 shutil.rmtree(temporary)
@@ -189,6 +191,42 @@ class ParquetResultStore:
             raise ResultStoreFailure(
                 "RESULT_COMMIT_FAILED", "Result could not be committed atomically"
             ) from exc
+
+    async def _cleanup_cancelled_write(
+        self,
+        write_task: asyncio.Task[CommittedManifest],
+        temporary: Path,
+    ) -> None:
+        while not write_task.done():
+            try:
+                await asyncio.shield(write_task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        with suppress(asyncio.CancelledError, Exception):
+            write_task.result()
+        if temporary.exists():  # noqa: ASYNC240
+            removal = asyncio.create_task(asyncio.to_thread(shutil.rmtree, temporary))
+            while not removal.done():
+                try:
+                    await asyncio.shield(removal)
+                except asyncio.CancelledError:
+                    continue
+            with suppress(Exception):
+                removal.result()
+
+    def _finish_cleanup(self, task: asyncio.Task[None]) -> None:
+        self._cleanup_tasks.discard(task)
+        with suppress(asyncio.CancelledError, Exception):
+            task.result()
+
+    async def wait_for_cleanup(self) -> None:
+        while self._cleanup_tasks:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self._cleanup_tasks)),
+                return_exceptions=True,
+            )
 
     def _write_temporary(
         self,

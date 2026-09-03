@@ -69,6 +69,7 @@ async def test_cancelled_commit_cannot_publish(tmp_path: Path) -> None:
         await store.commit(
             "run-cancelled", "node-cancelled", pa.table({"x": [1]}), cancelled
         )
+    await store.wait_for_cleanup()
     assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240
 
 
@@ -111,8 +112,11 @@ async def test_task_cancellation_waits_for_write_and_cleans_temp(tmp_path: Path)
         store.commit("run-task-cancel", "node-task-cancel", pa.table({"x": [1]}))
     )
     await asyncio.sleep(0.01)
+    started = asyncio.get_running_loop().time()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert asyncio.get_running_loop().time() - started < 0.04
+    await store.wait_for_cleanup()
     assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240
     assert not list(tmp_path.rglob(".tmp-*"))  # noqa: ASYNC240
