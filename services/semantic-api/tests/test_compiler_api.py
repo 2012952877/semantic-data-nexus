@@ -185,6 +185,22 @@ async def test_problem_details_and_no_raw_exception_leak(
             "Show regional quarterly profit where shouldn't include East",
             "NEGATED_MEMBER_UNSUPPORTED",
         ),
+        (
+            "Show regional quarterly profit where don't show East",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where don\u2019t include East",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 is not shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit is not shown",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
         ("Show regional quarterly profit where 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional quarterly profit 去年应该被排除", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional 利润应排除", "NEGATED_CONCEPT_UNSUPPORTED"),

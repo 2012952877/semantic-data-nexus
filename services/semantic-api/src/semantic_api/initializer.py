@@ -326,17 +326,20 @@ class DeterministicInitializer:
 
     @staticmethod
     def _is_negated(question: str, mention_start: int, mention_end: int) -> bool:
-        prefix = question[max(0, mention_start - 32) : mention_start]
-        suffix = question[mention_end : mention_end + 24]
+        prefix = DeterministicInitializer._normalize_negation_phrase(
+            question[max(0, mention_start - 40) : mention_start]
+        )
+        suffix = DeterministicInitializer._normalize_negation_phrase(
+            question[mention_end : mention_end + 40]
+        )
         return (
             re.search(
                 (
-                    r"(?:do\s+not\s+(?:include|use|show)|"
-                    r"does\s+not\s+include|don't\s+include|"
-                    r"must\s+not\s+include|should\s+not\s+include|"
-                    r"(?:shouldn|mustn)['\u2019]t\s+(?:include|use|show)|"
-                    r"(?:isn|wasn)['\u2019]t\s+(?:including|using|showing)|"
-                    r"not\s+including|"
+                    r"(?:(?:do|does|did|should|must|will|can)\s+not\s+"
+                    r"(?:include|use|show)|"
+                    r"cannot\s+(?:include|use|show)|"
+                    r"(?:is|was)\s+not\s+(?:including|using|showing)|"
+                    r"not\s+(?:including|using|showing)|"
                     r"exclude|excluding|except(?:\s+for)?|"
                     r"other\s+than|not|without)(?:\s+the)?\s*$"
                 ),
@@ -356,16 +359,34 @@ class DeterministicInitializer:
             or re.match(
                 (
                     r"[\s,]*(?:(?:(?:is|was)\s+)?"
-                    r"(?:excluded|omitted|left\s+out|not\s+included)|"
-                    r"(?:isn|wasn)['\u2019]t\s+(?:included|used|shown)|"
-                    r"(?:shouldn|mustn)['\u2019]t\s+(?:be\s+)?(?:included|used|shown)|"
-                    r"(?:should|must)\s+(?:be\s+(?:excluded|omitted|left\s+out)|"
-                    r"not\s+be\s+included))\b"
+                    r"(?:excluded|omitted|left\s+out)|"
+                    r"(?:should|must|will|can)\s+be\s+"
+                    r"(?:excluded|omitted|left\s+out)|"
+                    r"(?:(?:is|was|should|must|will|can)\s+not|cannot)\s+"
+                    r"(?:be\s+)?(?:included|used|shown))\b"
                 ),
                 suffix,
             )
             is not None
         )
+
+    @staticmethod
+    def _normalize_negation_phrase(value: str) -> str:
+        normalized = value.casefold().replace("\u2018", "'").replace("\u2019", "'")
+        contractions = {
+            "don't": "do not",
+            "doesn't": "does not",
+            "didn't": "did not",
+            "isn't": "is not",
+            "wasn't": "was not",
+            "shouldn't": "should not",
+            "mustn't": "must not",
+            "can't": "cannot",
+            "won't": "will not",
+        }
+        for contraction, expanded in contractions.items():
+            normalized = normalized.replace(contraction, expanded)
+        return normalized
 
     def _normalize_time(
         self,

@@ -140,6 +140,8 @@ def test_multiple_relative_windows_are_explicitly_rejected(
         ("Show regional profit East is excluded", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit East isn't included", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit shouldn't include East", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional profit don't show East", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional profit don\u2019t include East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit except for East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit except the East", "NEGATED_MEMBER_UNSUPPORTED"),
@@ -156,6 +158,7 @@ def test_multiple_relative_windows_are_explicitly_rejected(
         ("Compare 去年 sales with 去年 excluded", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional profit 去年应该被排除", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional profit 去年 wasn't included", "NEGATED_TIME_UNSUPPORTED"),
+        ("Show regional profit 去年 is not shown", "NEGATED_TIME_UNSUPPORTED"),
     ],
 )
 def test_negated_constraints_are_explicitly_rejected(
@@ -176,6 +179,7 @@ def test_negated_constraints_are_explicitly_rejected(
         ("profit excluded", ResolvedTermKind.METRIC),
         ("profit should be excluded", ResolvedTermKind.METRIC),
         ("profit shouldn\u2019t be included", ResolvedTermKind.METRIC),
+        ("profit is not shown", ResolvedTermKind.METRIC),
         ("利润应排除", ResolvedTermKind.METRIC),
     ],
 )
