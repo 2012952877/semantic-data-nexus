@@ -256,6 +256,8 @@ class SQGValidator:
                     sqg,
                     flows.get(sqg.output_node_id),
                     compilation_mode,
+                    resolved_terms or [],
+                    time_windows or [],
                     diagnostics,
                 )
 
@@ -1351,6 +1353,8 @@ class SQGValidator:
         sqg: SQG,
         output_flow: _Flow | None,
         mode: CompilationMode,
+        resolved_terms: list[ResolvedTerm],
+        time_windows: list[TimeWindow],
         diagnostics: list[Diagnostic],
     ) -> None:
         if output_flow is None:
@@ -1477,6 +1481,29 @@ class SQGValidator:
                     details={"mode": mode.value},
                 )
             )
+        allowed_filter_columns = {
+            "commerce.sales_record.region"
+            for term in resolved_terms
+            if term.kind is ResolvedTermKind.MEMBER
+        }
+        if time_windows:
+            allowed_filter_columns.add("commerce.sales_record.period")
+        for node in sqg.nodes:
+            if (
+                isinstance(node.parameters, FilterParameters)
+                and node.parameters.predicate.column not in allowed_filter_columns
+            ):
+                diagnostics.append(
+                    self._error(
+                        "COMPILATION_MODE_FILTER_INVALID",
+                        "Trusted modes allow only filters backed by resolved constraints.",
+                        path="nodes",
+                        details={
+                            "column": node.parameters.predicate.column,
+                            "mode": mode.value,
+                        },
+                    )
+                )
         aggregate_parameters = [
             node.parameters
             for node in sqg.nodes

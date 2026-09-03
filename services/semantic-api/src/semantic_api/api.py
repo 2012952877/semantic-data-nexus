@@ -39,7 +39,29 @@ def create_app(compiler: SemanticCompiler | None = None) -> FastAPI:
     ) -> Any:
         request_id = request.headers.get("x-request-id") or str(uuid4())
         request.state.request_id = request_id[:128]
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as error:
+            logger.error(
+                "request_failed",
+                extra={
+                    "request_id": request.state.request_id,
+                    "path": request.url.path,
+                    "error_type": type(error).__name__,
+                },
+            )
+            problem = ProblemDetails(
+                type="https://semantic-data-nexus.example/problems/internal",
+                title="Internal service error",
+                status=500,
+                detail="The request could not be completed.",
+                instance=request.url.path,
+                request_id=request.state.request_id,
+            )
+            response = JSONResponse(
+                status_code=500,
+                content=problem.model_dump(mode="json"),
+            )
         response.headers["x-request-id"] = request.state.request_id
         return response
 
@@ -64,27 +86,6 @@ def create_app(compiler: SemanticCompiler | None = None) -> FastAPI:
             },
         )
         return JSONResponse(status_code=422, content=problem.model_dump(mode="json"))
-
-    @app.exception_handler(Exception)
-    async def unhandled_error(request: Request, error: Exception) -> JSONResponse:
-        request_id = _request_id(request)
-        logger.error(
-            "request_failed",
-            extra={
-                "request_id": request_id,
-                "path": request.url.path,
-                "error_type": type(error).__name__,
-            },
-        )
-        problem = ProblemDetails(
-            type="https://semantic-data-nexus.example/problems/internal",
-            title="Internal service error",
-            status=500,
-            detail="The request could not be completed.",
-            instance=request.url.path,
-            request_id=request_id,
-        )
-        return JSONResponse(status_code=500, content=problem.model_dump(mode="json"))
 
     @app.get("/health/live")
     async def health_live() -> dict[str, str]:

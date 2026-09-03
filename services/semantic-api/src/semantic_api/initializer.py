@@ -327,13 +327,14 @@ class DeterministicInitializer:
     @staticmethod
     def _is_negated(question: str, mention_start: int, mention_end: int) -> bool:
         prefix = question[max(0, mention_start - 32) : mention_start]
-        suffix = question[mention_end : mention_end + 8]
+        suffix = question[mention_end : mention_end + 24]
         return (
             re.search(
                 (
                     r"(?:do\s+not\s+(?:include|use|show)|"
                     r"does\s+not\s+include|don't\s+include|"
                     r"must\s+not\s+include|should\s+not\s+include|"
+                    r"not\s+including|"
                     r"exclude|excluding|except(?:\s+for)?|"
                     r"other\s+than|not|without)(?:\s+the)?\s*$"
                 ),
@@ -346,6 +347,7 @@ class DeterministicInitializer:
             )
             is not None
             or re.match(r"\s*(?:以外|之外)", suffix) is not None
+            or re.match(r"[\s,]*(?:excluded|omitted|left\s+out)\b", suffix) is not None
         )
 
     def _normalize_time(
@@ -388,10 +390,15 @@ class DeterministicInitializer:
         windows: list[TimeWindow] = []
         diagnostics: list[Diagnostic] = []
         for phrase, resolver in recognizers:
-            if phrase not in question:
+            mention_spans = [
+                (match.start(), match.end()) for match in re.finditer(re.escape(phrase), question)
+            ]
+            if not mention_spans:
                 continue
-            mention_start = question.index(phrase)
-            if self._is_negated(question.casefold(), mention_start, mention_start + len(phrase)):
+            if any(
+                self._is_negated(question.casefold(), mention_start, mention_end)
+                for mention_start, mention_end in mention_spans
+            ):
                 diagnostics.append(
                     Diagnostic(
                         code="NEGATED_TIME_UNSUPPORTED",

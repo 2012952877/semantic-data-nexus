@@ -135,6 +135,8 @@ def test_multiple_relative_windows_are_explicitly_rejected(
     [
         ("Show regional profit but exclude East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit but do not include East", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional profit not including East", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional profit East excluded", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit except for East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit except the East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit other than East", "NEGATED_MEMBER_UNSUPPORTED"),
@@ -145,6 +147,9 @@ def test_multiple_relative_windows_are_explicitly_rejected(
         ("Show regional profit but 不要包括去年", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional profit 除了去年", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional profit 去年以外", "NEGATED_TIME_UNSUPPORTED"),
+        ("Show regional profit not including 去年", "NEGATED_TIME_UNSUPPORTED"),
+        ("Show regional profit 去年 excluded", "NEGATED_TIME_UNSUPPORTED"),
+        ("Compare 去年 sales with 去年 excluded", "NEGATED_TIME_UNSUPPORTED"),
     ],
 )
 def test_negated_constraints_are_explicitly_rejected(
@@ -162,6 +167,7 @@ def test_negated_constraints_are_explicitly_rejected(
         ("do not use sales", ResolvedTermKind.ENTITY),
         ("exclude region", ResolvedTermKind.FIELD),
         ("without profit", ResolvedTermKind.METRIC),
+        ("profit excluded", ResolvedTermKind.METRIC),
     ],
 )
 def test_negated_semantic_concepts_are_explicitly_rejected(

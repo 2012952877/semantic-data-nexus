@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
+import pytest
 
 from semantic_api.api import create_app
 from semantic_api.compiler import SemanticCompiler
@@ -125,13 +127,16 @@ class ExplodingProvider(CompilerProvider):
         raise AssertionError("repair must not run")
 
 
-async def test_problem_details_and_no_raw_exception_leak() -> None:
+async def test_problem_details_and_no_raw_exception_leak(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     compiler = SemanticCompiler(
         OntologyRegistry.load_default(),
         lambda _: ExplodingProvider(),
     )
     app = create_app(compiler)
-    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    caplog.set_level(logging.ERROR, logger="semantic_api")
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         invalid = await client.post("/v1/compile", json={"question": ""})
         failed = await client.post(
@@ -146,6 +151,7 @@ async def test_problem_details_and_no_raw_exception_leak() -> None:
     assert failed.json()["detail"] == "The request could not be completed."
     assert failed.json()["request_id"] == "safe-request-id"
     assert "raw-secret-exception-text" not in failed.text
+    assert "raw-secret-exception-text" not in caplog.text
 
 
 async def test_injection_shaped_question_is_marked_untrusted_data() -> None:

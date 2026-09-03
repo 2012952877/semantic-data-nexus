@@ -891,6 +891,51 @@ def test_trusted_quarterly_mode_rejects_pivot_topology(
 
 
 @pytest.mark.parametrize(
+    "mode",
+    [
+        CompilationMode.REGIONAL_QUARTERLY_PROFIT,
+        CompilationMode.MONTHLY_REGIONAL_COMPARISON,
+    ],
+)
+def test_trusted_modes_reject_unresolved_scalar_filters(
+    registry: OntologyRegistry,
+    semantic_context: SemanticContext,
+    mode: CompilationMode,
+) -> None:
+    candidate = (
+        StaticFixtureProvider._quarterly_profit([])
+        if mode is CompilationMode.REGIONAL_QUARTERLY_PROFIT
+        else StaticFixtureProvider._monthly_comparison()
+    )
+    candidate["nodes"].insert(
+        1,
+        {
+            "id": "filter_profit",
+            "name": "Unrequested profit threshold",
+            "operator": "FILTER",
+            "dependencies": ["select_sales"],
+            "parameters": {
+                "kind": "FILTER",
+                "predicate": {
+                    "column": "metric.profit",
+                    "operator": "gt",
+                    "value": 0,
+                },
+            },
+        },
+    )
+    aggregate = next(node for node in candidate["nodes"] if node["operator"] == "AGGREGATE")
+    aggregate["dependencies"] = ["filter_profit"]
+    result = SQGValidator(registry).validate(
+        candidate,
+        semantic_context,
+        compilation_mode=mode,
+    )
+
+    assert "COMPILATION_MODE_FILTER_INVALID" in {item.code for item in result.diagnostics}
+
+
+@pytest.mark.parametrize(
     ("resolved_term", "columns", "project_columns"),
     [
         (
