@@ -87,7 +87,7 @@ public static class RunStateMachine
                     RunState.CancelRequested, RunState.Cancelled, RunState.Succeeded, RunState.Failed],
             [RunState.DispatchUnknown] =
                 [RunState.Queued, RunState.Starting, RunState.Running, RunState.CancelRequested,
-                    RunState.Succeeded, RunState.Failed],
+                    RunState.Cancelled, RunState.Succeeded, RunState.Failed],
             [RunState.Queued] =
                 [RunState.Starting, RunState.Running, RunState.CancelRequested, RunState.Succeeded, RunState.Failed],
             [RunState.Starting] =

@@ -281,6 +281,38 @@ public sealed class ApiEndpointTests
     }
 
     [Fact]
+    public async Task LostStartResponseReconcilesBackendCancellation()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic lost start response.")
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("start-cancelled-reconcile", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+        Assert.Equal(RunState.DispatchUnknown, unknown.State);
+
+        backend.Runs[unknown.Id] =
+            StubSemanticBackendClient.Status(unknown.Id, RunState.Cancelled);
+        backend.StartException = null;
+        var reconciled = await client.PostAsJsonAsync("/api/v1/runs", request);
+        var run = await reconciled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
+        Assert.Equal(unknown.Id, run!.Id);
+        Assert.Equal(RunState.Cancelled, run.State);
+        Assert.Equal(1, backend.StartCalls);
+        Assert.Equal(1, backend.StatusCalls);
+    }
+
+    [Fact]
     public async Task UnknownStartRetriesSameRunIdWhenReconciliationFindsNothing()
     {
         var backend = new StubSemanticBackendClient
