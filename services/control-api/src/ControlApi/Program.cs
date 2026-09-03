@@ -33,6 +33,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
         new JsonStringEnumConverter(allowIntegerValues: false)));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IRunRepository, InMemoryRunRepository>();
+builder.Services.AddSingleton<IRunDispatchCoordinator, RunDispatchCoordinator>();
 
 var localAuthOptions = builder.Configuration
     .GetSection(LocalDevelopmentAuthOptions.SectionName)

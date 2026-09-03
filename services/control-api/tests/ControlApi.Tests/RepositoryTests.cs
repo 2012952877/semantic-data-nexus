@@ -31,6 +31,7 @@ public sealed class RepositoryTests
             default);
         var delivered = await repository.MarkCancellationDeliveredAsync(
             created.Run.Id,
+            first.CancellationGeneration,
             default);
         var second = await repository.RequestCancellationAsync(
             created.Run.Id,
@@ -277,5 +278,100 @@ public sealed class RepositoryTests
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
         Assert.Equal(RunState.Running, unchanged!.State);
         Assert.Null(unchanged.CompletedAt);
+    }
+
+    [Fact]
+    public async Task CancellationPreservesIntentAcrossActiveAndTerminalBackendStatuses()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var created = await repository.CreateAsync(
+            new CreateRunRequest("cancel-projection", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        var startedAt = DateTimeOffset.UtcNow.AddSeconds(-5);
+        var running = await repository.ApplySemanticStatusAsync(
+            created.Run.Id,
+            created.Run.Version,
+            new SemanticRunStatus(
+                created.Run.Id,
+                RunState.Running,
+                startedAt,
+                null,
+                [],
+                new TokenUsage(1, 2),
+                []),
+            default);
+        var cancellation = await repository.RequestCancellationAsync(
+            created.Run.Id,
+            running.Version,
+            default);
+
+        var activeProjection = await repository.ApplySemanticStatusAsync(
+            created.Run.Id,
+            cancellation.Run.Version,
+            new SemanticRunStatus(
+                created.Run.Id,
+                RunState.Running,
+                startedAt,
+                null,
+                [],
+                new TokenUsage(3, 5),
+                []),
+            default);
+        Assert.Equal(RunState.CancelRequested, activeProjection.State);
+        Assert.Equal(CancellationDeliveryState.Pending, activeProjection.CancellationDelivery);
+        Assert.Equal(8, activeProjection.TokenUsage.TotalTokens);
+
+        var terminalProjection = await repository.ApplySemanticStatusAsync(
+            created.Run.Id,
+            activeProjection.Version,
+            new SemanticRunStatus(
+                created.Run.Id,
+                RunState.Cancelled,
+                startedAt,
+                DateTimeOffset.UtcNow,
+                [],
+                new TokenUsage(3, 5),
+                []),
+            default);
+        var acknowledged = await repository.MarkCancellationDeliveredAsync(
+            created.Run.Id,
+            cancellation.CancellationGeneration,
+            default);
+        var replayedAcknowledgment = await repository.MarkCancellationDeliveredAsync(
+            created.Run.Id,
+            cancellation.CancellationGeneration,
+            default);
+        var replayedCancellation = await repository.RequestCancellationAsync(
+            created.Run.Id,
+            cancellation.Run.Version,
+            default);
+
+        Assert.Equal(RunState.Cancelled, terminalProjection.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, terminalProjection.CancellationDelivery);
+        Assert.Equal(terminalProjection.Version, acknowledged.Version);
+        Assert.Equal(acknowledged.Version, replayedAcknowledgment.Version);
+        Assert.False(replayedCancellation.RequiresDispatch);
+        Assert.Equal(RunState.Cancelled, replayedCancellation.Run.State);
+    }
+
+    [Fact]
+    public async Task StaleCancellationGenerationCannotAcknowledgeDelivery()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var created = await repository.CreateAsync(
+            new CreateRunRequest("cancel-generation", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        var cancellation = await repository.RequestCancellationAsync(
+            created.Run.Id,
+            created.Run.Version,
+            default);
+
+        await Assert.ThrowsAsync<OptimisticConcurrencyException>(() =>
+            repository.MarkCancellationDeliveredAsync(
+                created.Run.Id,
+                cancellation.CancellationGeneration + 1,
+                default));
     }
 }

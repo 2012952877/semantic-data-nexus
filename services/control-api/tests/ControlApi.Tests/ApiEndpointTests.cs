@@ -398,12 +398,103 @@ public sealed class ApiEndpointTests
         Assert.Equal("invalid_feedback", Extension(problem!, "code"));
     }
 
+    [Fact]
+    public async Task StartCompletesBeforeConcurrentCancellationDispatch()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartEntered = NewGate(),
+            ReleaseStart = NewGate(),
+            CancelEntered = NewGate()
+        };
+        var coordinator = new ObservableRunDispatchCoordinator();
+        await using var factory = new ControlApiFactory(
+            backend,
+            dispatchCoordinator: coordinator);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+
+        var createTask = client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("start-cancel-race", "synthetic-workload"));
+        await backend.StartEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var pending = Assert.Single(list!.Items);
+
+        var cancelTask = client.PostAsJsonAsync(
+            $"/api/v1/runs/{pending.Id}/cancel",
+            new CancelRunRequest(null));
+        await coordinator.WaitForAttemptAsync(2).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(backend.CancelEntered.Task.IsCompleted);
+
+        backend.ReleaseStart.TrySetResult(true);
+        var created = await createTask;
+        await backend.CancelEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var cancelled = await cancelTask;
+        var cancellation = await cancelled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, cancelled.StatusCode);
+        Assert.Equal(RunState.CancelRequested, cancellation!.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, cancellation.CancellationDelivery);
+        Assert.Equal(["start", "cancel"], backend.Operations.ToArray());
+    }
+
+    [Fact]
+    public async Task CancellationWinningBeforeReconciliationPreventsRunRevival()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout.")
+        };
+        var coordinator = new ObservableRunDispatchCoordinator();
+        await using var factory = new ControlApiFactory(
+            backend,
+            dispatchCoordinator: coordinator);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("cancel-reconcile-race", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+        backend.StartException = null;
+        backend.CancelEntered = NewGate();
+        backend.ReleaseCancel = NewGate();
+
+        var cancelTask = client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        await backend.CancelEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var duplicateTask = client.PostAsJsonAsync("/api/v1/runs", request);
+        await coordinator.WaitForAttemptAsync(3).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(duplicateTask.IsCompleted);
+        Assert.Equal(1, backend.StartCalls);
+        Assert.Equal(0, backend.StatusCalls);
+
+        backend.ReleaseCancel.TrySetResult(true);
+        var cancelled = await cancelTask;
+        var duplicate = await duplicateTask;
+        var replay = await duplicate.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, cancelled.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        Assert.Equal(RunState.CancelRequested, replay!.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, replay.CancellationDelivery);
+        Assert.Equal(1, backend.StartCalls);
+        Assert.Equal(0, backend.StatusCalls);
+    }
+
     private static JsonSerializerOptions CreateJsonOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         options.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
         return options;
     }
+
+    private static TaskCompletionSource<bool> NewGate() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static string Extension(ProblemDetails problem, string key)
     {

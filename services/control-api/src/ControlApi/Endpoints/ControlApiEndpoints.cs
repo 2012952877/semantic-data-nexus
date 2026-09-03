@@ -70,6 +70,7 @@ public static class ControlApiEndpoints
         HttpContext context,
         IRunRepository repository,
         ISemanticBackendClient semanticBackend,
+        IRunDispatchCoordinator dispatchCoordinator,
         CancellationToken cancellationToken)
     {
         var validation = Validate(request, context);
@@ -80,29 +81,36 @@ public static class ControlApiEndpoints
 
         var subject = GetSubject(principal);
         var result = await repository.CreateAsync(request, subject, cancellationToken);
-        if (!result.Created && !result.Run.State.RequiresStartReconciliation())
+        await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
+            result.Run.Id,
+            cancellationToken);
+        var current = await repository.GetAsync(result.Run.Id, cancellationToken) ??
+            throw new RunNotFoundException(result.Run.Id);
+        if (!current.State.RequiresStartReconciliation())
         {
-            return TypedResults.Ok(result.Run);
+            return result.Created
+                ? TypedResults.Accepted($"/api/v1/runs/{current.Id}", current)
+                : TypedResults.Ok(current);
         }
 
         try
         {
             var status = result.Created
                 ? await StartSemanticRun(
-                    result.Run,
+                    current,
                     subject,
                     context,
                     semanticBackend,
                     cancellationToken)
                 : await ReconcileOrStartSemanticRun(
-                    result.Run,
+                    current,
                     subject,
                     context,
                     semanticBackend,
                     cancellationToken);
             var updated = await repository.ApplySemanticStatusAsync(
-                result.Run.Id,
-                result.Run.Version,
+                current.Id,
+                current.Version,
                 status,
                 CancellationToken.None);
             return result.Created
@@ -218,6 +226,7 @@ public static class ControlApiEndpoints
         HttpContext context,
         IRunRepository repository,
         ISemanticBackendClient semanticBackend,
+        IRunDispatchCoordinator dispatchCoordinator,
         CancellationToken cancellationToken)
     {
         if (!TryRunId(runId, context, out var id, out var problem))
@@ -225,6 +234,9 @@ public static class ControlApiEndpoints
             return problem;
         }
 
+        await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
+            id,
+            cancellationToken);
         var result = await repository.RequestCancellationAsync(
             id,
             request?.ExpectedVersion,
@@ -235,6 +247,7 @@ public static class ControlApiEndpoints
             await semanticBackend.RequestCancellationAsync(id, cancellationToken);
             responseRun = await repository.MarkCancellationDeliveredAsync(
                 id,
+                result.CancellationGeneration,
                 CancellationToken.None);
         }
 
@@ -246,6 +259,7 @@ public static class ControlApiEndpoints
         HttpContext context,
         IRunRepository repository,
         ISemanticBackendClient semanticBackend,
+        IRunDispatchCoordinator dispatchCoordinator,
         CancellationToken cancellationToken)
     {
         if (!TryRunId(runId, context, out var id, out var problem))
@@ -253,6 +267,9 @@ public static class ControlApiEndpoints
             return problem;
         }
 
+        await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
+            id,
+            cancellationToken);
         var run = await repository.GetAsync(id, cancellationToken);
         if (run is null)
         {

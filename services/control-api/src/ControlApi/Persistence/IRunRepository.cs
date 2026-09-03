@@ -5,7 +5,11 @@ using ControlApi.Semantic;
 namespace ControlApi.Persistence;
 
 public sealed record CreateRunResult(RunMetadata Run, bool Created);
-public sealed record MutationResult(RunMetadata Run, bool Changed, bool RequiresDispatch);
+public sealed record MutationResult(
+    RunMetadata Run,
+    bool Changed,
+    bool RequiresDispatch,
+    long CancellationGeneration);
 
 public interface IRunRepository
 {
@@ -41,6 +45,7 @@ public interface IRunRepository
 
     Task<RunMetadata> MarkCancellationDeliveredAsync(
         RunId id,
+        long expectedGeneration,
         CancellationToken cancellationToken);
 
     Task<RunFeedback> SubmitFeedbackAsync(

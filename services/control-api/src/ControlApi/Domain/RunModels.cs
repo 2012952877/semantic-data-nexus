@@ -157,6 +157,7 @@ public sealed record RunMetadata(
     string CreatedBy,
     RunState State,
     CancellationDeliveryState CancellationDelivery,
+    long CancellationGeneration,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? StartedAt,

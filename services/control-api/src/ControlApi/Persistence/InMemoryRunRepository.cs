@@ -41,6 +41,7 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                 subject,
                 RunState.StartPending,
                 CancellationDeliveryState.NotRequested,
+                0,
                 now,
                 now,
                 null,
@@ -95,9 +96,13 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                     $"Run version {expectedVersion} is stale; current version is {current.Version}.");
             }
 
-            if (!current.State.CanTransitionTo(status.State))
+            var nextState =
+                current.State == RunState.CancelRequested && !status.State.IsTerminal()
+                    ? RunState.CancelRequested
+                    : status.State;
+            if (!current.State.CanTransitionTo(nextState))
             {
-                throw new InvalidRunTransitionException(current.State, status.State);
+                throw new InvalidRunTransitionException(current.State, nextState);
             }
 
             var now = timeProvider.GetUtcNow();
@@ -113,7 +118,12 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             var completedAt = status.State.IsTerminal() ? status.FinalizedAt : null;
             var updated = current with
             {
-                State = status.State,
+                State = nextState,
+                CancellationDelivery =
+                    status.State.IsTerminal() &&
+                    current.CancellationDelivery == CancellationDeliveryState.Pending
+                        ? CancellationDeliveryState.Delivered
+                        : current.CancellationDelivery,
                 UpdatedAt = now,
                 StartedAt = startedAt,
                 CompletedAt = completedAt,
@@ -218,12 +228,17 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                 return Task.FromResult(new MutationResult(
                     current,
                     false,
-                    current.CancellationDelivery == CancellationDeliveryState.Pending));
+                    current.CancellationDelivery == CancellationDeliveryState.Pending,
+                    current.CancellationGeneration));
             }
 
             if (current.State == RunState.Cancelled)
             {
-                return Task.FromResult(new MutationResult(current, false, false));
+                return Task.FromResult(new MutationResult(
+                    current,
+                    false,
+                    false,
+                    current.CancellationGeneration));
             }
 
             if (current.State.IsTerminal())
@@ -241,32 +256,44 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             {
                 State = RunState.CancelRequested,
                 CancellationDelivery = CancellationDeliveryState.Pending,
+                CancellationGeneration = current.CancellationGeneration + 1,
                 UpdatedAt = timeProvider.GetUtcNow(),
                 Version = current.Version + 1
             };
             runs[id] = updated;
-            return Task.FromResult(new MutationResult(updated, true, true));
+            return Task.FromResult(new MutationResult(
+                updated,
+                true,
+                true,
+                updated.CancellationGeneration));
         }
     }
 
     public Task<RunMetadata> MarkCancellationDeliveredAsync(
         RunId id,
+        long expectedGeneration,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (gate)
         {
             var current = GetRequired(id);
+            if (current.CancellationGeneration != expectedGeneration)
+            {
+                throw new OptimisticConcurrencyException(
+                    $"Cancellation generation {expectedGeneration} is stale; current generation is " +
+                    $"{current.CancellationGeneration}.");
+            }
+
             if (current.CancellationDelivery == CancellationDeliveryState.Delivered)
             {
                 return Task.FromResult(current);
             }
 
-            if (current.State != RunState.CancelRequested ||
-                current.CancellationDelivery != CancellationDeliveryState.Pending)
+            if (current.CancellationDelivery != CancellationDeliveryState.Pending)
             {
                 throw new InvalidOperationException(
-                    "Cancellation delivery can only be acknowledged while pending.");
+                    "Cancellation delivery can only be acknowledged for a pending generation.");
             }
 
             var updated = current with

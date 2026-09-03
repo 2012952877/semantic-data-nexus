@@ -64,10 +64,15 @@ A duplicate create first reconciles by `RunId`, then repeats the idempotent
 backend start with the same `RunId` only when the backend definitively reports
 it missing. Only a definitive backend rejection marks the run failed.
 
-Cancellation persists `Pending`/`Delivered` dispatch ownership. Failed delivery
-remains retryable, while a delivered request is not posted again. Feedback uses
-`submissionId` for idempotency and `expectedRunVersion` for optimistic
-concurrency. Feedback is structured to avoid an unrestricted text/prompt field.
+Start, reconciliation, status refresh, and cancellation hold a per-`RunId`
+dispatch lease in M0 so cancellation cannot lose to a late start. Cancellation
+persists a monotonic generation plus `Pending`/`Delivered` ownership. Failed
+delivery remains retryable, while a delivered generation is not posted again.
+Active backend observations update projection details without replacing local
+`CancelRequested`; a terminal observation resolves it and also makes a racing
+delivery acknowledgment idempotent. Feedback uses `submissionId` for
+idempotency and `expectedRunVersion` for optimistic concurrency. Feedback is
+structured to avoid an unrestricted text/prompt field.
 
 ## Configuration
 
@@ -105,7 +110,9 @@ same aggregate semantics:
 - one transaction for run mutation plus feedback insertion;
 - finite-state transition validation before update;
 - persisted start-dispatch and cancellation-delivery ownership suitable for an
-  outbox worker, with compare-and-swap claiming in a multi-replica adapter;
+  outbox worker, with generation-checked compare-and-swap claiming in a
+  multi-replica adapter (the in-process dispatch lease is not the distributed
+  lock for a PostgreSQL implementation);
 - structured JSON only for bounded stages, nodes, usage, and diagnostics.
 
 The adapter belongs in a separate persistence project or folder and must not

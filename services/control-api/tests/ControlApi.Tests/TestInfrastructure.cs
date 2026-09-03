@@ -1,4 +1,5 @@
 using System.Net;
+using System.Collections.Concurrent;
 using ControlApi.Domain;
 using ControlApi.Semantic;
 using Microsoft.AspNetCore.Hosting;
@@ -13,7 +14,8 @@ namespace ControlApi.Tests;
 public sealed class ControlApiFactory(
     ISemanticBackendClient? semanticBackend = null,
     string environment = "Development",
-    IReadOnlyDictionary<string, string?>? settings = null)
+    IReadOnlyDictionary<string, string?>? settings = null,
+    IRunDispatchCoordinator? dispatchCoordinator = null)
     : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -46,6 +48,15 @@ public sealed class ControlApiFactory(
                 services.AddSingleton(semanticBackend);
             });
         }
+
+        if (dispatchCoordinator is not null)
+        {
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IRunDispatchCoordinator>();
+                services.AddSingleton(dispatchCoordinator);
+            });
+        }
     }
 
     public HttpClient CreateAuthenticatedClient(string roles = "reader")
@@ -58,6 +69,53 @@ public sealed class ControlApiFactory(
     }
 }
 
+public sealed class ObservableRunDispatchCoordinator : IRunDispatchCoordinator
+{
+    private readonly object gate = new();
+    private readonly RunDispatchCoordinator inner = new();
+    private readonly Dictionary<int, TaskCompletionSource<bool>> waiters = [];
+    private int attempts;
+
+    public ValueTask<IAsyncDisposable> AcquireAsync(
+        RunId runId,
+        CancellationToken cancellationToken)
+    {
+        var attempt = Interlocked.Increment(ref attempts);
+        lock (gate)
+        {
+            if (waiters.Remove(attempt, out var waiter))
+            {
+                waiter.TrySetResult(true);
+            }
+        }
+
+        return inner.AcquireAsync(runId, cancellationToken);
+    }
+
+    public Task WaitForAttemptAsync(int attempt, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref attempts) >= attempt)
+        {
+            return Task.CompletedTask;
+        }
+
+        TaskCompletionSource<bool> waiter;
+        lock (gate)
+        {
+            if (attempts >= attempt)
+            {
+                return Task.CompletedTask;
+            }
+
+            waiter = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add(attempt, waiter);
+        }
+
+        return waiter.Task.WaitAsync(cancellationToken);
+    }
+}
+
 public sealed class StubSemanticBackendClient : ISemanticBackendClient
 {
     public bool Ready { get; set; } = true;
@@ -65,16 +123,28 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
     public SemanticRunStatus? StartResult { get; set; }
     public Exception? StatusException { get; set; }
     public Exception? CancelException { get; set; }
+    public TaskCompletionSource<bool>? StartEntered { get; set; }
+    public TaskCompletionSource<bool>? ReleaseStart { get; set; }
+    public TaskCompletionSource<bool>? CancelEntered { get; set; }
+    public TaskCompletionSource<bool>? ReleaseCancel { get; set; }
     public int StartCalls { get; private set; }
     public int StatusCalls { get; private set; }
     public int CancelCalls { get; private set; }
     public Dictionary<RunId, SemanticRunStatus> Runs { get; } = [];
+    public ConcurrentQueue<string> Operations { get; } = new();
 
-    public Task<SemanticRunStatus> StartAsync(
+    public async Task<SemanticRunStatus> StartAsync(
         SemanticRunStart request,
         CancellationToken cancellationToken)
     {
         StartCalls++;
+        Operations.Enqueue("start");
+        StartEntered?.TrySetResult(true);
+        if (ReleaseStart is not null)
+        {
+            await ReleaseStart.Task.WaitAsync(cancellationToken);
+        }
+
         if (StartException is not null)
         {
             throw StartException;
@@ -82,7 +152,7 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
 
         var status = StartResult ?? Status(request.RunId, RunState.Starting);
         Runs[request.RunId] = status;
-        return Task.FromResult(status);
+        return status;
     }
 
     public Task<SemanticRunStatus> GetStatusAsync(
@@ -104,16 +174,22 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
                 SemanticFailureKind.NotFound));
     }
 
-    public Task RequestCancellationAsync(RunId runId, CancellationToken cancellationToken)
+    public async Task RequestCancellationAsync(RunId runId, CancellationToken cancellationToken)
     {
         CancelCalls++;
+        Operations.Enqueue("cancel");
+        CancelEntered?.TrySetResult(true);
+        if (ReleaseCancel is not null)
+        {
+            await ReleaseCancel.Task.WaitAsync(cancellationToken);
+        }
+
         if (CancelException is not null)
         {
             throw CancelException;
         }
-
         Runs[runId] = Status(runId, RunState.Cancelled);
-        return Task.CompletedTask;
+        Runs[runId] = Status(runId, RunState.Cancelled);
     }
 
     public Task<bool> IsReadyAsync(CancellationToken cancellationToken) =>
