@@ -457,11 +457,12 @@ class QueryCoordinator:
                     )
                     if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                         self._request_resolver_cancel(run_id, node.id)
-                    machine.transition(ExecutionState.TIMED_OUT)
-                    await emitter.emit(
+                    await self._emit_node_terminal(
+                        machine,
+                        emitter,
                         scope="node",
                         scope_id=node.id,
-                        state=machine.state,
+                        state=ExecutionState.TIMED_OUT,
                         code="NODE_TIMEOUT",
                         message="Node exceeded its configured execution time",
                         duration_ms=_duration(started),
@@ -477,11 +478,12 @@ class QueryCoordinator:
                     await memory.release(run_id, node.id)
                     reserved = False
                     raise asyncio.CancelledError
-                machine.transition(ExecutionState.SUCCEEDED)
-                await emitter.emit(
+                await self._emit_node_terminal(
+                    machine,
+                    emitter,
                     scope="node",
                     scope_id=node.id,
-                    state=machine.state,
+                    state=ExecutionState.SUCCEEDED,
                     code="NODE_SUCCEEDED",
                     message="Node succeeded",
                     duration_ms=_duration(started),
@@ -503,11 +505,12 @@ class QueryCoordinator:
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                 self._request_resolver_cancel(run_id, node.id)
-            machine.transition(ExecutionState.TIMED_OUT)
-            await emitter.emit(
+            await self._emit_node_terminal(
+                machine,
+                emitter,
                 scope="node",
                 scope_id=node.id,
-                state=machine.state,
+                state=ExecutionState.TIMED_OUT,
                 code="NODE_TIMEOUT",
                 message="Node exceeded its configured execution time",
                 duration_ms=_duration(started),
@@ -516,6 +519,8 @@ class QueryCoordinator:
                 node.id, machine.state, diagnostic_code="NODE_TIMEOUT"
             )
         except asyncio.CancelledError:
+            if machine.state in TERMINAL_STATES:
+                raise
             if execution is not None and not execution.done():
                 await memory.defer(run_id, node.id)
                 execution.cancel()
@@ -525,11 +530,12 @@ class QueryCoordinator:
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                 self._request_resolver_cancel(run_id, node.id)
-            machine.transition(ExecutionState.CANCELLED)
-            await emitter.emit(
+            await self._emit_node_terminal(
+                machine,
+                emitter,
                 scope="node",
                 scope_id=node.id,
-                state=machine.state,
+                state=ExecutionState.CANCELLED,
                 code="NODE_CANCELLED",
                 message="Node was cancelled",
                 duration_ms=_duration(started),
@@ -548,16 +554,47 @@ class QueryCoordinator:
                 message = exc.message
             else:
                 message = "Node failed without publishing an output"
-            machine.transition(ExecutionState.FAILED)
-            await emitter.emit(
+            await self._emit_node_terminal(
+                machine,
+                emitter,
                 scope="node",
                 scope_id=node.id,
-                state=machine.state,
+                state=ExecutionState.FAILED,
                 code=code,
                 message=message,
                 duration_ms=_duration(started),
             )
             return _NodeOutcome(node.id, machine.state, diagnostic_code=code)
+
+    async def _emit_node_terminal(
+        self,
+        machine: StateMachine,
+        emitter: _Emitter,
+        *,
+        scope: str,
+        scope_id: str,
+        state: ExecutionState,
+        code: str,
+        message: str,
+        duration_ms: int | None = None,
+        metadata: dict[str, str | int | bool | None] | None = None,
+    ) -> None:
+        machine.transition(state)
+        emission = asyncio.create_task(
+            emitter.emit(
+                scope=scope,
+                scope_id=scope_id,
+                state=state,
+                code=code,
+                message=message,
+                duration_ms=duration_ms,
+                metadata=metadata,
+            )
+        )
+        was_cancelled = await _wait_for_task_completion(emission)
+        emission.result()
+        if was_cancelled:
+            raise asyncio.CancelledError
 
     async def _perform_node(
         self,

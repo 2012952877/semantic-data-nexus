@@ -52,6 +52,20 @@ class _PausingEventStore(InMemoryEventStore):
         await super().append(event)
 
 
+class _PausingNodeTerminalEventStore(InMemoryEventStore):
+    def __init__(self, terminal_code: str) -> None:
+        super().__init__()
+        self.terminal_code = terminal_code
+        self.node_terminal = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def append(self, event: DiagnosticEvent) -> None:
+        if event.code == self.terminal_code:
+            self.node_terminal.set()
+            await self.release.wait()
+        await super().append(event)
+
+
 class _PausingClaimStore(InMemoryEventStore):
     def __init__(self, pause_run_id: str = "run-claim-cancel") -> None:
         super().__init__()
@@ -155,6 +169,14 @@ async def _wait_for_run_started(
             return
         await asyncio.sleep(0)
     raise AssertionError(f"run '{run_id}' did not start")
+
+
+async def _wait_for_coordinator_cleanup(coordinator: QueryCoordinator) -> None:
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if not coordinator._node_cleanups and not coordinator._deferred_releases:
+            return
+    raise AssertionError("coordinator background cleanup did not settle")
 
 
 @pytest.mark.asyncio
@@ -537,6 +559,54 @@ async def test_outer_task_cancellation_terminalizes_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_code", ("NODE_SUCCEEDED", "NODE_TIMEOUT"))
+async def test_outer_cancellation_during_node_terminal_emission_preserves_outcome(
+    terminal_code: str, tmp_path: Path
+) -> None:
+    fixture = (
+        simple_profit_fixture()
+        if terminal_code == "NODE_SUCCEEDED"
+        else delayed_fixture()
+    )
+    events = _PausingNodeTerminalEventStore(terminal_code)
+    limits = ResourceLimits(
+        node_timeout_seconds=(
+            10.0 if terminal_code == "NODE_SUCCEEDED" else 0.01
+        )
+    )
+    store = ParquetResultStore(tmp_path)
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=store,
+        event_store=events,
+        limits=limits,
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id=f"run-paused-{terminal_code.lower()}")
+    )
+    await events.node_terminal.wait()
+    task.cancel()
+    events.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    recorded = await events.list(f"run-paused-{terminal_code.lower()}")
+    node_id = fixture.plan.output_node_id
+    assert any(
+        event.scope_id == node_id and event.code == terminal_code
+        for event in recorded
+    )
+    assert not any(
+        event.scope_id == node_id and event.code == "NODE_CANCELLED"
+        for event in recorded
+    )
+    assert any(event.code == "STAGE_CANCELLED" for event in recorded)
+    assert any(event.code == "RUN_CANCELLED" for event in recorded)
+    await store.wait_for_cleanup()
+    await _wait_for_coordinator_cleanup(coordinator)
+
+
+@pytest.mark.asyncio
 async def test_node_timeout_does_not_wait_for_parquet_writer(tmp_path: Path) -> None:
     fixture = simple_profit_fixture()
     store = _SlowParquetStore(tmp_path)
@@ -552,6 +622,7 @@ async def test_node_timeout_does_not_wait_for_parquet_writer(tmp_path: Path) -> 
     assert outcome.summary.state is ExecutionState.TIMED_OUT
     assert outcome.manifest is None
     await store.wait_for_cleanup()
+    await _wait_for_coordinator_cleanup(coordinator)
     assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240
     assert not list(tmp_path.rglob(".tmp-*"))  # noqa: ASYNC240
 
