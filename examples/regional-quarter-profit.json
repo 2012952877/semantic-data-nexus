@@ -36,7 +36,7 @@
       "inputs": ["filter_quarter"],
       "params": {
         "group_by": ["region", "quarter"],
-        "measures": [{ "metric": "profit", "name": "profit" }]
+        "measures": [{ "metric": "profit", "source": "profit", "name": "profit" }]
       },
       "outputs": [
         { "name": "region", "data_type": "string", "nullable": false },

@@ -200,7 +200,11 @@ def test_derived_lineage_is_not_a_direct_metric_binding() -> None:
                 "inputs": ["project_derived"],
                 "params": {
                     "measures": [
-                        {"metric": "profit_total", "name": "profit_total"}
+                        {
+                            "metric": "profit_total",
+                            "source": "derived_profit",
+                            "name": "profit_total"
+                        }
                     ]
                 },
                 "outputs": [{"name": "profit_total", "data_type": "decimal"}],
@@ -799,7 +803,13 @@ def test_outer_join_nullability_reaches_grouped_aggregate(
                 "inputs": ["join_records"],
                 "params": {
                     "group_by": ["group_key"],
-                    "measures": [{"metric": metric_id, "name": "total"}],
+                    "measures": [
+                        {
+                            "metric": metric_id,
+                            "source": "metric_value",
+                            "name": "total",
+                        }
+                    ],
                 },
                 "outputs": [
                     {
@@ -820,3 +830,158 @@ def test_outer_join_nullability_reaches_grouped_aggregate(
     invalid["nodes"][-1]["outputs"][-1]["nullable"] = False
     with pytest.raises(SemanticValidationError, match="expected nullable=True"):
         validate_sqg(SemanticQueryGraph.model_validate(invalid), ontology)
+
+
+@pytest.mark.parametrize(
+    ("source_alias", "expected_nullable"),
+    [("left_balance", False), ("right_balance", True)],
+)
+def test_measure_source_selects_one_self_join_occurrence(
+    source_alias: str, expected_nullable: bool
+) -> None:
+    ontology = Ontology.model_validate(
+        {
+            "contract_version": "ontology/v0",
+            "ontology_id": "self_join_demo",
+            "version": "self.v1",
+            "entities": [
+                {
+                    "id": "accounts",
+                    "fields": [
+                        {
+                            "id": "account_id",
+                            "data_type": "integer",
+                            "nullable": False,
+                        },
+                        {
+                            "id": "balance",
+                            "data_type": "decimal",
+                            "nullable": False,
+                        },
+                    ],
+                }
+            ],
+            "metrics": [
+                {
+                    "id": "balance_total",
+                    "entity": "accounts",
+                    "field": "balance",
+                    "aggregation": "SUM",
+                }
+            ],
+            "relations": [
+                {
+                    "id": "account_pair",
+                    "left_entity": "accounts",
+                    "right_entity": "accounts",
+                    "left_field": "account_id",
+                    "right_field": "account_id",
+                    "cardinality": "many_to_many",
+                }
+            ],
+        }
+    )
+    select_outputs = [
+        {"name": "account_id", "data_type": "integer", "nullable": False},
+        {"name": "balance", "data_type": "decimal", "nullable": False},
+    ]
+    data = {
+        "contract_version": "sqg/v0",
+        "query_id": f"self_join_{source_alias}",
+        "ontology_version": "self.v1",
+        "nodes": [
+            {
+                "id": "select_left",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {
+                    "entity": "accounts",
+                    "fields": ["account_id", "balance"],
+                },
+                "outputs": select_outputs,
+            },
+            {
+                "id": "select_right",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {
+                    "entity": "accounts",
+                    "fields": ["account_id", "balance"],
+                },
+                "outputs": select_outputs,
+            },
+            {
+                "id": "join_accounts",
+                "operator": "JOIN",
+                "inputs": ["select_left", "select_right"],
+                "params": {
+                    "relation": "account_pair",
+                    "kind": "LEFT",
+                    "fields": [
+                        {
+                            "source": "left",
+                            "field": "account_id",
+                            "name": "left_id",
+                        },
+                        {
+                            "source": "left",
+                            "field": "balance",
+                            "name": "left_balance",
+                        },
+                        {
+                            "source": "right",
+                            "field": "balance",
+                            "name": "right_balance",
+                        },
+                    ],
+                },
+                "outputs": [
+                    {
+                        "name": "left_id",
+                        "data_type": "integer",
+                        "nullable": False,
+                    },
+                    {
+                        "name": "left_balance",
+                        "data_type": "decimal",
+                        "nullable": False,
+                    },
+                    {
+                        "name": "right_balance",
+                        "data_type": "decimal",
+                        "nullable": True,
+                    },
+                ],
+            },
+            {
+                "id": "aggregate_balance",
+                "operator": "AGGREGATE",
+                "inputs": ["join_accounts"],
+                "params": {
+                    "group_by": ["left_id"],
+                    "measures": [
+                        {
+                            "metric": "balance_total",
+                            "source": source_alias,
+                            "name": "total",
+                        }
+                    ],
+                },
+                "outputs": [
+                    {
+                        "name": "left_id",
+                        "data_type": "integer",
+                        "nullable": False,
+                    },
+                    {
+                        "name": "total",
+                        "data_type": "decimal",
+                        "nullable": expected_nullable,
+                    },
+                ],
+            },
+        ],
+        "root": "aggregate_balance",
+    }
+    sqg = SemanticQueryGraph.model_validate(data)
+    validate_sqg(sqg, ontology)

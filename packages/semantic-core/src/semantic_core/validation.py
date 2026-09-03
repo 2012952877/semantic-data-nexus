@@ -127,15 +127,20 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 source = (metric.entity, metric.field)
                 source_bindings = [
                     binding
-                    for bindings in input_bindings[0].values()
-                    for binding in bindings
+                    for binding in input_bindings[0][measure.source]
                     if _matches_source(binding, source)
                 ]
                 if not source_bindings:
                     raise SemanticValidationError(
                         f"metric {metric.id!r} requires source field "
                         f"{metric.entity}.{metric.field}, "
-                        f"which is not available to node {node.id!r}"
+                        f"which is not bound by input alias {measure.source!r} "
+                        f"on node {node.id!r}"
+                    )
+                if len(source_bindings) != 1:
+                    raise SemanticValidationError(
+                        f"metric {metric.id!r} input alias {measure.source!r} "
+                        "does not resolve to exactly one direct field occurrence"
                     )
                 output = next(
                     output for output in node.outputs if output.name == measure.name

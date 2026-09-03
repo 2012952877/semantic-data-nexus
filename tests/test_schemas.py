@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError as PydanticValidationError
 
+from semantic_core.cli import _load_json
 from semantic_core.models import Ontology, SemanticQueryGraph
 
 ROOT = Path(__file__).parents[1]
@@ -153,3 +155,43 @@ def test_run_events_require_scope_identifiers() -> None:
     invalid_node = {**base, "event_type": "node.started", "stage_id": "compile"}
     assert list(validator.iter_errors(invalid_stage))
     assert list(validator.iter_errors(invalid_node))
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_number_predicate_rejects_nonfinite_values(value: float) -> None:
+    instance = {
+        "contract_version": "sqg/v0",
+        "query_id": "nonfinite_number",
+        "ontology_version": "numbers.v1",
+        "nodes": [
+            {
+                "id": "select_score",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {"entity": "scores", "fields": ["score"]},
+                "outputs": [{"name": "score", "data_type": "number"}],
+            },
+            {
+                "id": "filter_score",
+                "operator": "FILTER",
+                "inputs": ["select_score"],
+                "params": {
+                    "predicate": {"field": "score", "op": "GT", "value": value}
+                },
+                "outputs": [{"name": "score", "data_type": "number"}],
+            },
+        ],
+        "root": "filter_score",
+    }
+    with pytest.raises(PydanticValidationError, match="does not match"):
+        SemanticQueryGraph.model_validate(instance)
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_contract_json_loader_rejects_nonfinite_constants(
+    tmp_path: Path, constant: str
+) -> None:
+    path = tmp_path / "nonfinite.json"
+    path.write_text(f'{{"value": {constant}}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        _load_json(path)

@@ -103,9 +103,7 @@ def test_filter_value_must_match_field_type(sqg_data: dict) -> None:
         SemanticQueryGraph.model_validate(candidate)
 
 
-def test_metric_source_field_must_reach_aggregate(
-    sqg_data: dict, ontology_data: dict
-) -> None:
+def test_metric_source_field_must_reach_aggregate(sqg_data: dict) -> None:
     candidate = copy.deepcopy(sqg_data)
     project = {
         "id": "project_region",
@@ -119,9 +117,8 @@ def test_metric_source_field_must_reach_aggregate(
     }
     candidate["nodes"].insert(2, project)
     candidate["nodes"][3]["inputs"] = ["project_region"]
-    sqg = SemanticQueryGraph.model_validate(candidate)
-    with pytest.raises(SemanticValidationError, match=r"source field sales\.profit"):
-        validate_sqg(sqg, Ontology.model_validate(ontology_data))
+    with pytest.raises(ValidationError, match="unavailable fields"):
+        SemanticQueryGraph.model_validate(candidate)
 
 
 def test_rejects_unknown_operator(sqg_data: dict) -> None:

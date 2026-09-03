@@ -177,9 +177,10 @@
     "measureRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["metric", "name"],
+      "required": ["metric", "source", "name"],
       "properties": {
         "metric": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/id" },
         "name": { "$ref": "#/$defs/id" }
       }
     },

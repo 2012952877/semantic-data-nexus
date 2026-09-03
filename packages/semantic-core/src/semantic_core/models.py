@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
+import math
 from typing import Annotated, Literal, Union
 
 from pydantic import (
@@ -217,6 +218,7 @@ class FilterParams(ContractModel):
 
 class MeasureRef(ContractModel):
     metric: Identifier
+    source: Identifier
     name: Identifier
 
 
@@ -447,7 +449,12 @@ class SemanticQueryGraph(ContractModel):
             )
             return list(parent_outputs[0])
         if isinstance(node, AggregateNode):
-            cls._require_fields(node.id, node.params.group_by, set(parent_outputs[0]))
+            cls._require_fields(
+                node.id,
+                node.params.group_by
+                + [measure.source for measure in node.params.measures],
+                set(parent_outputs[0]),
+            )
             names = node.params.group_by + [measure.name for measure in node.params.measures]
             if len(names) != len(set(names)):
                 raise ValueError(f"node {node.id!r} contains duplicate aggregate output names")
@@ -607,7 +614,12 @@ class SemanticQueryGraph(ContractModel):
         if data_type == DataType.INTEGER:
             return isinstance(value, int) and not isinstance(value, bool)
         if data_type == DataType.NUMBER:
-            return isinstance(value, (int, float)) and not isinstance(value, bool)
+            return (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                or isinstance(value, float)
+                and math.isfinite(value)
+            )
         if data_type == DataType.DECIMAL:
             return (
                 isinstance(value, int)

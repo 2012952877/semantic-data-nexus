@@ -12,8 +12,14 @@ from semantic_core.validation import SemanticValidationError, validate_sqg
 
 
 def _load_json(path: Path) -> Any:
+    def reject_non_finite(constant: str) -> None:
+        raise ValueError(f"{path}: non-finite JSON number {constant!r} is not allowed")
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=reject_non_finite,
+        )
     except FileNotFoundError as exc:
         raise ValueError(f"file not found: {path}") from exc
     except json.JSONDecodeError as exc:
@@ -54,4 +60,3 @@ def main(argv: list[str] | None = None) -> int:
         f"contract={sqg.contract_version})"
     )
     return 0
-
