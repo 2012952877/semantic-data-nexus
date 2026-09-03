@@ -280,6 +280,8 @@ class JoinProjection(ContractModel):
 
 class JoinParams(ContractModel):
     relation: Identifier
+    left_key: Identifier
+    right_key: Identifier
     kind: Literal["INNER", "LEFT", "RIGHT", "FULL"]
     fields: list[JoinProjection] = Field(min_length=1)
 
@@ -489,6 +491,8 @@ class SemanticQueryGraph(ContractModel):
             )
             return list(parent_outputs[0])
         if isinstance(node, JoinNode):
+            cls._require_fields(node.id, [node.params.left_key], set(parent_outputs[0]))
+            cls._require_fields(node.id, [node.params.right_key], set(parent_outputs[1]))
             for projection in node.params.fields:
                 source_index = 0 if projection.source == "left" else 1
                 cls._require_fields(

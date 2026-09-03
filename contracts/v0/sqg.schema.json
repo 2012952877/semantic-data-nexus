@@ -377,9 +377,11 @@
         "params": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["relation", "kind", "fields"],
+          "required": ["relation", "left_key", "right_key", "kind", "fields"],
           "properties": {
             "relation": { "$ref": "#/$defs/id" },
+            "left_key": { "$ref": "#/$defs/id" },
+            "right_key": { "$ref": "#/$defs/id" },
             "kind": { "enum": ["INNER", "LEFT", "RIGHT", "FULL"] },
             "fields": {
               "type": "array",

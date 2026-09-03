@@ -195,3 +195,52 @@ def test_contract_json_loader_rejects_nonfinite_constants(
     path.write_text(f'{{"value": {constant}}}', encoding="utf-8")
     with pytest.raises(ValueError, match="non-finite JSON number"):
         _load_json(path)
+
+
+@pytest.mark.parametrize("missing_key", ["left_key", "right_key"])
+def test_join_key_aliases_are_required_by_schema_and_model(
+    missing_key: str,
+) -> None:
+    schema = json.loads((ROOT / "contracts" / "v0" / "sqg.schema.json").read_text())
+    select = {
+        "operator": "SELECT",
+        "inputs": [],
+        "params": {"entity": "accounts", "fields": ["account_id"]},
+        "outputs": [{"name": "account_id", "data_type": "integer"}],
+    }
+    instance = {
+        "contract_version": "sqg/v0",
+        "query_id": "self_join_keys",
+        "ontology_version": "self.v1",
+        "nodes": [
+            {"id": "select_left", **select},
+            {"id": "select_right", **select},
+            {
+                "id": "join_accounts",
+                "operator": "JOIN",
+                "inputs": ["select_left", "select_right"],
+                "params": {
+                    "relation": "account_pair",
+                    "left_key": "account_id",
+                    "right_key": "account_id",
+                    "kind": "INNER",
+                    "fields": [
+                        {
+                            "source": "left",
+                            "field": "account_id",
+                            "name": "account_id",
+                        }
+                    ],
+                },
+                "outputs": [{"name": "account_id", "data_type": "integer"}],
+            },
+        ],
+        "root": "join_accounts",
+    }
+    Draft202012Validator(schema).validate(instance)
+    SemanticQueryGraph.model_validate(instance)
+
+    del instance["nodes"][-1]["params"][missing_key]
+    assert list(Draft202012Validator(schema).iter_errors(instance))
+    with pytest.raises(PydanticValidationError):
+        SemanticQueryGraph.model_validate(instance)

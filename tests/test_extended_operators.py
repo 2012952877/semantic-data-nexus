@@ -301,6 +301,8 @@ def test_derived_lineage_is_not_a_direct_join_key() -> None:
                 "inputs": ["project_derived_id", "select_customers"],
                 "params": {
                     "relation": "order_customer",
+                    "left_key": "derived_customer_id",
+                    "right_key": "customer_id",
                     "kind": "INNER",
                     "fields": [
                         {
@@ -324,7 +326,7 @@ def test_derived_lineage_is_not_a_direct_join_key() -> None:
         "root": "join_customer",
     }
     sqg = SemanticQueryGraph.model_validate(data)
-    with pytest.raises(SemanticValidationError, match="requires one direct join-key"):
+    with pytest.raises(SemanticValidationError, match="must each resolve"):
         validate_sqg(sqg, ontology)
 
 
@@ -488,6 +490,8 @@ def test_valid_pivot_and_join() -> None:
                 "inputs": ["pivot_quarter", "select_regions"],
                 "params": {
                     "relation": "sales_region",
+                    "left_key": "region",
+                    "right_key": "region",
                     "kind": "LEFT",
                     "fields": [
                         {"source": "left", "field": "region", "name": "region"},
@@ -522,6 +526,7 @@ def test_valid_pivot_and_join() -> None:
         "outputs": [{"name": "profit", "data_type": "decimal"}],
     }
     missing_keys["nodes"][-1]["inputs"][0] = "project_q1"
+    missing_keys["nodes"][-1]["params"]["left_key"] = "profit"
     missing_keys["nodes"][-1]["params"]["fields"][0] = {
         "source": "left",
         "field": "profit",
@@ -533,7 +538,7 @@ def test_valid_pivot_and_join() -> None:
         {"name": "manager", "data_type": "string"},
     ]
     sqg_without_key = SemanticQueryGraph.model_validate(missing_keys)
-    with pytest.raises(SemanticValidationError, match="requires one direct join-key"):
+    with pytest.raises(SemanticValidationError, match="do not resolve"):
         validate_sqg(sqg_without_key, _ontology())
 
 
@@ -590,6 +595,8 @@ def test_reversed_join_orientation_uses_matching_direct_bindings() -> None:
                 "inputs": ["select_accounts", "select_orders"],
                 "params": {
                     "relation": "account_orders",
+                    "left_key": "account_id",
+                    "right_key": "account_id",
                     "kind": "INNER",
                     "fields": [
                         {
@@ -616,6 +623,8 @@ def test_reversed_join_orientation_uses_matching_direct_bindings() -> None:
                 "inputs": ["join_once", "select_accounts_again"],
                 "params": {
                     "relation": "account_orders",
+                    "left_key": "order_account_id",
+                    "right_key": "account_id",
                     "kind": "INNER",
                     "fields": [
                         {
@@ -781,6 +790,8 @@ def test_outer_join_nullability_reaches_grouped_aggregate(
                 "inputs": ["select_accounts", "select_orders"],
                 "params": {
                     "relation": "account_orders",
+                    "left_key": "account_id",
+                    "right_key": "account_id",
                     "kind": join_kind,
                     "fields": [group_projection, metric_projection],
                 },
@@ -916,6 +927,8 @@ def test_measure_source_selects_one_self_join_occurrence(
                 "inputs": ["select_left", "select_right"],
                 "params": {
                     "relation": "account_pair",
+                    "left_key": "account_id",
+                    "right_key": "account_id",
                     "kind": "LEFT",
                     "fields": [
                         {
