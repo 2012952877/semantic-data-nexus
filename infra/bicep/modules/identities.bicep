@@ -35,3 +35,7 @@ output identityResourceIds array = [
   semanticApiIdentity.id
   workerIdentity.id
 ]
+output webIdentityPrincipalId string = webIdentity.properties.principalId
+output controlApiIdentityPrincipalId string = controlApiIdentity.properties.principalId
+output semanticApiIdentityPrincipalId string = semanticApiIdentity.properties.principalId
+output workerIdentityPrincipalId string = workerIdentity.properties.principalId

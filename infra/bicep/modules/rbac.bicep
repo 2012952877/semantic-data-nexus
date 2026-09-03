@@ -3,9 +3,9 @@ param keyVaultName string
 param searchServiceName string
 param azureOpenAIAccountName string
 param enableAzureOpenAI bool
-param controlApiIdentityName string
-param semanticApiIdentityName string
-param workerIdentityName string
+param controlApiIdentityPrincipalId string
+param semanticApiIdentityPrincipalId string
+param workerIdentityPrincipalId string
 
 var blobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
@@ -29,93 +29,81 @@ resource azureOpenAI 'Microsoft.CognitiveServices/accounts@2025-06-01' existing 
   name: azureOpenAIAccountName
 }
 
-resource controlApiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' existing = {
-  name: controlApiIdentityName
-}
-
-resource semanticApiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' existing = {
-  name: semanticApiIdentityName
-}
-
-resource workerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' existing = {
-  name: workerIdentityName
-}
-
 resource semanticApiBlobContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, semanticApiIdentity.id, blobDataContributorRoleId)
+  name: guid(storageAccount.id, semanticApiIdentityPrincipalId, blobDataContributorRoleId)
   scope: storageAccount
   properties: {
-    principalId: semanticApiIdentity.properties.principalId
+    principalId: semanticApiIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributorRoleId)
   }
 }
 
 resource workerBlobContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, workerIdentity.id, blobDataContributorRoleId)
+  name: guid(storageAccount.id, workerIdentityPrincipalId, blobDataContributorRoleId)
   scope: storageAccount
   properties: {
-    principalId: workerIdentity.properties.principalId
+    principalId: workerIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributorRoleId)
   }
 }
 
 resource controlApiVaultSecretAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, controlApiIdentity.id, keyVaultSecretsUserRoleId)
+  name: guid(keyVault.id, controlApiIdentityPrincipalId, keyVaultSecretsUserRoleId)
   scope: keyVault
   properties: {
-    principalId: controlApiIdentity.properties.principalId
+    principalId: controlApiIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
   }
 }
 
 resource semanticApiVaultSecretAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, semanticApiIdentity.id, keyVaultSecretsUserRoleId)
+  name: guid(keyVault.id, semanticApiIdentityPrincipalId, keyVaultSecretsUserRoleId)
   scope: keyVault
   properties: {
-    principalId: semanticApiIdentity.properties.principalId
+    principalId: semanticApiIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
   }
 }
 
 resource workerVaultSecretAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, workerIdentity.id, keyVaultSecretsUserRoleId)
+  name: guid(keyVault.id, workerIdentityPrincipalId, keyVaultSecretsUserRoleId)
   scope: keyVault
   properties: {
-    principalId: workerIdentity.properties.principalId
+    principalId: workerIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
   }
 }
 
 resource searchReaderAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(searchService.id, semanticApiIdentity.id, searchIndexDataReaderRoleId)
+  name: guid(searchService.id, semanticApiIdentityPrincipalId, searchIndexDataReaderRoleId)
   scope: searchService
   properties: {
-    principalId: semanticApiIdentity.properties.principalId
+    principalId: semanticApiIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchIndexDataReaderRoleId)
   }
 }
 
 resource searchContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(searchService.id, workerIdentity.id, searchIndexDataContributorRoleId)
+  name: guid(searchService.id, workerIdentityPrincipalId, searchIndexDataContributorRoleId)
   scope: searchService
   properties: {
-    principalId: workerIdentity.properties.principalId
+    principalId: workerIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchIndexDataContributorRoleId)
   }
 }
 
 resource azureOpenAIUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableAzureOpenAI) {
-  name: guid(azureOpenAI.id, semanticApiIdentity.id, cognitiveServicesOpenAIUserRoleId)
+  name: guid(azureOpenAI.id, semanticApiIdentityPrincipalId, cognitiveServicesOpenAIUserRoleId)
   scope: azureOpenAI
   properties: {
-    principalId: semanticApiIdentity.properties.principalId
+    principalId: semanticApiIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesOpenAIUserRoleId)
   }

@@ -179,10 +179,10 @@ module acrPull 'modules/acr-pull.bicep' = {
   name: 'least-privilege-acr-pull'
   params: {
     registryName: names.registry
-    webIdentityName: names.webIdentity
-    controlApiIdentityName: names.controlApiIdentity
-    semanticApiIdentityName: names.semanticApiIdentity
-    workerIdentityName: names.workerIdentity
+    webIdentityPrincipalId: identities.outputs.webIdentityPrincipalId
+    controlApiIdentityPrincipalId: identities.outputs.controlApiIdentityPrincipalId
+    semanticApiIdentityPrincipalId: identities.outputs.semanticApiIdentityPrincipalId
+    workerIdentityPrincipalId: identities.outputs.workerIdentityPrincipalId
   }
   dependsOn: [
     identities
@@ -311,9 +311,9 @@ module roleAssignments 'modules/rbac.bicep' = {
     searchServiceName: names.search
     azureOpenAIAccountName: names.azureOpenAI
     enableAzureOpenAI: enableAzureOpenAI
-    controlApiIdentityName: names.controlApiIdentity
-    semanticApiIdentityName: names.semanticApiIdentity
-    workerIdentityName: names.workerIdentity
+    controlApiIdentityPrincipalId: identities.outputs.controlApiIdentityPrincipalId
+    semanticApiIdentityPrincipalId: identities.outputs.semanticApiIdentityPrincipalId
+    workerIdentityPrincipalId: identities.outputs.workerIdentityPrincipalId
   }
   dependsOn: [
     identities

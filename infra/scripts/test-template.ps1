@@ -22,6 +22,76 @@ function Assert-Pattern {
     }
 }
 
+function Assert-CompiledRoleAssignmentSeeds {
+    param(
+        [object]$Template,
+        [int]$ExpectedCount,
+        [string]$Context
+    )
+
+    $assignments = @($Template.resources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' })
+    if ($assignments.Count -ne $ExpectedCount) {
+        throw "Expected $ExpectedCount compiled $Context role assignments, found $($assignments.Count)."
+    }
+
+    foreach ($assignment in $assignments) {
+        $principalExpression = [string]$assignment.properties.principalId
+        $principalMatch = [regex]::Match($principalExpression, "^\[parameters\('([^']+PrincipalId)'\)\]$")
+        if (-not $principalMatch.Success) {
+            throw "Compiled $Context assignment principalId is not supplied by a principal ID parameter."
+        }
+
+        $principalParameterReference = "parameters('$($principalMatch.Groups[1].Value)')"
+        if ([string]$assignment.name -notmatch [regex]::Escape($principalParameterReference)) {
+            throw "Compiled $Context assignment name is not seeded with its principalId parameter."
+        }
+        if ([string]$assignment.name -match 'Microsoft\.ManagedIdentity/userAssignedIdentities') {
+            throw "Compiled $Context assignment name must not be seeded with a managed identity resource ID."
+        }
+    }
+}
+
+function Assert-CompiledPrincipalOutputWiring {
+    param([object]$Template)
+
+    $expectedParameters = @{
+        'least-privilege-acr-pull' = @(
+            'webIdentityPrincipalId'
+            'controlApiIdentityPrincipalId'
+            'semanticApiIdentityPrincipalId'
+            'workerIdentityPrincipalId'
+        )
+        'least-privilege-rbac' = @(
+            'controlApiIdentityPrincipalId'
+            'semanticApiIdentityPrincipalId'
+            'workerIdentityPrincipalId'
+        )
+    }
+
+    foreach ($deploymentName in $expectedParameters.Keys) {
+        $deployment = @($Template.resources | Where-Object {
+            $_.type -eq 'Microsoft.Resources/deployments' -and $_.name -eq $deploymentName
+        })
+        if ($deployment.Count -ne 1) {
+            throw "Expected one compiled '$deploymentName' deployment, found $($deployment.Count)."
+        }
+
+        foreach ($parameterName in $expectedParameters[$deploymentName]) {
+            $parameter = $deployment[0].properties.parameters.PSObject.Properties[$parameterName]
+            if ($null -eq $parameter) {
+                throw "Compiled '$deploymentName' deployment is missing '$parameterName'."
+            }
+
+            $valueExpression = [string]$parameter.Value.value
+            $expectedOutput = ".outputs.$parameterName.value"
+            if ($valueExpression -notmatch "resourceId\('Microsoft\.Resources/deployments', 'workload-identities'\)" -or
+                -not $valueExpression.EndsWith("$expectedOutput]")) {
+                throw "Compiled '$deploymentName' parameter '$parameterName' must use the matching workload identity principal ID output."
+            }
+        }
+    }
+}
+
 $main = Read-RepoFile 'infra\bicep\main.bicep'
 $containerApps = Read-RepoFile 'infra\bicep\modules\container-apps.bicep'
 $acrPull = Read-RepoFile 'infra\bicep\modules\acr-pull.bicep'
@@ -83,7 +153,41 @@ if ($validateScript -match 'az deployment group what-if' -or $validateScript -ma
 
 $runtimeParametersFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
 $baseParametersFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
+$compiledMainFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
+$compiledAcrPullFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
+$compiledRbacFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
 try {
+    az bicep build `
+        --file (Join-Path $repoRoot 'infra\bicep\main.bicep') `
+        --outfile $compiledMainFile `
+        --only-show-errors
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to compile the main template for regression testing.'
+    }
+
+    az bicep build `
+        --file (Join-Path $repoRoot 'infra\bicep\modules\acr-pull.bicep') `
+        --outfile $compiledAcrPullFile `
+        --only-show-errors
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to compile the ACR pull module for regression testing.'
+    }
+
+    az bicep build `
+        --file (Join-Path $repoRoot 'infra\bicep\modules\rbac.bicep') `
+        --outfile $compiledRbacFile `
+        --only-show-errors
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to compile the RBAC module for regression testing.'
+    }
+
+    $compiledMain = Get-Content -LiteralPath $compiledMainFile -Raw | ConvertFrom-Json
+    $compiledAcrPull = Get-Content -LiteralPath $compiledAcrPullFile -Raw | ConvertFrom-Json
+    $compiledRbac = Get-Content -LiteralPath $compiledRbacFile -Raw | ConvertFrom-Json
+    Assert-CompiledPrincipalOutputWiring $compiledMain
+    Assert-CompiledRoleAssignmentSeeds $compiledAcrPull 4 'ACR pull'
+    Assert-CompiledRoleAssignmentSeeds $compiledRbac 8 'workload RBAC'
+
     az bicep build-params `
         --file (Join-Path $repoRoot 'infra\bicep\parameters\dev.bicepparam') `
         --outfile $baseParametersFile `
@@ -174,6 +278,15 @@ finally {
     if (Test-Path -LiteralPath $baseParametersFile) {
         Remove-Item -LiteralPath $baseParametersFile -Force
     }
+    if (Test-Path -LiteralPath $compiledMainFile) {
+        Remove-Item -LiteralPath $compiledMainFile -Force
+    }
+    if (Test-Path -LiteralPath $compiledAcrPullFile) {
+        Remove-Item -LiteralPath $compiledAcrPullFile -Force
+    }
+    if (Test-Path -LiteralPath $compiledRbacFile) {
+        Remove-Item -LiteralPath $compiledRbacFile -Force
+    }
 }
 
-Write-Host 'Infrastructure regression assertions passed: identity ordering, worker entrypoint, endpoint, firewall reconciliation docs, and structural ARM parameter JSON.'
+Write-Host 'Infrastructure regression assertions passed: identity ordering, principal-seeded RBAC, worker entrypoint, endpoint, firewall reconciliation docs, and structural ARM parameter JSON.'
