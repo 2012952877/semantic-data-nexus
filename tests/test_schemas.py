@@ -10,7 +10,12 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError as PydanticValidationError
 
 from semantic_core.cli import _load_json
-from semantic_core.models import Ontology, SemanticQueryGraph
+from semantic_core.models import (
+    DecimalLiteral,
+    IntegerLiteral,
+    Ontology,
+    SemanticQueryGraph,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -244,3 +249,73 @@ def test_join_key_aliases_are_required_by_schema_and_model(
     assert list(Draft202012Validator(schema).iter_errors(instance))
     with pytest.raises(PydanticValidationError):
         SemanticQueryGraph.model_validate(instance)
+
+
+@pytest.mark.parametrize("terminator", ["\n", "\r", "\r\n"])
+def test_identifier_terminal_newlines_fail_schema_and_model(
+    terminator: str,
+) -> None:
+    ontology_schema = json.loads(
+        (ROOT / "contracts" / "v0" / "ontology.schema.json").read_text()
+    )
+    ontology = json.loads((ROOT / "examples" / "retail-ontology.json").read_text())
+    ontology["ontology_id"] += terminator
+    assert list(Draft202012Validator(ontology_schema).iter_errors(ontology))
+    with pytest.raises(PydanticValidationError):
+        Ontology.model_validate(ontology)
+
+    sqg_schema = json.loads(
+        (ROOT / "contracts" / "v0" / "sqg.schema.json").read_text()
+    )
+    sqg = json.loads(
+        (ROOT / "examples" / "regional-quarter-profit.json").read_text()
+    )
+    sqg["query_id"] += terminator
+    assert list(Draft202012Validator(sqg_schema).iter_errors(sqg))
+    with pytest.raises(PydanticValidationError):
+        SemanticQueryGraph.model_validate(sqg)
+
+
+@pytest.mark.parametrize("terminator", ["\n", "\r", "\r\n"])
+@pytest.mark.parametrize(
+    ("definition", "model", "kind", "value"),
+    [
+        ("integerLiteral", IntegerLiteral, "integer", "42"),
+        ("decimalLiteral", DecimalLiteral, "decimal", "42.125"),
+    ],
+)
+def test_tagged_number_terminal_newlines_fail_schema_and_model(
+    terminator: str,
+    definition: str,
+    model: type,
+    kind: str,
+    value: str,
+) -> None:
+    schema = json.loads((ROOT / "contracts" / "v0" / "sqg.schema.json").read_text())
+    instance = {"kind": kind, "value": value + terminator}
+    assert list(
+        Draft202012Validator(schema["$defs"][definition]).iter_errors(instance)
+    )
+    with pytest.raises(PydanticValidationError):
+        model.model_validate(instance)
+
+
+@pytest.mark.parametrize("terminator", ["\n", "\r", "\r\n"])
+def test_sha256_requires_exactly_64_hex_characters(terminator: str) -> None:
+    schema = json.loads(
+        (ROOT / "contracts" / "v0" / "result-manifest.schema.json").read_text()
+    )
+    manifest = {
+        "contract_version": "result-manifest/v0",
+        "manifest_id": "manifest-1",
+        "run_id": "run-1",
+        "format": "parquet",
+        "row_count": 1,
+        "byte_count": 10,
+        "parts": [{"uri": "results/part-0.parquet", "sha256": "a" * 64}],
+        "committed_at": "2026-09-03T12:00:00Z",
+        "committed": True,
+    }
+    Draft202012Validator(schema).validate(manifest)
+    manifest["parts"][0]["sha256"] += terminator
+    assert list(Draft202012Validator(schema).iter_errors(manifest))

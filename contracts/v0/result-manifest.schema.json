@@ -24,7 +24,12 @@
         "required": ["uri", "sha256"],
         "properties": {
           "uri": { "type": "string", "minLength": 1 },
-          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          "sha256": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[a-f0-9]{64}$"
+          }
         }
       }
     },
@@ -32,4 +37,3 @@
     "committed": { "const": true }
   }
 }
-
