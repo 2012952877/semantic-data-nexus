@@ -1,0 +1,7 @@
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.query-runtime-results/
+dist/
+src/*.egg-info/
+**/__pycache__/
