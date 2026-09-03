@@ -18,6 +18,14 @@ class TransportHttpError(DatabricksResolverError):
         super().__init__(f"Databricks HTTP request failed with status {status_code}{suffix}")
 
 
+class TransportError(DatabricksResolverError):
+    """A transport operation failed without exposing request data."""
+
+
+class TransportTimeoutError(TransportError):
+    """A transport operation exceeded its request timeout."""
+
+
 class ProtocolError(DatabricksResolverError):
     """The service response does not satisfy the documented API contract."""
 
@@ -31,9 +39,12 @@ class ResultLimitExceededError(DatabricksResolverError):
 
 
 class StatementTimeoutError(DatabricksResolverError):
-    def __init__(self, statement_id: str) -> None:
+    def __init__(self, statement_id: str | None) -> None:
         self.statement_id = statement_id
-        super().__init__(f"Statement {statement_id} exceeded its execution deadline")
+        if statement_id is None:
+            super().__init__("Statement submission exceeded its execution deadline")
+        else:
+            super().__init__(f"Statement {statement_id} exceeded its execution deadline")
 
 
 class StatementFailedError(DatabricksResolverError):

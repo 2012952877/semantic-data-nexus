@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from semantic_data_nexus_databricks.auth import EnvironmentPatProvider
@@ -41,6 +43,47 @@ def test_inline_arrow_combination_is_rejected() -> None:
             warehouse_id="warehouse-test",
             disposition=FetchDisposition.INLINE,
             result_format=ResultFormat.ARROW_STREAM,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_timeout_seconds", math.nan),
+        ("statement_timeout_seconds", math.inf),
+        ("poll_initial_seconds", math.nan),
+        ("poll_max_seconds", -math.inf),
+    ],
+)
+def test_durations_must_be_positive_and_finite(field: str, value: float) -> None:
+    values = {
+        "workspace_host": "workspace.example.invalid",
+        "warehouse_id": "warehouse-test",
+        field: value,
+    }
+    with pytest.raises(ConfigurationError):
+        ResolverConfig(**values)  # type: ignore[arg-type]
+
+
+def test_submit_timeout_includes_server_wait_overhead() -> None:
+    value = ResolverConfig(
+        workspace_host="workspace.example.invalid",
+        warehouse_id="warehouse-test",
+        request_timeout_seconds=1,
+        statement_timeout_seconds=10,
+        api_wait_timeout_seconds=5,
+    )
+    assert value.submit_request_timeout_seconds == 7
+
+
+def test_statement_timeout_must_include_server_wait_overhead() -> None:
+    with pytest.raises(ConfigurationError, match="overhead"):
+        ResolverConfig(
+            workspace_host="workspace.example.invalid",
+            warehouse_id="warehouse-test",
+            request_timeout_seconds=1,
+            statement_timeout_seconds=6,
+            api_wait_timeout_seconds=5,
         )
 
 

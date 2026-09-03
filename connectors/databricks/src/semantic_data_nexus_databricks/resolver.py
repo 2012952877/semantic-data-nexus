@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import re
+
+from sqlglot import exp, parse
+from sqlglot.errors import SqlglotError
 
 from .client import StatementExecutionClient
 from .exceptions import ProtocolError, UnsafeStatementError
@@ -13,102 +15,42 @@ from .models import (
     TabularResult,
 )
 
-_DENIED_KEYWORDS = frozenset(
-    {
-        "ALTER",
-        "CALL",
-        "COPY",
-        "CREATE",
-        "DELETE",
-        "DROP",
-        "GRANT",
-        "INSERT",
-        "MERGE",
-        "OPTIMIZE",
-        "REPLACE",
-        "RESTORE",
-        "REVOKE",
-        "SET",
-        "TRUNCATE",
-        "UPDATE",
-        "USE",
-        "VACUUM",
-    }
-)
-_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_MARKER = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def _mask_literals_and_comments(sql: str) -> str:
-    output: list[str] = []
-    index = 0
-    quote: str | None = None
-    while index < len(sql):
-        current = sql[index]
-        following = sql[index + 1] if index + 1 < len(sql) else ""
-        if quote is not None:
-            output.append(" ")
-            if current == quote:
-                if following == quote:
-                    output.append(" ")
-                    index += 2
-                    continue
-                quote = None
-            index += 1
-            continue
-        if current in ("'", '"', "`"):
-            quote = current
-            output.append(" ")
-            index += 1
-            continue
-        if current == "-" and following == "-":
-            while index < len(sql) and sql[index] not in "\r\n":
-                output.append(" ")
-                index += 1
-            continue
-        if current == "/" and following == "*":
-            output.extend((" ", " "))
-            index += 2
-            while index < len(sql):
-                if sql[index] == "*" and index + 1 < len(sql) and sql[index + 1] == "/":
-                    output.extend((" ", " "))
-                    index += 2
-                    break
-                output.append(" ")
-                index += 1
-            else:
-                raise UnsafeStatementError("SQL contains an unterminated block comment")
-            continue
-        output.append(current)
-        index += 1
-    if quote is not None:
-        raise UnsafeStatementError("SQL contains an unterminated quoted value")
-    return "".join(output)
-
 
 def validate_fragment(fragment: PhysicalSourceFragment) -> None:
     if not fragment.source_name.strip():
         raise UnsafeStatementError("source_name is required")
-    masked = _mask_literals_and_comments(fragment.sql).strip()
-    if not masked:
+    if not fragment.sql.strip():
         raise UnsafeStatementError("SQL statement is empty")
-    if ";" in masked:
-        if masked.count(";") != 1 or not masked.endswith(";"):
-            raise UnsafeStatementError("Multiple SQL statements are not allowed")
-        masked = masked[:-1].rstrip()
+    try:
+        parsed = parse(fragment.sql, read="databricks")
+    except SqlglotError as error:
+        raise UnsafeStatementError("SQL is not valid Databricks syntax") from error
+    statements = [
+        statement
+        for statement in parsed
+        if statement is not None and not isinstance(statement, exp.Semicolon)
+    ]
+    if len(statements) != 1:
+        raise UnsafeStatementError("Exactly one SQL statement is required")
+    statement = statements[0]
+    if statement is None or not isinstance(statement, exp.Query):
+        raise UnsafeStatementError("M0 accepts only a read-only query")
+    if any(
+        isinstance(node, (exp.DML, exp.DDL, exp.Command))
+        for node in statement.walk()
+    ):
+        raise UnsafeStatementError("Query AST contains a non-read-only operation")
+    if statement.find(exp.Into) is not None:
+        raise UnsafeStatementError("SELECT INTO is not read-only")
+    if any(not isinstance(cte.this, exp.Query) for cte in statement.find_all(exp.CTE)):
+        raise UnsafeStatementError("Every CTE body must be a read-only query")
+    if statement.find(exp.Parameter) is not None:
+        raise UnsafeStatementError("Only named parameter markers are supported")
 
-    words = [match.group(0).upper() for match in _WORD.finditer(masked)]
-    if not words or words[0] not in {"SELECT", "WITH"}:
-        raise UnsafeStatementError("M0 accepts only SELECT or WITH queries")
-    denied = _DENIED_KEYWORDS.intersection(words)
-    if denied:
-        raise UnsafeStatementError(
-            f"Read-only statement contains denied keyword {sorted(denied)[0]}"
-        )
-    if "?" in masked:
+    placeholders = tuple(statement.find_all(exp.Placeholder))
+    if any(placeholder.name == "?" or not placeholder.this for placeholder in placeholders):
         raise UnsafeStatementError("Positional parameters are not supported")
-
-    markers = set(_MARKER.findall(masked))
+    markers = {placeholder.name for placeholder in placeholders}
     names = [parameter.name for parameter in fragment.parameters]
     if len(names) != len(set(names)):
         raise UnsafeStatementError("Parameter names must be unique")

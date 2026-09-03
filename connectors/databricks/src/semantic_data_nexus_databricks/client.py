@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from typing import cast
+from typing import Never, cast
 from urllib.parse import urlsplit
 
 from .auth import BearerTokenProvider
@@ -18,7 +18,9 @@ from .exceptions import (
     StatementClosedError,
     StatementFailedError,
     StatementTimeoutError,
+    TransportError,
     TransportHttpError,
+    TransportTimeoutError,
 )
 from .models import (
     CellValue,
@@ -44,6 +46,10 @@ _REQUEST_ID_HEADERS = (
 )
 
 
+class _DeadlineExceeded(Exception):
+    pass
+
+
 class StatementExecutionClient:
     def __init__(
         self,
@@ -66,10 +72,14 @@ class StatementExecutionClient:
         await self._transport.aclose()
 
     async def cancel(self, statement_id: str) -> None:
+        await self._cancel(statement_id, self._config.request_timeout_seconds)
+
+    async def _cancel(self, statement_id: str, timeout_seconds: float) -> None:
         await self._api_request(
             "POST",
             f"/api/2.0/sql/statements/{statement_id}/cancel",
             json_body={},
+            timeout_seconds=timeout_seconds,
         )
         self._emit(
             "DBR_CANCEL_REQUESTED",
@@ -84,11 +94,14 @@ class StatementExecutionClient:
         parameters: tuple[StatementParameter, ...] = (),
     ) -> StatementExecutionResult:
         started = self._clock()
-        response = await self._submit(statement, parameters)
+        deadline = started + self._config.statement_timeout_seconds
+        try:
+            response = await self._submit(statement, parameters, deadline)
+        except _DeadlineExceeded:
+            await self._handle_timeout(None, started, cancel=False)
         statement_id = response.statement_id
         request_ids = [response.request_id] if response.request_id else []
         delay = self._config.poll_initial_seconds
-        deadline = started + self._config.statement_timeout_seconds
         if self._clock() >= deadline:
             await self._handle_timeout(
                 statement_id,
@@ -101,7 +114,12 @@ class StatementExecutionClient:
             if now >= deadline:
                 await self._handle_timeout(statement_id, started)
             await self._sleep(min(delay, max(0.0, deadline - now)))
-            response = await self._get_statement(statement_id)
+            if self._clock() >= deadline:
+                await self._handle_timeout(statement_id, started)
+            try:
+                response = await self._get_statement(statement_id, deadline)
+            except _DeadlineExceeded:
+                await self._handle_timeout(statement_id, started)
             if self._clock() >= deadline:
                 await self._handle_timeout(
                     statement_id,
@@ -141,7 +159,10 @@ class StatementExecutionClient:
         if response.status.state is not StatementState.SUCCEEDED:
             raise ProtocolError(f"Unsupported terminal state {response.status.state.value}")
 
-        result = await self._collect_result(response, started, request_ids)
+        try:
+            result = await self._collect_result(response, started, deadline, request_ids)
+        except _DeadlineExceeded:
+            await self._handle_timeout(statement_id, started, cancel=False)
         self._emit(
             "DBR_STATEMENT_SUCCEEDED",
             DiagnosticLevel.INFO,
@@ -155,13 +176,25 @@ class StatementExecutionClient:
 
     async def _handle_timeout(
         self,
-        statement_id: str,
+        statement_id: str | None,
         started: float,
         *,
         cancel: bool = True,
-    ) -> None:
-        if cancel and self._config.cancel_on_timeout:
-            await self.cancel(statement_id)
+    ) -> Never:
+        if cancel and self._config.cancel_on_timeout and statement_id is not None:
+            try:
+                await self._cancel(
+                    statement_id,
+                    min(self._config.request_timeout_seconds, 2.0),
+                )
+            except Exception:
+                # Cancellation is cleanup; never replace the primary deadline failure.
+                self._emit(
+                    "DBR_CANCEL_FAILED",
+                    DiagnosticLevel.WARNING,
+                    "Statement cancellation request failed",
+                    statement_id=statement_id,
+                )
         self._emit(
             "DBR_STATEMENT_TIMEOUT",
             DiagnosticLevel.ERROR,
@@ -175,6 +208,7 @@ class StatementExecutionClient:
         self,
         statement: str,
         parameters: tuple[StatementParameter, ...],
+        deadline: float,
     ) -> StatementResponse:
         body: dict[str, object] = {
             "statement": statement,
@@ -193,6 +227,8 @@ class StatementExecutionClient:
             "POST",
             "/api/2.0/sql/statements",
             json_body=body,
+            deadline=deadline,
+            timeout_seconds=self._config.submit_request_timeout_seconds,
         )
         response = self._parse_statement_response(raw, request_id)
         self._emit(
@@ -205,21 +241,36 @@ class StatementExecutionClient:
         )
         return response
 
-    async def _get_statement(self, statement_id: str) -> StatementResponse:
+    async def _get_statement(
+        self,
+        statement_id: str,
+        deadline: float,
+    ) -> StatementResponse:
         raw, request_id = await self._api_request(
             "GET",
             f"/api/2.0/sql/statements/{statement_id}",
+            deadline=deadline,
         )
         return self._parse_statement_response(raw, request_id)
 
-    async def _get_chunk(self, statement_id: str, chunk_index: int) -> dict[str, object]:
+    async def _get_chunk(
+        self,
+        statement_id: str,
+        chunk_index: int,
+        deadline: float,
+    ) -> dict[str, object]:
         raw, _ = await self._api_request(
             "GET",
             f"/api/2.0/sql/statements/{statement_id}/result/chunks/{chunk_index}",
+            deadline=deadline,
         )
         return raw
 
-    async def _get_internal_chunk(self, internal_link: str) -> dict[str, object]:
+    async def _get_internal_chunk(
+        self,
+        internal_link: str,
+        deadline: float,
+    ) -> dict[str, object]:
         parsed = urlsplit(internal_link)
         if parsed.scheme or parsed.netloc or not parsed.path.startswith(
             "/api/2.0/sql/statements/"
@@ -228,6 +279,7 @@ class StatementExecutionClient:
         raw, _ = await self._api_request(
             "GET",
             parsed.path + (f"?{parsed.query}" if parsed.query else ""),
+            deadline=deadline,
         )
         return raw
 
@@ -235,6 +287,7 @@ class StatementExecutionClient:
         self,
         response: StatementResponse,
         started: float,
+        deadline: float,
         request_ids: list[str],
     ) -> StatementExecutionResult:
         manifest = response.manifest
@@ -261,8 +314,9 @@ class StatementExecutionClient:
             ) = await self._consume_chunk(
                 current,
                 manifest.result_format,
+                deadline,
             )
-            if self._clock() >= started + self._config.statement_timeout_seconds:
+            if self._clock() >= deadline:
                 await self._handle_timeout(response.statement_id, started, cancel=False)
             rows.extend(chunk_rows)
             payloads.extend(chunk_payloads)
@@ -294,9 +348,13 @@ class StatementExecutionClient:
                 if next_index in seen_chunks:
                     raise ProtocolError("Result chunk sequence contains a cycle")
                 seen_chunks.add(next_index)
-                current = await self._get_chunk(response.statement_id, next_index)
+                current = await self._get_chunk(
+                    response.statement_id,
+                    next_index,
+                    deadline,
+                )
             elif next_internal is not None:
-                current = await self._get_internal_chunk(next_internal)
+                current = await self._get_internal_chunk(next_internal, deadline)
             else:
                 current = None
 
@@ -314,6 +372,7 @@ class StatementExecutionClient:
         self,
         chunk: Mapping[str, object],
         result_format: ResultFormat,
+        deadline: float,
     ) -> tuple[
         list[tuple[CellValue, ...]],
         list[bytes],
@@ -332,7 +391,8 @@ class StatementExecutionClient:
                 raise ProtocolError("external_links must be an array")
             for raw_link in external_links:
                 payload, link_next_index, link_next_internal = await self._fetch_external_link(
-                    raw_link
+                    raw_link,
+                    deadline,
                 )
                 if (
                     next_index is not None
@@ -360,6 +420,7 @@ class StatementExecutionClient:
     async def _fetch_external_link(
         self,
         raw_link: object,
+        deadline: float,
     ) -> tuple[bytes, int | None, str | None]:
         if not isinstance(raw_link, dict):
             raise ProtocolError("external link must be an object")
@@ -375,12 +436,13 @@ class StatementExecutionClient:
         headers = cast(dict[str, str], raw_headers)
         if any(key.lower() == "authorization" for key in headers):
             raise ProtocolError("external link must not receive an Authorization header")
-        response = await self._transport.request(
+        response = await self._transport_request(
             "GET",
             url,
             headers=headers,
             json_body=None,
             timeout_seconds=self._config.request_timeout_seconds,
+            deadline=deadline,
         )
         self._ensure_success(response)
         self._emit(
@@ -423,20 +485,37 @@ class StatementExecutionClient:
         path: str,
         *,
         json_body: Mapping[str, object] | None = None,
+        deadline: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, object], str | None]:
-        token = await self._auth.get_token()
+        auth_timeout, auth_deadline_limited = self._effective_timeout(
+            timeout_seconds or self._config.request_timeout_seconds,
+            deadline,
+        )
+        try:
+            async with asyncio.timeout(auth_timeout):
+                token = await self._auth.get_token()
+        except TimeoutError as error:
+            if (
+                auth_deadline_limited
+                and deadline is not None
+                and self._clock() >= deadline
+            ):
+                raise _DeadlineExceeded from error
+            raise TransportError("Authentication provider timed out") from error
         headers = {
             "Accept": "application/json",
             **token.authorization_header(),
         }
         if json_body is not None:
             headers["Content-Type"] = "application/json"
-        response = await self._transport.request(
+        response = await self._transport_request(
             method,
             f"{self._config.workspace_host}{path}",
             headers=headers,
             json_body=json_body,
-            timeout_seconds=self._config.request_timeout_seconds,
+            timeout_seconds=timeout_seconds or self._config.request_timeout_seconds,
+            deadline=deadline,
         )
         self._ensure_success(response)
         request_id = self._request_id(response.headers)
@@ -445,6 +524,58 @@ class StatementExecutionClient:
         if not isinstance(response.json_body, dict):
             raise ProtocolError("Databricks API response must be a JSON object")
         return cast(dict[str, object], response.json_body), request_id
+
+    async def _transport_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        json_body: Mapping[str, object] | None,
+        timeout_seconds: float,
+        deadline: float | None,
+    ) -> HttpResponse:
+        effective_timeout, deadline_limited = self._effective_timeout(
+            timeout_seconds,
+            deadline,
+        )
+        try:
+            async with asyncio.timeout(effective_timeout):
+                return await self._transport.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json_body=json_body,
+                    timeout_seconds=effective_timeout,
+                )
+        except TransportTimeoutError as error:
+            if (
+                deadline_limited
+                and deadline is not None
+                and self._clock() >= deadline
+            ):
+                raise _DeadlineExceeded from error
+            raise
+        except TimeoutError as error:
+            if (
+                deadline_limited
+                and deadline is not None
+                and self._clock() >= deadline
+            ):
+                raise _DeadlineExceeded from error
+            raise TransportError("HTTP transport request timed out") from error
+
+    def _effective_timeout(
+        self,
+        timeout_seconds: float,
+        deadline: float | None,
+    ) -> tuple[float, bool]:
+        if deadline is None:
+            return timeout_seconds, False
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise _DeadlineExceeded
+        return min(timeout_seconds, remaining), remaining <= timeout_seconds
 
     @staticmethod
     def _ensure_success(response: HttpResponse) -> None:

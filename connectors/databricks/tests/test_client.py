@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from decimal import Decimal
 
+import httpx
 import pytest
 from conftest import SyntheticTokenProvider, config
 
+from semantic_data_nexus_databricks.auth import BearerToken, BearerTokenProvider
 from semantic_data_nexus_databricks.client import StatementExecutionClient
 from semantic_data_nexus_databricks.diagnostics import InMemoryDiagnosticSink
 from semantic_data_nexus_databricks.exceptions import (
     ResultLimitExceededError,
     StatementFailedError,
     StatementTimeoutError,
+    TransportTimeoutError,
 )
 from semantic_data_nexus_databricks.models import (
     FetchDisposition,
@@ -19,8 +23,97 @@ from semantic_data_nexus_databricks.models import (
     StatementParameter,
 )
 from semantic_data_nexus_databricks.testing import FakeTransport
+from semantic_data_nexus_databricks.transport import HttpResponse, HttpxTransport
 
 BASE = "https://workspace.example.invalid"
+
+
+class ManualClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+class AdvancingFakeTransport(FakeTransport):
+    def __init__(self, clock: ManualClock, advance_to: float) -> None:
+        super().__init__()
+        self._clock = clock
+        self._advance_to = advance_to
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        json_body: Mapping[str, object] | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response_value = await super().request(
+            method,
+            url,
+            headers=headers,
+            json_body=json_body,
+            timeout_seconds=timeout_seconds,
+        )
+        self._clock.now = self._advance_to
+        return response_value
+
+
+class DeadlineTimeoutTransport(FakeTransport):
+    def __init__(self, clock: ManualClock, deadline: float) -> None:
+        super().__init__()
+        self._clock = clock
+        self._deadline = deadline
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        json_body: Mapping[str, object] | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        if method == "GET":
+            self._clock.now = self._deadline
+            raise TransportTimeoutError("synthetic transport timeout")
+        return await super().request(
+            method,
+            url,
+            headers=headers,
+            json_body=json_body,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class ImmediateTimeoutTransport(FakeTransport):
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        json_body: Mapping[str, object] | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        raise TransportTimeoutError("synthetic immediate timeout")
+
+
+class FailingCancellationTokenProvider(BearerTokenProvider):
+    def __init__(self) -> None:
+        self._calls = 0
+
+    async def get_token(self) -> BearerToken:
+        self._calls += 1
+        if self._calls > 1:
+            raise RuntimeError("synthetic provider failure")
+        return BearerToken("synthetic-test-token")
 
 
 def response(
@@ -99,7 +192,28 @@ async def test_successful_inline_result_and_typed_parameters() -> None:
     assert body["warehouse_id"] == "warehouse-test"
     assert transport.requests[0].headers["Authorization"] == "Bearer synthetic-test-token"
     assert result.request_ids == ("request-test",)
+    assert transport.requests[0].timeout_seconds == 10
     transport.assert_drained()
+
+
+async def test_submit_uses_timeout_longer_than_server_wait() -> None:
+    transport = FakeTransport()
+    transport.enqueue(
+        "POST",
+        f"{BASE}/api/2.0/sql/statements",
+        json_body=response("SUCCEEDED"),
+    )
+    client = StatementExecutionClient(
+        config(
+            request_timeout_seconds=1,
+            statement_timeout_seconds=10,
+            api_wait_timeout_seconds=5,
+        ),
+        SyntheticTokenProvider(),
+        transport=transport,
+    )
+    await client.execute("SELECT region FROM orders")
+    assert transport.requests[0].timeout_seconds == 7
 
 
 async def test_polling_reaches_success_with_bounded_delays() -> None:
@@ -163,34 +277,33 @@ async def test_deadline_requests_cancellation() -> None:
         f"{BASE}/api/2.0/sql/statements/statement-test/cancel",
         json_body={},
     )
-    moments = iter((0.0, 2.0, 2.0, 2.0))
-
-    def clock() -> float:
-        return next(moments)
+    clock = ManualClock()
 
     client = StatementExecutionClient(
-        config(statement_timeout_seconds=1.0),
+        config(
+            statement_timeout_seconds=0.1,
+            poll_initial_seconds=0.1,
+            poll_max_seconds=0.1,
+        ),
         SyntheticTokenProvider(),
         transport=transport,
         clock=clock,
+        sleeper=clock.sleep,
     )
     with pytest.raises(StatementTimeoutError):
         await client.execute("SELECT region FROM orders")
     assert transport.requests[-1].url.endswith("/statement-test/cancel")
+    assert all(request.method != "GET" for request in transport.requests)
 
 
 async def test_deadline_applies_to_terminal_submit_response() -> None:
-    transport = FakeTransport()
+    clock = ManualClock()
+    transport = AdvancingFakeTransport(clock, advance_to=2.0)
     transport.enqueue(
         "POST",
         f"{BASE}/api/2.0/sql/statements",
         json_body=response("SUCCEEDED"),
     )
-    moments = iter((0.0, 2.0, 2.0))
-
-    def clock() -> float:
-        return next(moments)
-
     client = StatementExecutionClient(
         config(statement_timeout_seconds=1.0),
         SyntheticTokenProvider(),
@@ -200,6 +313,145 @@ async def test_deadline_applies_to_terminal_submit_response() -> None:
     with pytest.raises(StatementTimeoutError):
         await client.execute("SELECT region FROM orders")
     assert len(transport.requests) == 1
+
+
+async def test_cancellation_failure_does_not_mask_timeout() -> None:
+    transport = FakeTransport()
+    transport.enqueue("POST", f"{BASE}/api/2.0/sql/statements", json_body=response("PENDING"))
+    transport.enqueue(
+        "POST",
+        f"{BASE}/api/2.0/sql/statements/statement-test/cancel",
+        status_code=503,
+        json_body={"error_code": "TEMPORARILY_UNAVAILABLE"},
+    )
+    clock = ManualClock()
+    diagnostics = InMemoryDiagnosticSink()
+    client = StatementExecutionClient(
+        config(
+            statement_timeout_seconds=0.1,
+            poll_initial_seconds=0.1,
+            poll_max_seconds=0.1,
+        ),
+        SyntheticTokenProvider(),
+        transport=transport,
+        clock=clock,
+        sleeper=clock.sleep,
+        diagnostics=diagnostics,
+    )
+    with pytest.raises(StatementTimeoutError):
+        await client.execute("SELECT region FROM orders")
+    assert [event.code for event in diagnostics.events][-2:] == [
+        "DBR_CANCEL_FAILED",
+        "DBR_STATEMENT_TIMEOUT",
+    ]
+
+
+async def test_unexpected_cancellation_failure_does_not_mask_timeout() -> None:
+    transport = FakeTransport()
+    transport.enqueue("POST", f"{BASE}/api/2.0/sql/statements", json_body=response("PENDING"))
+    clock = ManualClock()
+    diagnostics = InMemoryDiagnosticSink()
+    client = StatementExecutionClient(
+        config(
+            statement_timeout_seconds=0.1,
+            poll_initial_seconds=0.1,
+            poll_max_seconds=0.1,
+        ),
+        FailingCancellationTokenProvider(),
+        transport=transport,
+        clock=clock,
+        sleeper=clock.sleep,
+        diagnostics=diagnostics,
+    )
+    with pytest.raises(StatementTimeoutError):
+        await client.execute("SELECT region FROM orders")
+    assert diagnostics.events[-2].code == "DBR_CANCEL_FAILED"
+    assert diagnostics.events[-1].code == "DBR_STATEMENT_TIMEOUT"
+
+
+@pytest.mark.parametrize("content", [b"{", b"\xff"])
+async def test_malformed_cancellation_response_does_not_mask_timeout(
+    content: bytes,
+) -> None:
+    call_count = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if request.url.path.endswith("/cancel"):
+            return httpx.Response(
+                200,
+                content=content,
+                headers={"content-type": "application/json"},
+            )
+        return httpx.Response(
+            200,
+            json=response("PENDING"),
+            headers={"content-type": "application/json"},
+        )
+
+    clock = ManualClock()
+    diagnostics = InMemoryDiagnosticSink()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = StatementExecutionClient(
+            config(
+                statement_timeout_seconds=0.1,
+                poll_initial_seconds=0.1,
+                poll_max_seconds=0.1,
+            ),
+            SyntheticTokenProvider(),
+            transport=HttpxTransport(http_client),
+            clock=clock,
+            sleeper=clock.sleep,
+            diagnostics=diagnostics,
+        )
+        with pytest.raises(StatementTimeoutError):
+            await client.execute("SELECT region FROM orders")
+
+    assert call_count == 2
+    assert [event.code for event in diagnostics.events][-2:] == [
+        "DBR_CANCEL_FAILED",
+        "DBR_STATEMENT_TIMEOUT",
+    ]
+
+
+async def test_deadline_limited_transport_timeout_uses_statement_timeout() -> None:
+    clock = ManualClock()
+    transport = DeadlineTimeoutTransport(clock, deadline=0.2)
+    transport.enqueue("POST", f"{BASE}/api/2.0/sql/statements", json_body=response("PENDING"))
+    transport.enqueue(
+        "POST",
+        f"{BASE}/api/2.0/sql/statements/statement-test/cancel",
+        json_body={},
+    )
+    diagnostics = InMemoryDiagnosticSink()
+    client = StatementExecutionClient(
+        config(
+            statement_timeout_seconds=0.2,
+            poll_initial_seconds=0.1,
+            poll_max_seconds=0.1,
+        ),
+        SyntheticTokenProvider(),
+        transport=transport,
+        clock=clock,
+        sleeper=clock.sleep,
+        diagnostics=diagnostics,
+    )
+    with pytest.raises(StatementTimeoutError):
+        await client.execute("SELECT region FROM orders")
+    assert transport.requests[-1].url.endswith("/statement-test/cancel")
+    assert diagnostics.events[-1].code == "DBR_STATEMENT_TIMEOUT"
+
+
+async def test_immediate_transport_timeout_keeps_transport_identity() -> None:
+    client = StatementExecutionClient(
+        config(request_timeout_seconds=1, statement_timeout_seconds=1),
+        SyntheticTokenProvider(),
+        transport=ImmediateTimeoutTransport(),
+        clock=ManualClock(),
+    )
+    with pytest.raises(TransportTimeoutError):
+        await client.execute("SELECT region FROM orders")
 
 
 async def test_explicit_cancellation() -> None:

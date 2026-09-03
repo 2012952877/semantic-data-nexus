@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -9,6 +10,7 @@ from .models import FetchDisposition, ResultFormat, WaitTimeoutAction
 
 _HTTP_PATH = re.compile(r"^/sql/1[.]0/warehouses/(?P<warehouse_id>[A-Za-z0-9_-]+)$")
 _WAREHOUSE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+_SUBMIT_TIMEOUT_OVERHEAD_SECONDS = 2.0
 
 
 def _normalize_host(value: str) -> str:
@@ -82,17 +84,25 @@ class ResolverConfig:
 
         if not self.catalog.strip() or not self.schema.strip():
             raise ConfigurationError("catalog and schema defaults must be non-empty")
-        if self.request_timeout_seconds <= 0 or self.statement_timeout_seconds <= 0:
+        durations = (
+            self.request_timeout_seconds,
+            self.statement_timeout_seconds,
+            self.poll_initial_seconds,
+            self.poll_max_seconds,
+        )
+        if not all(math.isfinite(value) and value > 0 for value in durations):
             raise ConfigurationError("request and statement timeouts must be positive")
-        if self.poll_initial_seconds <= 0 or self.poll_max_seconds <= 0:
-            raise ConfigurationError("poll intervals must be positive")
         if self.poll_initial_seconds > self.poll_max_seconds:
             raise ConfigurationError("poll_initial_seconds cannot exceed poll_max_seconds")
         if self.api_wait_timeout_seconds != 0 and not 5 <= self.api_wait_timeout_seconds <= 50:
             raise ConfigurationError("api_wait_timeout_seconds must be 0 or between 5 and 50")
-        if self.api_wait_timeout_seconds > self.statement_timeout_seconds:
+        if (
+            self.api_wait_timeout_seconds
+            and self.statement_timeout_seconds
+            <= self.api_wait_timeout_seconds + _SUBMIT_TIMEOUT_OVERHEAD_SECONDS
+        ):
             raise ConfigurationError(
-                "api_wait_timeout_seconds cannot exceed statement_timeout_seconds"
+                "statement_timeout_seconds must include API wait timeout overhead"
             )
         if self.row_limit <= 0 or self.byte_limit <= 0:
             raise ConfigurationError("row_limit and byte_limit must be positive")
@@ -105,3 +115,10 @@ class ResolverConfig:
     @property
     def api_wait_timeout(self) -> str:
         return f"{self.api_wait_timeout_seconds}s"
+
+    @property
+    def submit_request_timeout_seconds(self) -> float:
+        return max(
+            self.request_timeout_seconds,
+            self.api_wait_timeout_seconds + _SUBMIT_TIMEOUT_OVERHEAD_SECONDS,
+        )

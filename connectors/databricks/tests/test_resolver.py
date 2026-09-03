@@ -17,8 +17,24 @@ BASE = "https://workspace.example.invalid"
     [
         "DELETE FROM orders",
         "SELECT region FROM orders; SELECT amount FROM orders",
-        "WITH changed AS (UPDATE orders SET amount = 0) SELECT * FROM changed",
         "SELECT region FROM orders WHERE region = ?",
+        "WITH changed AS (INSERT INTO orders SELECT * FROM staged) SELECT * FROM changed",
+        "WITH changed AS (UPDATE orders SET amount = 0) SELECT * FROM changed",
+        "WITH changed AS (DELETE FROM orders RETURNING *) SELECT * FROM changed",
+        (
+            "WITH changed AS (MERGE INTO orders USING staged ON orders.id = staged.id "
+            "WHEN MATCHED THEN UPDATE SET amount = staged.amount) SELECT * FROM changed"
+        ),
+        "WITH changed AS (COPY INTO orders FROM '/synthetic') SELECT * FROM changed",
+        "WITH changed AS (USE CATALOG alternate) SELECT * FROM changed",
+        "WITH changed AS (REFRESH TABLE cached) SELECT * FROM changed",
+        (
+            "WITH changed AS (ANALYZE TABLE orders COMPUTE STATISTICS) "
+            "SELECT * FROM changed"
+        ),
+        "SELECT region FROM orders WHERE id = $1",
+        "SELECT region FROM orders WHERE id = @1",
+        "SELECT * INTO persisted_copy FROM source_table",
     ],
 )
 def test_unsafe_or_multi_statement_sql_is_rejected(sql: str) -> None:
@@ -26,11 +42,21 @@ def test_unsafe_or_multi_statement_sql_is_rejected(sql: str) -> None:
         validate_fragment(PhysicalSourceFragment(source_name="demo_sales", sql=sql))
 
 
-def test_semicolon_and_keyword_inside_literal_are_safe() -> None:
+@pytest.mark.parametrize(
+    "sql",
+    [
+        r"SELECT 'safe\' ; DELETE FROM orders' AS note",
+        "SELECT 'DELETE;still text' AS note FROM orders;",
+        "SELECT region FROM orders /* DELETE FROM orders */",
+        "SELECT region FROM orders; -- trailing comment",
+        "WITH safe_rows AS (SELECT region FROM orders) SELECT * FROM safe_rows",
+    ],
+)
+def test_literals_comments_and_read_only_ctes_are_safe(sql: str) -> None:
     validate_fragment(
         PhysicalSourceFragment(
             source_name="demo_sales",
-            sql="SELECT 'DELETE;still text' AS note FROM orders;",
+            sql=sql,
         )
     )
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
 
 import httpx
+
+from .exceptions import TransportError, TransportTimeoutError
 
 
 @dataclass(frozen=True)
@@ -43,25 +46,32 @@ class HttpxTransport:
         json_body: Mapping[str, object] | None,
         timeout_seconds: float,
     ) -> HttpResponse:
-        explicit_headers = {key.lower() for key in headers}
-        request = self._client.build_request(
+        request = httpx.Request(
             method,
             url,
             headers=headers,
             json=json_body,
-            timeout=timeout_seconds,
         )
-        # Client defaults can contain credentials. Only caller-supplied headers cross origins.
-        for key in tuple(request.headers):
-            if key.lower() in self._client.headers and key.lower() not in explicit_headers:
-                del request.headers[key]
-        if "cookie" not in explicit_headers:
-            request.headers.pop("cookie", None)
-        response = await self._client.send(request, auth=None, follow_redirects=False)
+        timeout = {
+            "connect": timeout_seconds,
+            "read": timeout_seconds,
+            "write": timeout_seconds,
+            "pool": timeout_seconds,
+        }
+        request.extensions["timeout"] = timeout
+        try:
+            response = await self._client.send(request, auth=None, follow_redirects=False)
+        except httpx.TimeoutException as error:
+            raise TransportTimeoutError("HTTP transport request timed out") from error
+        except httpx.HTTPError as error:
+            raise TransportError("HTTP transport request failed") from error
         content_type = response.headers.get("content-type", "").lower()
         json_response: object | None = None
         if response.content and "json" in content_type:
-            json_response = cast(object, response.json())
+            try:
+                json_response = cast(object, response.json())
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                raise TransportError("HTTP response contained invalid JSON") from error
         return HttpResponse(
             status_code=response.status_code,
             headers=dict(response.headers),

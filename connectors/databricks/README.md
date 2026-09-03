@@ -32,6 +32,9 @@ python -m build
 ```
 
 All normal tests use `FakeTransport` and make no network calls.
+The read-only boundary parses Databricks SQL with `sqlglot` and accepts exactly one query AST;
+parse failures, command/DDL/DML nodes (including inside CTEs), and positional parameters fail
+closed.
 
 ## Authentication
 
@@ -66,6 +69,7 @@ Defaults use the synthetic `demo_sales` catalog and `analytics` schema. The pack
 `row_limit` and `byte_limit` to Databricks and fails closed when the manifest reports
 truncation. Polling uses bounded exponential backoff and a monotonic deadline. Deadline
 expiration can request cancellation before returning a timeout error.
+Submit requests derive enough HTTP timeout headroom for the configured server-side wait.
 
 ## Local fake demo
 
