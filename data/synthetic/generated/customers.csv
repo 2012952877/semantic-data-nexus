@@ -1,0 +1,13 @@
+customer_id,customer_label,home_region_id,segment
+C001,样本客户-001,R01,standard
+C002,样本客户-002,R01,enterprise
+C003,样本客户-003,R02,standard
+C004,样本客户-004,R02,enterprise
+C005,样本客户-005,R03,standard
+C006,样本客户-006,R03,enterprise
+C007,样本客户-007,R04,standard
+C008,样本客户-008,R04,enterprise
+C009,样本客户-009,R01,standard
+C010,样本客户-010,R03,standard
+C011,样本客户-011,R04,standard
+C012,样本客户-012,R02,standard

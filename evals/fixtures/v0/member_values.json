@@ -1,0 +1,29 @@
+{
+  "structure_version": "member-values-v0",
+  "members": {
+    "region.region_name": [
+      {"canonical": "北辰区", "aliases": ["北区", "北辰"], "id": "R01"},
+      {"canonical": "南港区", "aliases": ["南区", "南港"], "id": "R02"},
+      {"canonical": "东湖区", "aliases": ["东区", "东湖"], "id": "R03"},
+      {"canonical": "西岭区", "aliases": ["西区", "西岭"], "id": "R04"}
+    ],
+    "product.product_name": [
+      {"canonical": "晨星标准版", "id": "P01", "qualifier": "设备"},
+      {"canonical": "晨星标准版", "id": "P02", "qualifier": "配件"},
+      {"canonical": "云帆增强版", "id": "P03"},
+      {"canonical": "云帆轻量版", "id": "P04"},
+      {"canonical": "青岚套件", "id": "P05"},
+      {"canonical": "赤霞模块", "id": "P06"},
+      {"canonical": "星河服务包", "id": "P07"},
+      {"canonical": "远山试用包", "id": "P08"}
+    ],
+    "customer.segment": [
+      {"canonical": "standard", "aliases": ["标准客户"]},
+      {"canonical": "enterprise", "aliases": ["企业客户"]}
+    ],
+    "order.status": [
+      {"canonical": "completed", "aliases": ["已完成"]},
+      {"canonical": "returned", "aliases": ["已退货", "退货"]}
+    ]
+  }
+}

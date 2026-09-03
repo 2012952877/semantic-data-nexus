@@ -1,0 +1,41 @@
+name: Semantic evaluation suite
+
+on:
+  pull_request:
+    paths:
+      - "data/synthetic/**"
+      - "evals/**"
+      - ".github/workflows/evals.yml"
+  push:
+    branches: [main]
+    paths:
+      - "data/synthetic/**"
+      - "evals/**"
+      - ".github/workflows/evals.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: evals/pyproject.toml
+      - name: Install evaluation package
+        run: python -m pip install -e "evals[dev]"
+      - name: Verify generated fixtures
+        run: |
+          python data/synthetic/generate.py
+          python evals/tools/build_fixtures.py
+          git diff --exit-code -- data/synthetic/generated evals/fixtures
+          test -z "$(git status --porcelain --untracked-files=all -- data/synthetic/generated evals/fixtures)"
+      - name: Run tests and reference gate
+        run: |
+          pytest evals
+          semantic-eval evals/fixtures/v0/candidates/passing.json
