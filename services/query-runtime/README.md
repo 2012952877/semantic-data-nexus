@@ -39,10 +39,13 @@ demonstrates two concurrent source nodes followed by a local join and sort.
 ## M0 planning heuristic
 
 Planning is deterministic and capability-aware, not cost-based. Supported
-`FILTER`/`AGGREGATE`/`JOIN`/`SORT`/`LIMIT` nodes are routed to a source fragment when their declared
-source capability permits it. `PIVOT`, `DERIVE`, and `PROJECT` stay local. Node IDs break
-topological ties, and each dependency level becomes a wave. M0 intentionally does not estimate
-cardinality, reorder joins, combine fragments, choose indexes, or optimize data movement.
+`FILTER`/`AGGREGATE`/`SORT`/`LIMIT` nodes are routed to a source fragment only when the complete
+upstream subgraph can be fused for that same source. `PIVOT`, `DERIVE`, `PROJECT`, downstream
+operations after a local boundary, and all joins stay local in v0; remote joins require a future
+fragment model that names both inputs explicitly. Exact concept bindings rewrite typed operator
+references to physical columns and reject cross-source/type mismatches. Node IDs break topological
+ties, and each dependency level becomes a wave. M0 intentionally does not estimate cardinality,
+reorder joins, choose indexes, or optimize data movement.
 
 ## Commit and failure semantics
 

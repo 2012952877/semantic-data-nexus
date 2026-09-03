@@ -6,6 +6,7 @@ import asyncio
 import time
 import uuid
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass
 
 import pyarrow as pa
@@ -100,10 +101,11 @@ class QueryCoordinator:
         self.executor = DuckDBOperatorExecutor(self.limits)
         self.max_concurrency = max_concurrency
         self._cancellations: dict[str, asyncio.Event] = {}
+        self._accepting_cancellation: set[str] = set()
 
     async def cancel(self, run_id: str) -> bool:
         event = self._cancellations.get(run_id)
-        if event is None:
+        if event is None or run_id not in self._accepting_cancellation:
             return False
         event.set()
         return True
@@ -113,6 +115,7 @@ class QueryCoordinator:
         run_id = run_id or f"run-{uuid.uuid4().hex}"
         cancel_event = asyncio.Event()
         self._cancellations[run_id] = cancel_event
+        self._accepting_cancellation.add(run_id)
         emitter = _Emitter(run_id, self.event_store)
         run_machine = StateMachine()
         recorder = LineageRecorder(run_id, plan)
@@ -146,7 +149,12 @@ class QueryCoordinator:
             for wave in sorted(nodes_by_wave):
                 wave_nodes = sorted(nodes_by_wave[wave], key=lambda item: item.id)
                 if cancel_event.is_set():
-                    await self._skip_nodes(wave_nodes, emitter, ExecutionState.CANCELLED)
+                    await self._terminalize_waves(
+                        nodes_by_wave,
+                        first_wave=wave,
+                        emitter=emitter,
+                        state=ExecutionState.CANCELLED,
+                    )
                     final_state = ExecutionState.CANCELLED
                     diagnostic_code = "RUN_CANCELLED"
                     break
@@ -211,29 +219,37 @@ class QueryCoordinator:
                         ),
                         f"RUN_{stage_state.value}",
                     )
-                    remaining = [
-                        item
-                        for later_wave in sorted(nodes_by_wave)
-                        if later_wave > wave
-                        for item in sorted(
-                            nodes_by_wave[later_wave], key=lambda candidate: candidate.id
-                        )
-                    ]
-                    await self._skip_nodes(remaining, emitter, ExecutionState.SKIPPED)
+                    await self._terminalize_waves(
+                        nodes_by_wave,
+                        first_wave=wave + 1,
+                        emitter=emitter,
+                        state=(
+                            ExecutionState.CANCELLED
+                            if stage_state is ExecutionState.CANCELLED
+                            else ExecutionState.SKIPPED
+                        ),
+                    )
                     break
             else:
-                final_state = ExecutionState.SUCCEEDED
+                self._accepting_cancellation.discard(run_id)
+                if cancel_event.is_set():
+                    final_state = ExecutionState.CANCELLED
+                    diagnostic_code = "RUN_CANCELLED"
+                else:
+                    final_state = ExecutionState.SUCCEEDED
 
+            self._accepting_cancellation.discard(run_id)
             run_machine.transition(final_state)
             await emitter.emit(
                 scope="run",
                 scope_id=run_id,
                 state=final_state,
-                code=diagnostic_code or f"RUN_{final_state.value}",
+                code=f"RUN_{final_state.value}",
                 message=f"Run {final_state.value.lower()}",
                 duration_ms=_duration(run_started),
             )
         finally:
+            self._accepting_cancellation.discard(run_id)
             self._cancellations.pop(run_id, None)
 
         manifest = (
@@ -320,7 +336,7 @@ class QueryCoordinator:
         except TimeoutError:
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
-                await self.resolver.cancel(run_id, node.id)
+                await self._cancel_resolver(run_id, node.id, emitter)
             machine.transition(ExecutionState.TIMED_OUT)
             await emitter.emit(
                 scope="node",
@@ -336,7 +352,7 @@ class QueryCoordinator:
         except asyncio.CancelledError:
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
-                await self.resolver.cancel(run_id, node.id)
+                await self._cancel_resolver(run_id, node.id, emitter)
             machine.transition(ExecutionState.CANCELLED)
             await emitter.emit(
                 scope="node",
@@ -396,6 +412,69 @@ class QueryCoordinator:
             run_id, node.id, table, cancel_event
         )
         return table, manifest
+
+    async def _cancel_resolver(
+        self, run_id: str, node_id: str, emitter: _Emitter
+    ) -> None:
+        timeout = min(1.0, self.limits.node_timeout_seconds)
+        cancellation = asyncio.create_task(self.resolver.cancel(run_id, node_id))
+        try:
+            done, _ = await asyncio.wait(
+                {cancellation},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            cancellation.cancel()
+            cancellation.add_done_callback(_consume_task_result)
+            code = "RESOLVER_CANCEL_INTERRUPTED"
+        else:
+            if cancellation not in done:
+                cancellation.cancel()
+                cancellation.add_done_callback(_consume_task_result)
+                code = "RESOLVER_CANCEL_TIMEOUT"
+            else:
+                try:
+                    cancellation.result()
+                except asyncio.CancelledError:
+                    code = "RESOLVER_CANCEL_INTERRUPTED"
+                except Exception:
+                    code = "RESOLVER_CANCEL_FAILED"
+                else:
+                    return
+        await emitter.emit(
+            scope="node",
+            scope_id=node_id,
+            state=ExecutionState.RUNNING,
+            code=code,
+            message="Source cancellation did not complete cleanly",
+        )
+
+    async def _terminalize_waves(
+        self,
+        nodes_by_wave: dict[int, list[PhysicalNode]],
+        *,
+        first_wave: int,
+        emitter: _Emitter,
+        state: ExecutionState,
+    ) -> None:
+        for wave in sorted(item for item in nodes_by_wave if item >= first_wave):
+            stage_id = f"wave-{wave}"
+            stage_machine = StateMachine()
+            stage_machine.transition(state)
+            await emitter.emit(
+                scope="stage",
+                scope_id=stage_id,
+                state=state,
+                code=f"STAGE_{state.value}",
+                message=f"Stage {state.value.lower()} before execution",
+                metadata={"wave": wave},
+            )
+            await self._skip_nodes(
+                sorted(nodes_by_wave[wave], key=lambda node: node.id),
+                emitter,
+                state,
+            )
 
     async def _skip_nodes(
         self,
@@ -466,3 +545,8 @@ def _terminal_stage_state(outcomes: list[_NodeOutcome]) -> ExecutionState:
 
 def _duration(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
+
+
+def _consume_task_result(task: asyncio.Task[None]) -> None:
+    with suppress(asyncio.CancelledError, Exception):
+        task.result()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from query_runtime.domain import (
     BoundParameter,
     BoundSource,
     CapabilityCatalog,
+    DiagnosticEvent,
+    ExecutionState,
     OperatorKind,
     OperatorSpec,
     PhysicalNode,
@@ -20,6 +23,7 @@ from query_runtime.domain import (
     ScalarType,
     SourceFragment,
 )
+from query_runtime.events import InMemoryEventStore
 from query_runtime.resolver import FakeResolver
 from query_runtime.result_store import ParquetResultStore
 
@@ -76,3 +80,37 @@ async def test_cli_smoke_creates_parquet_manifest(tmp_path: Path) -> None:
     assert isinstance(manifest, dict)
     assert manifest["result"]["storage"] == "parquet"
     assert Path(manifest["result"]["uri"], "_COMMITTED").is_file()  # noqa: ASYNC240
+
+
+@pytest.mark.asyncio
+async def test_slow_event_subscriber_cannot_abort_publish() -> None:
+    store = InMemoryEventStore()
+    subscriber = store.subscribe("run-slow")
+    first = asyncio.create_task(anext(subscriber))
+    await asyncio.sleep(0)
+    await store.append(
+        DiagnosticEvent(
+            sequence=0,
+            run_id="run-slow",
+            scope="run",
+            scope_id="run-slow",
+            state=ExecutionState.RUNNING,
+            code="RUNNING",
+            message="running",
+        )
+    )
+    await first
+    for sequence in range(1, 400):
+        await store.append(
+            DiagnosticEvent(
+                sequence=sequence,
+                run_id="run-slow",
+                scope="run",
+                scope_id="run-slow",
+                state=ExecutionState.RUNNING,
+                code="RUNNING",
+                message="running",
+            )
+        )
+    assert len(await store.list("run-slow")) == 400
+    await subscriber.aclose()

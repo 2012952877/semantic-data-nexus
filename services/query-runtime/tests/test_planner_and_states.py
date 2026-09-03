@@ -108,6 +108,9 @@ def test_capability_routing_and_deterministic_waves() -> None:
         OperatorKind.SOURCE,
         OperatorKind.AGGREGATE,
     ]
+    assert plan.nodes[0].source_fragment.bound_columns == (
+        _column("sales.region"),
+    )
     assert topological_order(tuple(reversed(graph.nodes))) == graph.nodes
 
 
@@ -164,3 +167,131 @@ def test_physical_node_operation_must_match_payload() -> None:
             logical_node_ids=("logical",),
             operator=OperatorSpec(kind=OperatorKind.SELECT, columns=("x",)),
         )
+
+
+def test_cross_source_binding_is_rejected() -> None:
+    graph = ValidatedLogicalGraph(
+        id="cross-source",
+        nodes=(
+            LogicalNode(
+                id="source",
+                source_alias="primary",
+                concepts=("sales.amount",),
+                operation=OperatorSpec(kind=OperatorKind.SOURCE),
+            ),
+        ),
+        output_node_id="source",
+    )
+    planner = CapabilityPlanner(
+        binder=ExactConceptBinder(
+            {"sales.amount": (_column("sales.amount", alias="secondary"),)}
+        ),
+        sources={
+            "primary": BoundSource(
+                alias="primary", source_type="synthetic", object_name="facts"
+            )
+        },
+        capabilities={
+            "primary": CapabilityCatalog(
+                source_alias="primary",
+                source_type="synthetic",
+                operator_kinds=frozenset({OperatorKind.SOURCE}),
+            )
+        },
+    )
+    with pytest.raises(BindingFailure) as error:
+        planner.plan(graph)
+    assert error.value.code == "BINDING_SOURCE_MISMATCH"
+
+
+def test_exact_binding_rewrites_concept_to_physical_column() -> None:
+    graph = ValidatedLogicalGraph(
+        id="physical-column",
+        nodes=(
+            LogicalNode(
+                id="select",
+                source_alias="source",
+                concepts=("sales.region",),
+                operation=OperatorSpec(
+                    kind=OperatorKind.SELECT,
+                    columns=("sales.region",),
+                ),
+            ),
+        ),
+        output_node_id="select",
+    )
+    planner = CapabilityPlanner(
+        binder=ExactConceptBinder({"sales.region": (_column("sales.region"),)}),
+        sources={
+            "source": BoundSource(
+                alias="source", source_type="synthetic", object_name="facts"
+            )
+        },
+        capabilities={
+            "source": CapabilityCatalog(
+                source_alias="source",
+                source_type="synthetic",
+                operator_kinds=frozenset({OperatorKind.SELECT}),
+            )
+        },
+    )
+    plan = planner.plan(graph)
+    fragment = plan.nodes[0].source_fragment
+    assert fragment is not None
+    assert fragment.operations[0].columns == ("sales_region",)
+
+
+def test_supported_operation_after_local_node_stays_local() -> None:
+    graph = ValidatedLogicalGraph(
+        id="local-boundary",
+        nodes=(
+            LogicalNode(
+                id="source",
+                source_alias="source",
+                operation=OperatorSpec(kind=OperatorKind.SOURCE),
+            ),
+            LogicalNode(
+                id="pivot",
+                source_alias="source",
+                dependencies=("source",),
+                operation=OperatorSpec(kind=OperatorKind.PIVOT),
+            ),
+            LogicalNode(
+                id="sort",
+                source_alias="source",
+                dependencies=("pivot",),
+                operation=OperatorSpec(kind=OperatorKind.SORT),
+            ),
+            LogicalNode(
+                id="join",
+                source_alias="source",
+                dependencies=("source", "sort"),
+                operation=OperatorSpec(kind=OperatorKind.JOIN),
+            ),
+        ),
+        output_node_id="join",
+    )
+    capability = CapabilityCatalog(
+        source_alias="source",
+        source_type="synthetic",
+        operator_kinds=frozenset(
+            {
+                OperatorKind.SOURCE,
+                OperatorKind.SORT,
+                OperatorKind.JOIN,
+            }
+        ),
+        joins=True,
+    )
+    plan = CapabilityPlanner(
+        binder=ExactConceptBinder({}),
+        sources={
+            "source": BoundSource(
+                alias="source", source_type="synthetic", object_name="facts"
+            )
+        },
+        capabilities={"source": capability},
+    ).plan(graph)
+    by_operation = {node.operation: node for node in plan.nodes}
+    assert by_operation[OperatorKind.SORT].kind is PhysicalNodeKind.OPERATOR
+    assert by_operation[OperatorKind.JOIN].kind is PhysicalNodeKind.OPERATOR

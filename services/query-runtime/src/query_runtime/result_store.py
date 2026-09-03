@@ -123,6 +123,14 @@ class InlineResultStore:
         _validate_page(offset, limit)
         if handle.storage != "inline":
             raise ResultStoreFailure("RESULT_HANDLE_INVALID", "Expected an inline handle")
+        manifest = self._manifests.get(handle.result_id)
+        if manifest is None:
+            raise ResultStoreFailure("RESULT_NOT_COMMITTED", "Inline result is not committed")
+        if handle != manifest.result:
+            raise ResultStoreFailure(
+                "RESULT_HANDLE_INVALID",
+                "Inline result handle does not match the committed manifest",
+            )
         table = self._tables.get(handle.result_id)
         if table is None:
             raise ResultStoreFailure("RESULT_NOT_COMMITTED", "Inline result is not committed")
@@ -161,14 +169,14 @@ class ParquetResultStore:
             )
         )
         try:
-            manifest = await write_task
+            manifest = await asyncio.shield(write_task)
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError
             (temporary / "_COMMITTED").write_text("", encoding="ascii")  # noqa: ASYNC240
             self._commit_directory(temporary, final)
             return manifest
         except asyncio.CancelledError:
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, Exception):
                 await asyncio.shield(write_task)
             if temporary.exists():  # noqa: ASYNC240
                 shutil.rmtree(temporary)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -19,8 +20,28 @@ from query_runtime.expressions import quote_identifier, render_expression
 class ResourceLimits:
     max_rows: int = 1_000_000
     max_bytes: int = 256 * 1024 * 1024
-    memory_limit: str = "256MB"
+    memory_limit_bytes: int = 256 * 1024 * 1024
     node_timeout_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        integer_limits = (
+            self.max_rows,
+            self.max_bytes,
+            self.memory_limit_bytes,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in integer_limits
+        ):
+            raise ValueError("row, byte, and memory limits must be integers")
+        if (
+            isinstance(self.node_timeout_seconds, bool)
+            or not isinstance(self.node_timeout_seconds, (int, float))
+            or not math.isfinite(self.node_timeout_seconds)
+        ):
+            raise ValueError("node timeout must be a finite number")
+        if any(value <= 0 for value in integer_limits) or self.node_timeout_seconds <= 0:
+            raise ValueError("resource limits must be positive")
 
 
 class DuckDBOperatorExecutor:
@@ -35,8 +56,10 @@ class DuckDBOperatorExecutor:
     ) -> pa.Table:
         if cancel_event.is_set():
             raise asyncio.CancelledError
-        connection = duckdb.connect(":memory:")
-        connection.execute(f"SET memory_limit = '{self.limits.memory_limit}'")
+        connection = duckdb.connect(
+            ":memory:",
+            config={"memory_limit": f"{self.limits.memory_limit_bytes}B"},
+        )
         work = asyncio.create_task(
             asyncio.to_thread(self._execute_sync, connection, spec, inputs)
         )
@@ -107,6 +130,11 @@ class DuckDBOperatorExecutor:
             rendered = render_expression(spec.predicate.expression, columns)
             return f"SELECT * FROM input_0 WHERE {rendered.sql}", list(rendered.parameters)
         if spec.kind is OperatorKind.AGGREGATE:
+            if spec.time_grain is not None:
+                raise OperatorFailure(
+                    "OPERATOR_TIME_GRAIN_UNSUPPORTED",
+                    "Local time-grain aggregation requires an explicit bucket expression",
+                )
             return self._aggregate_query(spec, columns)
         if spec.kind is OperatorKind.PIVOT:
             return self._pivot_query(spec, columns)

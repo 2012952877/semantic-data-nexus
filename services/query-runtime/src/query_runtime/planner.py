@@ -12,12 +12,14 @@ from query_runtime.domain import (
     BoundColumn,
     BoundSource,
     CapabilityCatalog,
+    ExpressionKind,
     OperatorKind,
     OperatorSpec,
     PhysicalNode,
     PhysicalNodeKind,
     PhysicalPlan,
     SourceFragment,
+    TypedExpression,
 )
 from query_runtime.errors import BindingFailure, PlanFailure
 
@@ -123,75 +125,102 @@ class CapabilityPlanner:
 
     def plan(self, graph: ValidatedLogicalGraph) -> PhysicalPlan:
         ordered = topological_order(graph.nodes)
+        bindings: dict[str, tuple[BoundColumn, ...]] = {}
         for node in ordered:
-            for concept in node.concepts:
-                self._binder.bind(concept)
+            bound = tuple(self._binder.bind(concept) for concept in node.concepts)
+            if node.source_alias is not None:
+                mismatched = sorted(
+                    {
+                        column.source_alias
+                        for column in bound
+                        if column.source_alias != node.source_alias
+                    }
+                )
+                if mismatched:
+                    raise BindingFailure(
+                        "BINDING_SOURCE_MISMATCH",
+                        f"Logical node '{node.id}' bindings do not match its source",
+                        details={
+                            "logical_source": node.source_alias,
+                            "bound_sources": mismatched,
+                        },
+                    )
+            bindings[node.id] = bound
 
         physical: dict[str, PhysicalNode] = {}
         mapping: dict[str, str] = {}
         for logical in ordered:
+            operation = _apply_bindings(logical.operation, bindings[logical.id])
             dependency_ids = tuple(dict.fromkeys(mapping[dep] for dep in logical.dependencies))
             capability = self._capabilities.get(logical.source_alias or "")
-            pushdown = (
+            candidate_pushdown = (
                 logical.source_alias is not None
-                and logical.operation.kind not in LOCAL_ONLY
+                and operation.kind not in LOCAL_ONLY
                 and capability is not None
                 and self._supports(logical, capability)
             )
             node_id = f"physical-{logical.id}"
+            source = self._sources.get(logical.source_alias or "")
+            predecessor = (
+                physical[dependency_ids[0]]
+                if len(dependency_ids) == 1
+                and dependency_ids[0] in physical
+                and physical[dependency_ids[0]].kind
+                is PhysicalNodeKind.SOURCE_FRAGMENT
+                else None
+            )
+            can_fuse = (
+                predecessor is not None
+                and predecessor.source_fragment is not None
+                and source is not None
+                and predecessor.source_fragment.source.alias == source.alias
+            )
+            pushdown = candidate_pushdown and (not dependency_ids or can_fuse)
             if pushdown:
-                source = self._sources.get(logical.source_alias or "")
                 if source is None:
                     raise PlanFailure(
                         "PLAN_SOURCE_MISSING",
                         f"Source alias '{logical.source_alias}' is not bound",
                     )
-                predecessor = (
-                    physical[dependency_ids[0]]
-                    if len(dependency_ids) == 1
-                    and dependency_ids[0] in physical
-                    and physical[dependency_ids[0]].kind
-                    is PhysicalNodeKind.SOURCE_FRAGMENT
-                    else None
-                )
-                can_fuse = (
-                    predecessor is not None
-                    and predecessor.source_fragment is not None
-                    and predecessor.source_fragment.source.alias == source.alias
-                )
                 if can_fuse:
                     assert predecessor is not None
                     assert predecessor.source_fragment is not None
                     operations = (
                         *predecessor.source_fragment.operations,
-                        logical.operation,
+                        operation,
                     )
                     fused_logical_ids = (*predecessor.logical_node_ids, logical.id)
                     physical_dependencies = predecessor.dependencies
+                    bound_columns = _deduplicate_columns(
+                        (*predecessor.source_fragment.bound_columns, *bindings[logical.id])
+                    )
                 else:
-                    operations = (logical.operation,)
+                    operations = (operation,)
                     fused_logical_ids = (logical.id,)
                     physical_dependencies = dependency_ids
+                    bound_columns = bindings[logical.id]
                 physical_node = PhysicalNode(
                     id=node_id,
                     kind=PhysicalNodeKind.SOURCE_FRAGMENT,
-                    operation=logical.operation.kind,
+                    operation=operation.kind,
                     dependencies=physical_dependencies,
                     wave=0,
                     logical_node_ids=fused_logical_ids,
                     source_fragment=SourceFragment(
-                        source=source, operations=operations
+                        source=source,
+                        operations=operations,
+                        bound_columns=bound_columns,
                     ),
                 )
             else:
                 physical_node = PhysicalNode(
                     id=node_id,
                     kind=PhysicalNodeKind.OPERATOR,
-                    operation=logical.operation.kind,
+                    operation=operation.kind,
                     dependencies=dependency_ids,
                     wave=0,
                     logical_node_ids=(logical.id,),
-                    operator=logical.operation,
+                    operator=operation,
                 )
             physical[node_id] = physical_node
             mapping[logical.id] = node_id
@@ -211,6 +240,8 @@ class CapabilityPlanner:
 
     @staticmethod
     def _supports(logical: LogicalNode, capability: CapabilityCatalog) -> bool:
+        if logical.operation.kind is OperatorKind.JOIN:
+            return False
         if not capability.supports(logical.operation.kind):
             return False
         if logical.operation.kind is OperatorKind.AGGREGATE and any(
@@ -236,6 +267,95 @@ class CapabilityPlanner:
             and capability.max_bytes is not None
             and logical.estimated_bytes > capability.max_bytes
         )
+
+
+def _deduplicate_columns(columns: tuple[BoundColumn, ...]) -> tuple[BoundColumn, ...]:
+    unique: dict[tuple[str, str, str], BoundColumn] = {}
+    for column in columns:
+        key = (column.concept, column.source_alias, column.column_name)
+        unique[key] = column
+    return tuple(unique[key] for key in sorted(unique))
+
+
+def _apply_bindings(
+    operation: OperatorSpec, columns: tuple[BoundColumn, ...]
+) -> OperatorSpec:
+    bindings = {column.concept: column for column in columns}
+
+    def name(value: str) -> str:
+        return bindings[value].column_name if value in bindings else value
+
+    def expression(value: TypedExpression) -> TypedExpression:
+        if value.kind is ExpressionKind.COLUMN and value.column in bindings:
+            assert value.column is not None
+            binding = bindings[value.column]
+            if binding.data_type is not value.data_type:
+                raise BindingFailure(
+                    "BINDING_TYPE_MISMATCH",
+                    f"Concept '{value.column}' type does not match its binding",
+                    details={
+                        "concept": value.column,
+                        "logical_type": value.data_type.value,
+                        "physical_type": binding.data_type.value,
+                    },
+                )
+            return value.model_copy(update={"column": binding.column_name})
+        if not value.args:
+            return value
+        return value.model_copy(
+            update={"args": tuple(expression(argument) for argument in value.args)}
+        )
+
+    return operation.model_copy(
+        update={
+            "columns": tuple(name(column) for column in operation.columns),
+            "predicate": (
+                operation.predicate.model_copy(
+                    update={"expression": expression(operation.predicate.expression)}
+                )
+                if operation.predicate is not None
+                else None
+            ),
+            "group_by": tuple(name(column) for column in operation.group_by),
+            "aggregates": tuple(
+                aggregate.model_copy(
+                    update={
+                        "expression": (
+                            expression(aggregate.expression)
+                            if aggregate.expression is not None
+                            else None
+                        )
+                    }
+                )
+                for aggregate in operation.aggregates
+            ),
+            "expressions": tuple(
+                item.model_copy(update={"expression": expression(item.expression)})
+                for item in operation.expressions
+            ),
+            "sort": tuple(
+                item.model_copy(update={"column": name(item.column)})
+                for item in operation.sort
+            ),
+            "join_keys": tuple(
+                item.model_copy(
+                    update={"left": name(item.left), "right": name(item.right)}
+                )
+                for item in operation.join_keys
+            ),
+            "pivot_index": tuple(name(column) for column in operation.pivot_index),
+            "pivot_column": (
+                name(operation.pivot_column)
+                if operation.pivot_column is not None
+                else None
+            ),
+            "pivot_value": (
+                name(operation.pivot_value)
+                if operation.pivot_value is not None
+                else None
+            ),
+        }
+    )
 
 
 def _reachable(output_id: str, nodes: dict[str, PhysicalNode]) -> set[str]:

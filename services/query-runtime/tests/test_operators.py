@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 
 import pyarrow as pa
 import pytest
@@ -18,10 +19,11 @@ from query_runtime.domain import (
     ScalarType,
     SortDirection,
     SortSpec,
+    TimeGrain,
     TypedExpression,
 )
 from query_runtime.errors import OperatorFailure
-from query_runtime.operators import DuckDBOperatorExecutor
+from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits
 
 
 @pytest.fixture
@@ -197,3 +199,55 @@ async def test_expression_safety_missing_and_collision_diagnostics(
             asyncio.Event(),
         )
     assert collision.value.code == "COLUMN_COLLISION"
+
+
+def test_memory_limit_rejects_non_numeric_configuration() -> None:
+    with pytest.raises(ValueError, match="integers"):
+        ResourceLimits(
+            memory_limit_bytes="256MB'; DROP TABLE input_0; --"  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("max_rows", math.nan),
+        ("max_bytes", math.inf),
+        ("memory_limit_bytes", -math.inf),
+        ("node_timeout_seconds", math.nan),
+    ),
+)
+def test_resource_limits_reject_non_finite_values(field: str, value: float) -> None:
+    with pytest.raises(ValueError):
+        ResourceLimits(**{field: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_local_aggregate_rejects_implicit_time_grain(
+    executor: DuckDBOperatorExecutor,
+) -> None:
+    with pytest.raises(OperatorFailure) as error:
+        await executor.execute(
+            OperatorSpec(
+                kind=OperatorKind.AGGREGATE,
+                group_by=("recorded_at",),
+                time_grain=TimeGrain.MONTH,
+                aggregates=(
+                    AggregateSpec(
+                        name="total",
+                        function=AggregateFunction.SUM,
+                        expression=TypedExpression.col("amount", ScalarType.FLOAT),
+                    ),
+                ),
+            ),
+            (
+                pa.table(
+                    {
+                        "recorded_at": ["2026-01-01"],
+                        "amount": [1.0],
+                    }
+                ),
+            ),
+            asyncio.Event(),
+        )
+    assert error.value.code == "OPERATOR_TIME_GRAIN_UNSUPPORTED"

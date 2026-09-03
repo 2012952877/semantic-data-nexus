@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "services/query-runtime/**"
+      - ".github/workflows/query-runtime.yml"
 
 jobs:
   test:

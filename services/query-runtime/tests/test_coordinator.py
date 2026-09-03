@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 from query_runtime.coordinator import QueryCoordinator, validate_physical_plan
-from query_runtime.domain import ExecutionState
+from query_runtime.domain import DiagnosticEvent, ExecutionState
 from query_runtime.errors import PlanFailure
+from query_runtime.events import InMemoryEventStore
 from query_runtime.fixtures import (
     complex_profit_fixture,
     delayed_fixture,
@@ -20,6 +21,19 @@ from query_runtime.fixtures import (
 )
 from query_runtime.operators import ResourceLimits
 from query_runtime.result_store import ParquetResultStore
+
+
+class _PausingEventStore(InMemoryEventStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.final_stage = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def append(self, event: DiagnosticEvent) -> None:
+        if event.code == "STAGE_SUCCEEDED":
+            self.final_stage.set()
+            await self.release.wait()
+        await super().append(event)
 
 
 @pytest.mark.asyncio
@@ -102,6 +116,109 @@ async def test_cancel_and_timeout_propagate(tmp_path: Path) -> None:
     assert timed_out.summary.state is ExecutionState.TIMED_OUT
     assert timed_out.summary.diagnostic_code == "NODE_TIMEOUT"
     assert timed_out.manifest is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_terminalizes_all_waves_when_resolver_cancel_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = complex_profit_fixture()
+    fixture.resolver._delays["regional_source"] = 1.0
+
+    async def failing_cancel(run_id: str, node_id: str) -> None:
+        raise RuntimeError("synthetic resolver cancellation failure")
+
+    monkeypatch.setattr(fixture.resolver, "cancel", failing_cancel)
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=ParquetResultStore(tmp_path),
+    )
+    task = asyncio.create_task(coordinator.run(fixture.plan, run_id="run-all-cancel"))
+    await asyncio.sleep(0.03)
+    assert await coordinator.cancel("run-all-cancel")
+    outcome = await task
+    assert outcome.summary.state is ExecutionState.CANCELLED
+    terminal_nodes = {
+        event.scope_id
+        for event in outcome.events
+        if event.scope == "node"
+        and event.state
+        in {
+            ExecutionState.CANCELLED,
+            ExecutionState.SKIPPED,
+            ExecutionState.FAILED,
+            ExecutionState.TIMED_OUT,
+            ExecutionState.SUCCEEDED,
+        }
+    }
+    assert terminal_nodes == {node.id for node in fixture.plan.nodes}
+    terminal_stages = {
+        event.scope_id
+        for event in outcome.events
+        if event.scope == "stage"
+        and event.state
+        in {
+            ExecutionState.CANCELLED,
+            ExecutionState.SKIPPED,
+            ExecutionState.FAILED,
+            ExecutionState.TIMED_OUT,
+            ExecutionState.SUCCEEDED,
+        }
+    }
+    assert terminal_stages == {f"wave-{wave}" for wave in range(4)}
+    assert any(event.code == "RESOLVER_CANCEL_FAILED" for event in outcome.events)
+    assert any(event.code == "RUN_CANCELLED" for event in outcome.events)
+
+
+@pytest.mark.asyncio
+async def test_late_accepted_cancellation_cannot_return_success(tmp_path: Path) -> None:
+    fixture = simple_profit_fixture()
+    events = _PausingEventStore()
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=ParquetResultStore(tmp_path),
+        event_store=events,
+    )
+    task = asyncio.create_task(coordinator.run(fixture.plan, run_id="run-late-cancel"))
+    await events.final_stage.wait()
+    assert await coordinator.cancel("run-late-cancel")
+    events.release.set()
+    outcome = await task
+    assert outcome.summary.state is ExecutionState.CANCELLED
+    assert outcome.manifest is None
+    assert any(event.code == "RUN_CANCELLED" for event in outcome.events)
+
+
+@pytest.mark.asyncio
+async def test_resolver_cancel_timeout_does_not_block_run_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = delayed_fixture()
+
+    async def stubborn_cancel(run_id: str, node_id: str) -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(fixture.resolver, "cancel", stubborn_cancel)
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=ParquetResultStore(tmp_path),
+        limits=ResourceLimits(node_timeout_seconds=0.02),
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-stubborn-cancel")
+    )
+    await asyncio.sleep(0.005)
+    started = asyncio.get_running_loop().time()
+    assert await coordinator.cancel("run-stubborn-cancel")
+    outcome = await task
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 0.1
+    assert outcome.summary.state is ExecutionState.CANCELLED
+    assert any(event.code == "RESOLVER_CANCEL_TIMEOUT" for event in outcome.events)
+    await asyncio.sleep(0.25)
 
 
 @pytest.mark.asyncio

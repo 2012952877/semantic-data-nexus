@@ -220,6 +220,7 @@ class SourceFragment(FrozenModel):
     source: BoundSource
     operations: tuple[OperatorSpec, ...]
     parameters: tuple[BoundParameter, ...] = ()
+    bound_columns: tuple[BoundColumn, ...] = ()
 
 
 class PhysicalNode(FrozenModel):

@@ -36,8 +36,16 @@ class InMemoryEventStore:
         async with self._lock:
             self._events[event.run_id].append(event)
             subscribers = tuple(self._subscribers[event.run_id])
+        slow: list[asyncio.Queue[DiagnosticEvent]] = []
         for queue in subscribers:
-            queue.put_nowait(event)
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                slow.append(queue)
+        if slow:
+            async with self._lock:
+                for queue in slow:
+                    self._subscribers[event.run_id].discard(queue)
 
     async def list(self, run_id: str) -> tuple[DiagnosticEvent, ...]:
         async with self._lock:

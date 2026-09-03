@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pyarrow as pa
 import pytest
 
+from query_runtime.domain import CommittedManifest, ResultHandle
 from query_runtime.errors import ResultStoreFailure
 from query_runtime.result_store import (
     HybridResultStore,
@@ -68,3 +70,49 @@ async def test_cancelled_commit_cannot_publish(tmp_path: Path) -> None:
             "run-cancelled", "node-cancelled", pa.table({"x": [1]}), cancelled
         )
     assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240
+
+
+@pytest.mark.asyncio
+async def test_forged_inline_handle_cannot_cross_run_boundary() -> None:
+    store = InlineResultStore()
+    manifest = await store.commit("victim-run", "victim-node", pa.table({"x": [1]}))
+    forged = ResultHandle(
+        result_id=manifest.result.result_id,
+        run_id="attacker-run",
+        node_id="attacker-node",
+        storage="inline",
+        uri=manifest.result.uri,
+    )
+    with pytest.raises(ResultStoreFailure) as error:
+        await store.read_page(forged, 0, 1)
+    assert error.value.code == "RESULT_HANDLE_INVALID"
+
+
+class _SlowWriteStore(ParquetResultStore):
+    def _write_temporary(
+        self,
+        temporary: Path,
+        final: Path,
+        result_id: str,
+        run_id: str,
+        node_id: str,
+        table: pa.Table,
+    ) -> CommittedManifest:
+        time.sleep(0.05)
+        return super()._write_temporary(
+            temporary, final, result_id, run_id, node_id, table
+        )
+
+
+@pytest.mark.asyncio
+async def test_task_cancellation_waits_for_write_and_cleans_temp(tmp_path: Path) -> None:
+    store = _SlowWriteStore(tmp_path)
+    task = asyncio.create_task(
+        store.commit("run-task-cancel", "node-task-cancel", pa.table({"x": [1]}))
+    )
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240
+    assert not list(tmp_path.rglob(".tmp-*"))  # noqa: ASYNC240
