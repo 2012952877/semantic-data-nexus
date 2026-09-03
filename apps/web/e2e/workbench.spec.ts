@@ -13,6 +13,14 @@ test('stable routes render their primary surfaces', async ({ page }) => {
     await page.goto(path)
     await expect(page.getByRole('main').getByText(heading, { exact: false }).first()).toBeVisible()
   }
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/ask')
+  await page.keyboard.press('Tab')
+  await expect(page.getByText('跳到主要内容')).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('link', { name: '提问' })).toBeFocused()
+  await expect(page.locator('.brand-mark')).toBeHidden()
 })
 
 test('submits a governed question and renders the committed result', async ({ page }) => {

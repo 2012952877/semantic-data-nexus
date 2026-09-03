@@ -14,12 +14,13 @@ import {
   parseStoredRun,
   parseStoredRuns,
   RUN_STORAGE_KEY,
+  RUN_STORAGE_CHANGE_EVENT,
   RUN_STORAGE_QUARANTINE_KEY,
   RUN_STORAGE_RECORD_PREFIX,
   runStorageKey,
   serializeStoredRun,
 } from './runStorage'
-import type { AskRequest, Run } from '@/domain'
+import type { AskRequest, Run, StageKey } from '@/domain'
 
 const INTERRUPTED_HEARTBEAT_MS = 30_000
 
@@ -71,6 +72,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     }
     this.terminalizeInterruptedRuns()
     window.addEventListener('storage', this.handleStorageEvent)
+    window.addEventListener(RUN_STORAGE_CHANGE_EVENT, this.handleLocalStorageEvent)
   }
 
   async listRuns(): Promise<Run[]> {
@@ -113,9 +115,11 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     }
 
     let committingResult = false
+    let persistenceStage: StageKey | undefined
     try {
       for (let index = 0; index < run.stages.length; index += 1) {
         if (this.canceled.has(id)) {
+          persistenceStage = run.stages.find((stage) => stage.state === 'pending')?.key
           return this.finishCanceled(run, onProgress)
         }
         const stage = run.stages[index]
@@ -126,6 +130,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
         await this.delay(this.stageDelayMs)
 
         if (this.canceled.has(id)) {
+          persistenceStage = stage.key
           return this.finishCanceled(run, onProgress)
         }
 
@@ -144,6 +149,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
             recovery: '改用 2025-Q2，或稍后重试当前问题。',
             severity: 'error',
           }]
+          persistenceStage = stage.key
           this.saveAndNotify(run, onProgress)
           return clone(run)
         }
@@ -156,10 +162,12 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
           input: 320 + index * 18,
           output: index < 1 ? 0 : 74 + index * 29,
         }
+        persistenceStage = stage.key
         this.saveAndNotify(run, onProgress)
       }
 
       committingResult = true
+      persistenceStage = 'generate'
       run.result = request.scenario === 'empty' ? emptyResult : successResult
       run.state = request.scenario === 'empty' ? 'empty' : 'succeeded'
       run.completedAt = new Date().toISOString()
@@ -183,7 +191,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       return clone(run)
     } catch (error) {
       if (error instanceof RunHistoryStorageError) {
-        this.abortAfterPersistenceFailure(run, committingResult, error)
+        this.abortAfterPersistenceFailure(run, persistenceStage, committingResult, error)
       }
       throw error
     }
@@ -225,23 +233,22 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
 
   private abortAfterPersistenceFailure(
     run: Run,
+    persistenceStage: StageKey | undefined,
     finalCommit: boolean,
     error: RunHistoryStorageError,
   ) {
     run.state = 'failed'
     run.completedAt = new Date().toISOString()
     run.executionLease = undefined
-    if (finalCommit) {
-      run.result = undefined
-      run.manifest = undefined
-    }
-    const failedStage = finalCommit
-      ? run.stages.find((stage) => stage.key === 'generate')
-      : [...run.stages].reverse().find((stage) =>
-          stage.state === 'running' || stage.state === 'succeeded')
-    if (failedStage) failedStage.state = 'failed'
-    run.stages.forEach((stage) => {
-      if (stage.state === 'running' || stage.state === 'pending') stage.state = 'canceled'
+    run.result = undefined
+    run.manifest = undefined
+    const failedIndex = Math.max(
+      0,
+      run.stages.findIndex((stage) => stage.key === persistenceStage),
+    )
+    run.stages.forEach((stage, index) => {
+      if (index === failedIndex) stage.state = 'failed'
+      else if (index > failedIndex || stage.state !== 'succeeded') stage.state = 'canceled'
     })
     run.diagnostics = [
       ...run.diagnostics,
@@ -256,6 +263,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     this.runs.set(run.id, clone(run))
     try {
       window.localStorage.removeItem(runStorageKey(run.id))
+      this.dispatchRunStorageChange(run.id, null)
     } catch (removeError) {
       console.warn('Unable to remove aborted mock run record.', removeError)
     }
@@ -342,7 +350,9 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
 
   private persistRun(run: Run) {
     try {
-      window.localStorage.setItem(runStorageKey(run.id), serializeStoredRun(run))
+      const serialized = serializeStoredRun(run)
+      window.localStorage.setItem(runStorageKey(run.id), serialized)
+      this.dispatchRunStorageChange(run.id, serialized)
     } catch (error) {
       throw new RunHistoryStorageError(error)
     }
@@ -374,9 +384,8 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       const heartbeat = run.executionLease
         ? Date.parse(run.executionLease.heartbeatAt)
         : Number.NEGATIVE_INFINITY
-      const ownedByThisClient = run.executionLease?.ownerId === this.clientId
       const heartbeatIsStale = heartbeat < Date.now() - INTERRUPTED_HEARTBEAT_MS
-      if (!ownedByThisClient && !heartbeatIsStale) return
+      if (!heartbeatIsStale) return
 
       run.state = 'failed'
       run.completedAt = new Date().toISOString()
@@ -417,5 +426,29 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       this.runs.set(run.id, run)
       this.terminalizeInterruptedRuns()
     }
+  }
+
+  private handleLocalStorageEvent = (event: Event) => {
+    const detail = (event as CustomEvent<{
+      id: string
+      newValue: string | null
+      sourceId: string
+    }>).detail
+    if (!detail || detail.sourceId === this.clientId) return
+    if (!detail.newValue) {
+      this.runs.delete(detail.id)
+      return
+    }
+    const run = parseStoredRun(detail.newValue)
+    if (run) {
+      this.runs.set(run.id, run)
+      this.terminalizeInterruptedRuns()
+    }
+  }
+
+  private dispatchRunStorageChange(id: string, newValue: string | null) {
+    window.dispatchEvent(new CustomEvent(RUN_STORAGE_CHANGE_EVENT, {
+      detail: { id, newValue, sourceId: this.clientId },
+    }))
   }
 }

@@ -14,6 +14,7 @@ import type {
 export const RUN_STORAGE_KEY = 'semantic-nexus:runs'
 export const RUN_STORAGE_QUARANTINE_KEY = 'semantic-nexus:runs:quarantine'
 export const RUN_STORAGE_RECORD_PREFIX = 'semantic-nexus:run:v1:'
+export const RUN_STORAGE_CHANGE_EVENT = 'semantic-nexus:run-storage-change'
 export const RUN_STORAGE_VERSION = 1
 
 export interface StoredRuns {

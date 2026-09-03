@@ -1421,7 +1421,7 @@ tbody tr:hover {
     left: 0;
     z-index: 20;
     display: grid;
-    grid-template-columns: 0 repeat(4, 1fr) 0;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     height: 68px;
     padding: 7px 10px;
     border-top: 1px solid #3e4d44;
@@ -1430,9 +1430,7 @@ tbody tr:hover {
 
   .brand-mark,
   .rail-mode {
-    overflow: hidden;
-    width: 0;
-    opacity: 0;
+    display: none;
   }
 
   .rail-nav {

@@ -2,7 +2,11 @@
 import { inject, onMounted, onUnmounted, ref } from 'vue'
 
 import { nexusClientKey } from '@/api/clientContext'
-import { RUN_STORAGE_KEY, RUN_STORAGE_RECORD_PREFIX } from '@/api/runStorage'
+import {
+  RUN_STORAGE_CHANGE_EVENT,
+  RUN_STORAGE_KEY,
+  RUN_STORAGE_RECORD_PREFIX,
+} from '@/api/runStorage'
 import StatusBadge from '@/components/StatusBadge.vue'
 import type { Run } from '@/domain'
 
@@ -21,13 +25,19 @@ const handleStorage = (event: StorageEvent) => {
  }
 }
 
+const handleLocalStorage = () => {
+ void loadRuns()
+}
+
 onMounted(() => {
  void loadRuns()
  window.addEventListener('storage', handleStorage)
+ window.addEventListener(RUN_STORAGE_CHANGE_EVENT, handleLocalStorage)
 })
 
 onUnmounted(() => {
  window.removeEventListener('storage', handleStorage)
+ window.removeEventListener(RUN_STORAGE_CHANGE_EVENT, handleLocalStorage)
 })
 
 const formatTime = (value: string) =>
