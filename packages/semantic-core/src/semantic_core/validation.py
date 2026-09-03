@@ -34,7 +34,8 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
     metrics = {metric.id: metric for metric in ontology.metrics}
     relations = {relation.id: relation for relation in ontology.relations}
     node_entities: dict[str, set[str]] = {}
-    node_provenance: dict[str, dict[str, set[tuple[str, str]]]] = {}
+    node_lineage: dict[str, dict[str, set[tuple[str, str]]]] = {}
+    node_bindings: dict[str, dict[str, set[tuple[str, str]]]] = {}
 
     for node in sqg.nodes:
         if isinstance(node, SelectNode):
@@ -63,16 +64,19 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                         "from the ontology"
                     )
             node_entities[node.id] = {node.params.entity}
-            node_provenance[node.id] = {
+            direct = {
                 output.name: {(node.params.entity, output.name)}
                 for output in node.outputs
             }
+            node_lineage[node.id] = direct
+            node_bindings[node.id] = direct
             continue
 
         inherited_entities = set().union(
             *(node_entities[dependency] for dependency in node.inputs)
         )
-        input_provenance = [node_provenance[dependency] for dependency in node.inputs]
+        input_lineage = [node_lineage[dependency] for dependency in node.inputs]
+        input_bindings = [node_bindings[dependency] for dependency in node.inputs]
         if isinstance(node, AggregateNode):
             for measure in node.params.measures:
                 metric = metrics.get(measure.metric)
@@ -87,8 +91,7 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                     )
                 source = (metric.entity, metric.field)
                 if not any(
-                    source in provenance
-                    for provenance in input_provenance[0].values()
+                    source in bindings for bindings in input_bindings[0].values()
                 ):
                     raise SemanticValidationError(
                         f"metric {metric.id!r} requires source field "
@@ -152,11 +155,11 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 else relation.left_entity
             )
             if not any(
-                (left_source, left_key) in provenance
-                for provenance in input_provenance[0].values()
+                (left_source, left_key) in bindings
+                for bindings in input_bindings[0].values()
             ) or not any(
-                (right_source, right_key) in provenance
-                for provenance in input_provenance[1].values()
+                (right_source, right_key) in bindings
+                for bindings in input_bindings[1].values()
             ):
                 raise SemanticValidationError(
                     f"relation {relation.id!r} requires join keys "
@@ -164,52 +167,79 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 )
         node_entities[node.id] = inherited_entities
         if isinstance(node, (FilterNode, SortNode, ProjectNode)):
-            node_provenance[node.id] = {
-                output.name: input_provenance[0][output.name] for output in node.outputs
+            node_lineage[node.id] = {
+                output.name: input_lineage[0][output.name] for output in node.outputs
+            }
+            node_bindings[node.id] = {
+                output.name: input_bindings[0][output.name] for output in node.outputs
             }
         elif isinstance(node, DeriveNode):
-            provenance = {
-                output.name: input_provenance[0][output.name]
+            lineage = {
+                output.name: input_lineage[0][output.name]
                 for output in node.outputs
-                if output.name in input_provenance[0]
+                if output.name in input_lineage[0]
+            }
+            bindings = {
+                output.name: input_bindings[0][output.name]
+                for output in node.outputs
+                if output.name in input_bindings[0]
             }
             for expression in node.params.expressions:
-                provenance[expression.name] = set().union(
+                lineage[expression.name] = set().union(
                     *(
-                        input_provenance[0][operand.field]
+                        input_lineage[0][operand.field]
                         for operand in (expression.left, expression.right)
                         if isinstance(operand, FieldOperand)
                     )
                 )
-            node_provenance[node.id] = provenance
+                bindings[expression.name] = set()
+            node_lineage[node.id] = lineage
+            node_bindings[node.id] = bindings
         elif isinstance(node, AggregateNode):
-            provenance = {
-                field: input_provenance[0][field] for field in node.params.group_by
+            lineage = {
+                field: input_lineage[0][field] for field in node.params.group_by
             }
-            provenance.update(
+            bindings = {
+                field: input_bindings[0][field] for field in node.params.group_by
+            }
+            lineage.update(
                 {
                     measure.name: {(metrics[measure.metric].entity, metrics[measure.metric].field)}
                     for measure in node.params.measures
                 }
             )
-            node_provenance[node.id] = provenance
+            bindings.update({measure.name: set() for measure in node.params.measures})
+            node_lineage[node.id] = lineage
+            node_bindings[node.id] = bindings
         elif isinstance(node, PivotNode):
-            value_provenance = (
-                input_provenance[0][node.params.value]
-                | input_provenance[0][node.params.column]
+            value_lineage = (
+                input_lineage[0][node.params.value]
+                | input_lineage[0][node.params.column]
             )
-            node_provenance[node.id] = {
+            node_lineage[node.id] = {
                 **{
-                    field: input_provenance[0][field] for field in node.params.index
+                    field: input_lineage[0][field] for field in node.params.index
                 },
                 **{
-                    field: value_provenance
+                    field: value_lineage
                     for field in node.params.expected_columns
                 },
             }
+            node_bindings[node.id] = {
+                **{
+                    field: input_bindings[0][field] for field in node.params.index
+                },
+                **{field: set() for field in node.params.expected_columns},
+            }
         elif isinstance(node, JoinNode):
-            node_provenance[node.id] = {
-                projection.name: input_provenance[
+            node_lineage[node.id] = {
+                projection.name: input_lineage[
+                    0 if projection.source == "left" else 1
+                ][projection.field]
+                for projection in node.params.fields
+            }
+            node_bindings[node.id] = {
+                projection.name: input_bindings[
                     0 if projection.source == "left" else 1
                 ][projection.field]
                 for projection in node.params.fields

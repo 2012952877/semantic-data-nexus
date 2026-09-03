@@ -4,14 +4,32 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    model_validator,
+)
 
 Identifier = Annotated[str, Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$")]
-JsonScalar = str | int | float | bool | None
 
 
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class DecimalLiteral(ContractModel):
+    kind: Literal["decimal"]
+    value: Annotated[
+        str,
+        Field(pattern=r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?(0|[1-9][0-9]*))?$"),
+    ]
+
+
+JsonScalar = str | StrictInt | StrictFloat | StrictBool | None | DecimalLiteral
 
 
 class DataType(StrEnum):
@@ -55,7 +73,7 @@ def aggregation_output_type(
 class OntologyField(ContractModel):
     id: Identifier
     data_type: DataType
-    nullable: bool = True
+    nullable: StrictBool = True
     description: str | None = None
 
 
@@ -162,7 +180,7 @@ class Ontology(ContractModel):
 class OutputField(ContractModel):
     name: Identifier
     data_type: DataType
-    nullable: bool = True
+    nullable: StrictBool = True
 
 
 class SelectParams(ContractModel):
@@ -215,6 +233,14 @@ class FieldOperand(ContractModel):
 class LiteralOperand(ContractModel):
     kind: Literal["literal"]
     value: JsonScalar
+
+    @model_validator(mode="after")
+    def floats_use_tagged_decimal(self) -> LiteralOperand:
+        if isinstance(self.value, float):
+            raise ValueError(
+                "DERIVE floating-point literals must use the tagged decimal form"
+            )
+        return self
 
 
 ScalarOperand = Annotated[Union[FieldOperand, LiteralOperand], Field(discriminator="kind")]
@@ -380,6 +406,22 @@ class SemanticQueryGraph(ContractModel):
                         f"{output.nullable}, expected nullable={expected[1]}"
                     )
             outputs[node.id] = {output.name: output for output in node.outputs}
+
+        nodes_by_id = {node.id: node for node in self.nodes}
+        ancestors: set[str] = set()
+        pending = [self.root]
+        while pending:
+            node_id = pending.pop()
+            if node_id in ancestors:
+                continue
+            ancestors.add(node_id)
+            pending.extend(nodes_by_id[node_id].inputs)
+        unreachable = [node_id for node_id in ids if node_id not in ancestors]
+        if unreachable:
+            raise ValueError(
+                f"root {self.root!r} does not consume all nodes; "
+                f"outside root ancestor closure: {unreachable!r}"
+            )
         return self
 
     @staticmethod
@@ -564,8 +606,14 @@ class SemanticQueryGraph(ContractModel):
             return isinstance(value, str)
         if data_type == DataType.INTEGER:
             return isinstance(value, int) and not isinstance(value, bool)
-        if data_type in {DataType.NUMBER, DataType.DECIMAL}:
+        if data_type == DataType.NUMBER:
             return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if data_type == DataType.DECIMAL:
+            return (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                or isinstance(value, DecimalLiteral)
+            )
         if data_type == DataType.BOOLEAN:
             return isinstance(value, bool)
         if data_type == DataType.DATE and isinstance(value, str):
@@ -602,6 +650,8 @@ class SemanticQueryGraph(ContractModel):
                 operand_types.append(DataType.INTEGER)
             elif isinstance(operand.value, float):
                 operand_types.append(DataType.NUMBER)
+            elif isinstance(operand.value, DecimalLiteral):
+                operand_types.append(DataType.DECIMAL)
             else:
                 raise ValueError(
                     f"node {node_id!r} derive expression {expression.name!r} "

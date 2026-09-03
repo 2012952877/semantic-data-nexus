@@ -20,6 +20,36 @@
     "stage_id": { "type": ["string", "null"] },
     "node_id": { "type": ["string", "null"] },
     "payload": { "type": "object" }
-  }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "event_type": {
+          "enum": ["run.created", "run.started", "run.succeeded", "run.failed", "run.cancelled"]
+        },
+        "stage_id": { "type": "null" },
+        "node_id": { "type": "null" }
+      }
+    },
+    {
+      "required": ["stage_id"],
+      "properties": {
+        "event_type": {
+          "enum": ["stage.started", "stage.succeeded", "stage.failed"]
+        },
+        "stage_id": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "null" }
+      }
+    },
+    {
+      "required": ["stage_id", "node_id"],
+      "properties": {
+        "event_type": {
+          "enum": ["node.started", "node.succeeded", "node.failed"]
+        },
+        "stage_id": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "string", "minLength": 1 }
+      }
+    }
+  ]
 }
-

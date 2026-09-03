@@ -28,6 +28,7 @@
 | **Typed IR（强类型中间表示）** | 编译过程中的机器可验证结构。SQG 就是一种 Typed IR：操作符和参数由 Schema 限定，未知字段不会被悄悄接受。 |
 | **Operator（操作符）** | SQG 节点的动作类型。v0 只允许 `SELECT`、`FILTER`、`AGGREGATE`、`PIVOT`、`DERIVE`、`PROJECT`、`SORT`、`JOIN`。扩展必须发布新契约版本。 |
 | **DAG（有向无环图）** | 节点之间只有单向依赖，且不能绕一圈回到自己。本项目还要求依赖节点先出现，使验证和重放完全确定。 |
+| **Root（根/交付节点）** | SQG 最终对外产生结果的唯一节点。v0 要求图中每个节点都能沿依赖链到达 Root，也就是所有节点都属于 Root 的祖先闭包；孤立或位于 Root 下游的节点会被拒绝。 |
 | **Initializer** | 在编译前冻结本次请求的上下文：用户、租户、策略、Ontology 版本、可用 Resolver、区域和预算。后续阶段读取这个快照，而不是使用会漂移的“当前配置”。 |
 | **Compiler（编译器）** | 把自然语言意图变成 SQG 候选的组件。LLM 可参与候选生成，但最终输出必须通过结构化输出和确定性校验。 |
 | **Deterministic validation（确定性校验）** | 相同输入永远得到相同结果的代码检查，包括 Schema、类型、依赖、输出、Ontology 成员和策略检查。它不依赖模型“再判断一次”。 |
@@ -66,4 +67,3 @@
 | **BFF（Backend for Frontend）** | 专门服务某个前端的后端。未来 ASP.NET Core BFF 负责身份、会话、聚合和 API 契约，不承担大数据执行。 |
 | **Tenant（租户）** | 数据、配置、身份和配额的隔离边界。每个请求必须携带可验证的租户上下文。 |
 | **RLS / CLS** | Row-Level Security / Column-Level Security，分别限制用户能看到哪些行和列。语义权限不能弱化底层数据源权限。 |
-

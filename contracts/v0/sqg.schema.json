@@ -36,6 +36,30 @@
     "dataType": {
       "enum": ["string", "integer", "number", "decimal", "boolean", "date", "datetime"]
     },
+    "decimalLiteral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "decimal" },
+        "value": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?(0|[1-9][0-9]*))?$"
+        }
+      }
+    },
+    "scalarValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "$ref": "#/$defs/decimalLiteral" }
+      ]
+    },
+    "deriveLiteral": {
+      "oneOf": [
+        { "type": ["string", "integer", "boolean", "null"] },
+        { "$ref": "#/$defs/decimalLiteral" }
+      ]
+    },
     "output": {
       "type": "object",
       "additionalProperties": false,
@@ -106,16 +130,30 @@
                 "op": {
                   "enum": ["EQ", "NEQ", "GT", "GTE", "LT", "LTE", "IN", "NOT_IN", "CONTAINS"]
                 },
-                "value": {
-                  "oneOf": [
-                    { "type": ["string", "number", "integer", "boolean", "null"] },
-                    {
-                      "type": "array",
-                      "items": { "type": ["string", "number", "integer", "boolean", "null"] }
+                "value": {}
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": { "op": { "enum": ["IN", "NOT_IN"] } },
+                    "required": ["op"]
+                  },
+                  "then": {
+                    "properties": {
+                      "value": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "$ref": "#/$defs/scalarValue" }
+                      }
                     }
-                  ]
+                  },
+                  "else": {
+                    "properties": {
+                      "value": { "$ref": "#/$defs/scalarValue" }
+                    }
+                  }
                 }
-              }
+              ]
             }
           }
         },
@@ -211,7 +249,7 @@
           "required": ["kind", "value"],
           "properties": {
             "kind": { "const": "literal" },
-            "value": { "type": ["string", "number", "integer", "boolean", "null"] }
+            "value": { "$ref": "#/$defs/deriveLiteral" }
           }
         }
       ]
@@ -353,4 +391,3 @@
     }
   }
 }
-

@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from semantic_core.models import Ontology, SemanticQueryGraph
+from semantic_core.models import DecimalLiteral, Ontology, SemanticQueryGraph
 from semantic_core.validation import SemanticValidationError, validate_sqg
 
 
@@ -98,6 +98,221 @@ def test_valid_derive_expression() -> None:
     sqg = SemanticQueryGraph.model_validate(data)
     validate_sqg(sqg, _ontology())
     assert sqg.nodes[-1].operator == "DERIVE"
+
+
+def test_decimal_literal_preserves_exact_text() -> None:
+    exact = "12345678901234567890.12345678901234567890"
+    data = {
+        "contract_version": "sqg/v0",
+        "query_id": "decimal_demo",
+        "ontology_version": "operator.v1",
+        "nodes": [
+            _sales_select(),
+            {
+                "id": "derive_precise_profit",
+                "operator": "DERIVE",
+                "inputs": ["select_sales"],
+                "params": {
+                    "expressions": [
+                        {
+                            "name": "precise_profit",
+                            "op": "MULTIPLY",
+                            "left": {"kind": "field", "field": "profit"},
+                            "right": {
+                                "kind": "literal",
+                                "value": {"kind": "decimal", "value": exact},
+                            },
+                        }
+                    ]
+                },
+                "outputs": [
+                    {"name": "region", "data_type": "string"},
+                    {"name": "quarter", "data_type": "string"},
+                    {"name": "profit", "data_type": "decimal"},
+                    {"name": "precise_profit", "data_type": "decimal"},
+                ],
+            },
+        ],
+        "root": "derive_precise_profit",
+    }
+    sqg = SemanticQueryGraph.model_validate(data)
+    literal = sqg.nodes[-1].params.expressions[0].right
+    assert isinstance(literal.value, DecimalLiteral)
+    assert literal.value.value == exact
+    dumped = sqg.model_dump(mode="json")
+    assert dumped["nodes"][-1]["params"]["expressions"][0]["right"]["value"]["value"] == exact
+
+
+def test_derived_lineage_is_not_a_direct_metric_binding() -> None:
+    ontology_data = _ontology().model_dump(mode="json")
+    ontology_data["metrics"] = [
+        {
+            "id": "profit_total",
+            "entity": "sales",
+            "field": "profit",
+            "aggregation": "SUM",
+        }
+    ]
+    ontology = Ontology.model_validate(ontology_data)
+    data = {
+        "contract_version": "sqg/v0",
+        "query_id": "derived_metric_binding",
+        "ontology_version": "operator.v1",
+        "nodes": [
+            _sales_select(),
+            {
+                "id": "derive_profit",
+                "operator": "DERIVE",
+                "inputs": ["select_sales"],
+                "params": {
+                    "expressions": [
+                        {
+                            "name": "derived_profit",
+                            "op": "ADD",
+                            "left": {"kind": "field", "field": "profit"},
+                            "right": {"kind": "literal", "value": 0},
+                        }
+                    ]
+                },
+                "outputs": [
+                    {"name": "region", "data_type": "string"},
+                    {"name": "quarter", "data_type": "string"},
+                    {"name": "profit", "data_type": "decimal"},
+                    {"name": "derived_profit", "data_type": "decimal"},
+                ],
+            },
+            {
+                "id": "project_derived",
+                "operator": "PROJECT",
+                "inputs": ["derive_profit"],
+                "params": {"fields": ["derived_profit"]},
+                "outputs": [{"name": "derived_profit", "data_type": "decimal"}],
+            },
+            {
+                "id": "aggregate_profit",
+                "operator": "AGGREGATE",
+                "inputs": ["project_derived"],
+                "params": {
+                    "measures": [
+                        {"metric": "profit_total", "name": "profit_total"}
+                    ]
+                },
+                "outputs": [{"name": "profit_total", "data_type": "decimal"}],
+            },
+        ],
+        "root": "aggregate_profit",
+    }
+    sqg = SemanticQueryGraph.model_validate(data)
+    with pytest.raises(SemanticValidationError, match="source field sales.profit"):
+        validate_sqg(sqg, ontology)
+
+
+def test_derived_lineage_is_not_a_direct_join_key() -> None:
+    ontology = Ontology.model_validate(
+        {
+            "contract_version": "ontology/v0",
+            "ontology_id": "join_binding_demo",
+            "version": "join.v1",
+            "entities": [
+                {
+                    "id": "orders",
+                    "fields": [{"id": "customer_id", "data_type": "integer"}],
+                },
+                {
+                    "id": "customers",
+                    "fields": [{"id": "customer_id", "data_type": "integer"}],
+                },
+            ],
+            "relations": [
+                {
+                    "id": "order_customer",
+                    "left_entity": "orders",
+                    "right_entity": "customers",
+                    "left_field": "customer_id",
+                    "right_field": "customer_id",
+                    "cardinality": "many_to_one",
+                }
+            ],
+        }
+    )
+    data = {
+        "contract_version": "sqg/v0",
+        "query_id": "derived_join_binding",
+        "ontology_version": "join.v1",
+        "nodes": [
+            {
+                "id": "select_orders",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {"entity": "orders", "fields": ["customer_id"]},
+                "outputs": [{"name": "customer_id", "data_type": "integer"}],
+            },
+            {
+                "id": "derive_customer_id",
+                "operator": "DERIVE",
+                "inputs": ["select_orders"],
+                "params": {
+                    "expressions": [
+                        {
+                            "name": "derived_customer_id",
+                            "op": "ADD",
+                            "left": {"kind": "field", "field": "customer_id"},
+                            "right": {"kind": "literal", "value": 0},
+                        }
+                    ]
+                },
+                "outputs": [
+                    {"name": "customer_id", "data_type": "integer"},
+                    {"name": "derived_customer_id", "data_type": "integer"},
+                ],
+            },
+            {
+                "id": "project_derived_id",
+                "operator": "PROJECT",
+                "inputs": ["derive_customer_id"],
+                "params": {"fields": ["derived_customer_id"]},
+                "outputs": [
+                    {"name": "derived_customer_id", "data_type": "integer"}
+                ],
+            },
+            {
+                "id": "select_customers",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {"entity": "customers", "fields": ["customer_id"]},
+                "outputs": [{"name": "customer_id", "data_type": "integer"}],
+            },
+            {
+                "id": "join_customer",
+                "operator": "JOIN",
+                "inputs": ["project_derived_id", "select_customers"],
+                "params": {
+                    "relation": "order_customer",
+                    "kind": "INNER",
+                    "fields": [
+                        {
+                            "source": "left",
+                            "field": "derived_customer_id",
+                            "name": "order_customer_id",
+                        },
+                        {
+                            "source": "right",
+                            "field": "customer_id",
+                            "name": "customer_id",
+                        },
+                    ],
+                },
+                "outputs": [
+                    {"name": "order_customer_id", "data_type": "integer"},
+                    {"name": "customer_id", "data_type": "integer"},
+                ],
+            },
+        ],
+        "root": "join_customer",
+    }
+    sqg = SemanticQueryGraph.model_validate(data)
+    with pytest.raises(SemanticValidationError, match="requires join keys"):
+        validate_sqg(sqg, ontology)
 
 
 def test_derive_output_type_is_inferred() -> None:

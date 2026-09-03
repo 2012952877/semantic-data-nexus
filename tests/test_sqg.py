@@ -54,6 +54,30 @@ def test_rejects_duplicate_node_ids(sqg_data: dict) -> None:
         SemanticQueryGraph.model_validate(candidate)
 
 
+def test_root_must_cover_every_node(sqg_data: dict) -> None:
+    candidate = copy.deepcopy(sqg_data)
+    candidate["nodes"].append(
+        {
+            "id": "disconnected_sales",
+            "operator": "SELECT",
+            "inputs": [],
+            "params": {"entity": "sales", "fields": ["region"]},
+            "outputs": [
+                {"name": "region", "data_type": "string", "nullable": False}
+            ],
+        }
+    )
+    with pytest.raises(ValidationError, match="outside root ancestor closure"):
+        SemanticQueryGraph.model_validate(candidate)
+
+
+def test_root_cannot_have_downstream_nodes(sqg_data: dict) -> None:
+    candidate = copy.deepcopy(sqg_data)
+    candidate["root"] = "aggregate_profit"
+    with pytest.raises(ValidationError, match="outside root ancestor closure"):
+        SemanticQueryGraph.model_validate(candidate)
+
+
 def test_rejects_invalid_outputs(sqg_data: dict) -> None:
     candidate = copy.deepcopy(sqg_data)
     candidate["nodes"][2]["outputs"][-1]["name"] = "unexpected"

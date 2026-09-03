@@ -6,7 +6,7 @@
 
 1. **先定义自己的版本化契约，再选择实现组件。** 任何第三方都不能绕过 SQG、语义绑定、策略、预算、Run/Result/Lineage 契约。
 2. **WrenAI 是当前最接近“一体化 OSS 起点”的候选，但不是完整开源产品。** 它的 OSS engine 与商业 product layer 必须分开描述。
-3. **Azure 没有对等的托管语义层。** Azure 服务适合替代模型、检索、身份、密钥、运行时、存储、消息和观测后端，不能替代 Ontology/SQG/Compiler。
+3. **Azure 生态有成熟的托管语义建模能力，但不是本项目执行架构的整体替代。** Azure Analysis Services、Fabric/Power BI semantic models，以及 Azure Databricks Unity Catalog metric views 都能承担部分指标/模型治理；它们不直接替代本项目特有的 SQG Compiler、Capability-aware Optimizer、Runtime 和 Run/Result/Lineage 契约。
 4. **优先组合，而非寻找一个万能平台。** P1 只交付一个 Databricks Resolver；联邦引擎、企业目录和 durable workflow 在出现真实需求后引入。
 5. **未知能力默认拒绝。** 接入组件必须通过 adapter 和 conformance test，不把组件内部对象直接暴露为平台契约。
 
@@ -22,8 +22,11 @@
 | **Malloy** | 分析/建模语言，可作为语义作者体验参考 | 托管 semantic service、catalog、workflow、身份和运行状态 | **MIT**；未从上游主资料确认官方商业云边界 | 高 | 作为语言/建模研究对象，不作为 MVP 主干 |
 | **Vanna 2.0** | 用户感知 NL-to-SQL、工具调用和流式 UI/Web 交互 | **通用 Typed SQG Compiler**、Ontology semantic layer 和 catalog | **MIT**；OSS 可自托管。付费层有 managed SaaS、on-prem Enterprise/Premium APIs，覆盖托管模型/存储、评测、观测、合规和扩缩等 | 中 | 可作为未来 Ask 交互层参考/组件；不作为唯一语义编译核心 |
 | **DB-GPT** | Agentic SQL/code workflow、分析执行、skills/sandbox | 确定性 semantic compiler、governed semantic layer 和安全执行证明 | **MIT**；本次未从主仓库/文档确认清晰的官方 open-core 付费边界 | 中 | 适合实验性 agent workflow；进入受控执行路径前必须转换为平台契约 |
+| **Azure Analysis Services** | 托管 Tabular semantic model、度量、关系、角色和企业 BI serving | 自然语言到 SQG、跨 Resolver 优化、Run/Stage/Node Runtime | 专有 Azure PaaS；使用 Analysis Services/Tabular 与客户端生态 | 中/高 | 已有 Microsoft BI Tabular 模型时作为权威语义来源/Resolver 候选，不作为新平台的完整控制与执行面 |
+| **Microsoft Fabric / Power BI semantic models** | 托管 Semantic Model、DAX 度量、关系、RLS、Import/DirectQuery/Direct Lake 分析面 | 本项目 SQG IR、通用编译器、非 Power BI 执行协调和结果 Manifest | 专有 SaaS；能力取决于 Fabric/Power BI 容量与许可 | 中 | Microsoft BI-first 组织的强选项；通过明确 adapter 接入，而不是把产品内部模型当作平台公共契约 |
+| **Azure Databricks Unity Catalog metric views** | 在 Unity Catalog 中集中定义 measures、dimensions 和关系，并由 Databricks SQL/BI/AI 消费 | 云无关 SQG Compiler、跨引擎 Optimizer、平台 Runtime 和结果契约 | Azure Databricks 商业托管能力；可用性与语法以目标区域/版本官方文档为准 | 中 | **与首个 Databricks Resolver 高度相关**：可作为指标定义来源，但仍需绑定到版本化 Ontology/SQG 并经过平台验证 |
 
-**选择：** 保持本仓库的 `semantic-core` 为权威契约/验证层；P1 首先用 WrenAI 做可替换的能力评估，因为它最接近单一 OSS 起点。若一体化能力的商业边界或内部模型不适合，退到 Cube Core（headless semantic layer）或独立 Compiler。Vanna/DB-GPT 不能成为执行授权边界。
+**选择：** 保持本仓库的 `semantic-core` 为权威契约/验证层；P1 首先用 WrenAI 做可替换的能力评估，因为它最接近单一 OSS 起点，并评估 Unity Catalog metric views 作为 Databricks 侧指标来源。若一体化能力的商业边界或内部模型不适合，退到 Cube Core（headless semantic layer）或独立 Compiler。Azure Analysis Services/Fabric/Power BI 适合已有 Microsoft BI 资产的组织，但都必须通过 adapter 进入本项目契约；Vanna/DB-GPT 不能成为执行授权边界。
 
 ## Metadata、Lineage 与计划标准
 
@@ -116,6 +119,8 @@ flowchart LR
 - WrenAI：[README](https://github.com/Canner/WrenAI/blob/main/README.md)、[LICENSE](https://github.com/Canner/WrenAI/blob/main/LICENSE)、[Open Core](https://getwren.ai/open-core)
 - Vanna：[README](https://github.com/vanna-ai/vanna/blob/main/README.md)、[LICENSE](https://github.com/vanna-ai/vanna/blob/main/LICENSE.txt)、[Build vs Buy](https://vanna.ai/premium)
 - DB-GPT：[README](https://github.com/eosphoros-ai/DB-GPT/blob/main/README.md)、[LICENSE](https://github.com/eosphoros-ai/DB-GPT/blob/main/LICENSE)
+- Microsoft semantic models：[Analysis Services platforms](https://learn.microsoft.com/analysis-services/ssas-overview)、[Power BI semantic models](https://learn.microsoft.com/power-bi/connect-data/service-datasets-understand)
+- Azure Databricks：[Unity Catalog semantics](https://learn.microsoft.com/azure/databricks/uc-semantics/)、[Metric views](https://learn.microsoft.com/azure/databricks/uc-semantics/metric-views/)
 - MetricFlow：[README/Licensing history](https://github.com/dbt-labs/metricflow/blob/main/README.md)、[dbt docs](https://docs.getdbt.com/docs/build/metricflow-commands)
 - Cube：[Cube Core README](https://github.com/cube-js/cube/blob/master/README.md)、[Cube docs](https://docs.cube.dev/docs/introduction)
 - Malloy：[Documentation](https://docs.malloydata.dev/documentation/)、[LICENSE](https://github.com/malloydata/malloy/blob/main/LICENSE)
@@ -126,4 +131,3 @@ flowchart LR
 - Temporal：[Documentation](https://docs.temporal.io/)、Dagster：[Dagster+ boundary](https://docs.dagster.io/deployment/dagster-plus)
 - OpenTelemetry：[Documentation](https://opentelemetry.io/docs/)、Keycloak：[Project](https://www.keycloak.org/)、Vault：[LICENSE](https://github.com/hashicorp/vault/blob/main/LICENSE)
 - Azure：[Container Apps](https://learn.microsoft.com/azure/container-apps/overview)、[AI Search](https://learn.microsoft.com/azure/search/search-what-is-azure-search)、[Foundry](https://learn.microsoft.com/azure/foundry/what-is-foundry)、[PostgreSQL](https://learn.microsoft.com/azure/postgresql/overview)、[Blob](https://learn.microsoft.com/azure/storage/blobs/storage-blobs-overview)、[Service Bus](https://learn.microsoft.com/azure/service-bus-messaging/service-bus-messaging-overview)、[Event Hubs](https://learn.microsoft.com/azure/event-hubs/event-hubs-about)、[Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)、[Entra](https://learn.microsoft.com/entra/fundamentals/what-is-entra)、[Key Vault](https://learn.microsoft.com/azure/key-vault/general/overview)、[Front Door](https://learn.microsoft.com/azure/frontdoor/front-door-overview)、[API Management](https://learn.microsoft.com/azure/api-management/api-management-key-concepts)
-
