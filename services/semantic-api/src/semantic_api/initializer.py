@@ -346,8 +346,21 @@ class DeterministicInitializer:
                 prefix,
             )
             is not None
-            or re.match(r"\s*(?:以外|之外)", suffix) is not None
-            or re.match(r"[\s,]*(?:excluded|omitted|left\s+out)\b", suffix) is not None
+            or re.match(
+                r"\s*(?:以外|之外|被排除|应(?:该)?(?:被)?排除|不应(?:该)?包括)",
+                suffix,
+            )
+            is not None
+            or re.match(
+                (
+                    r"[\s,]*(?:(?:(?:is|was)\s+)?"
+                    r"(?:excluded|omitted|left\s+out|not\s+included)|"
+                    r"(?:should|must)\s+(?:be\s+(?:excluded|omitted|left\s+out)|"
+                    r"not\s+be\s+included))\b"
+                ),
+                suffix,
+            )
+            is not None
         )
 
     def _normalize_time(

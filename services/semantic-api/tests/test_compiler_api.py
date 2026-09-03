@@ -154,6 +154,41 @@ async def test_problem_details_and_no_raw_exception_leak(
     assert "raw-secret-exception-text" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("question", "diagnostic_code"),
+    [
+        (
+            "Show regional quarterly profit where East is excluded",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 should be excluded",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit should be excluded",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        ("Show regional quarterly profit where 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional quarterly profit 去年应该被排除", "NEGATED_TIME_UNSUPPORTED"),
+        ("Show regional 利润应排除", "NEGATED_CONCEPT_UNSUPPORTED"),
+    ],
+)
+async def test_compile_fails_closed_for_copular_and_modal_negation(
+    question: str,
+    diagnostic_code: str,
+) -> None:
+    response = await SemanticCompiler.default().compile(
+        compiler_request(request_payload(question)),
+        "correlation",
+    )
+
+    assert response.status is CompileStatus.FAILED
+    assert response.candidate_sqg is None
+    assert response.normalized_sqg is None
+    assert diagnostic_code in {item.code for item in response.diagnostics}
+
+
 async def test_injection_shaped_question_is_marked_untrusted_data() -> None:
     captured: list[StructuredCompileContext] = []
     valid = StaticFixtureProvider._quarterly_profit([])
