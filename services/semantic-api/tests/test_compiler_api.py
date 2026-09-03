@@ -7,7 +7,7 @@ import httpx
 
 from semantic_api.api import create_app
 from semantic_api.compiler import SemanticCompiler
-from semantic_api.models import CompileStatus, Diagnostic
+from semantic_api.models import CompilationMode, CompileStatus, Diagnostic
 from semantic_api.ontology import OntologyRegistry
 from semantic_api.provider import (
     CompilerProvider,
@@ -38,7 +38,10 @@ async def test_repair_succeeds_once() -> None:
     )
     compiler = SemanticCompiler(registry, lambda _: provider)
 
-    response = await compiler.compile(compiler_request(request_payload()), "correlation")
+    response = await compiler.compile(
+        compiler_request(request_payload("Show regional quarterly profit")),
+        "correlation",
+    )
 
     assert response.status is CompileStatus.SUCCEEDED
     assert response.repair_attempted is True
@@ -178,9 +181,48 @@ async def test_resolved_member_is_preserved_as_exact_filter() -> None:
     member_filter = next(
         node
         for node in response.normalized_sqg.nodes  # type: ignore[union-attr]
-        if node.id == "filter_member"
+        if node.id == "filter_member_1"
     )
     assert member_filter.parameters.predicate.value == "region.east"  # type: ignore[union-attr]
+
+
+async def test_monthly_mode_preserves_all_member_and_time_constraints() -> None:
+    compiler = SemanticCompiler.default()
+    payload = request_payload("Compare East and West monthly regional profit 去年")
+    payload["compilation_mode"] = "monthly_regional_comparison"
+    response = await compiler.compile(compiler_request(payload), "correlation")
+
+    assert response.status is CompileStatus.SUCCEEDED
+    filters = [
+        node
+        for node in response.normalized_sqg.nodes  # type: ignore[union-attr]
+        if node.operator.value == "FILTER"
+    ]
+    assert len(filters) == 2
+    assert set(filters[0].parameters.predicate.value) == {  # type: ignore[arg-type,union-attr]
+        "region.east",
+        "region.west",
+    }
+    assert filters[1].parameters.predicate.operator.value == "between"  # type: ignore[union-attr]
+
+
+async def test_monthly_mode_rejects_quarterly_provider_shape() -> None:
+    candidate = StaticFixtureProvider._quarterly_profit([])
+    provider = StaticFixtureProvider(
+        compile_candidate=candidate,
+        repair_candidate=candidate,
+    )
+    compiler = SemanticCompiler(
+        OntologyRegistry.load_default(),
+        lambda _: provider,
+    )
+    payload = request_payload("Compare monthly regional profit")
+    payload["compilation_mode"] = CompilationMode.MONTHLY_REGIONAL_COMPARISON.value
+
+    response = await compiler.compile(compiler_request(payload), "correlation")
+
+    assert response.status is CompileStatus.FAILED
+    assert any(item.code.startswith("COMPILATION_MODE_") for item in response.diagnostics)
 
 
 def compiler_request(payload: dict[str, Any]) -> Any:

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class DiagnosticSeverity(StrEnum):
@@ -159,6 +159,8 @@ class OntologyRelation(StrictModel):
     id: str
     from_entity_id: str
     to_entity_id: str
+    from_field_id: str
+    to_field_id: str
     label: str
     enabled: bool = True
     query_policy: QueryPolicy = QueryPolicy.ALLOW

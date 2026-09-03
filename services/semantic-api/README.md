@@ -17,6 +17,10 @@ accepts, or executes SQL.
   live model calls, SQL generation, runtime execution, or data access paths.
 - Logs contain request metadata and exception types, not raw questions, catalogs, candidates,
   model payloads, secrets, or exception text.
+- Provider calls run in isolated asyncio tasks behind monotonic deadlines; late results are always
+  rejected and cancellation is requested. Python cannot forcibly terminate cancellation-resistant
+  in-process code, so production adapters must delegate blocking SDK work to a killable worker
+  process or use an SDK transport with enforceable network deadlines.
 
 `shared_contract_adapter.py` is the explicit seam for replacing package-internal v0 request and
 response models with foundation contracts without changing initializer, compiler, or validator

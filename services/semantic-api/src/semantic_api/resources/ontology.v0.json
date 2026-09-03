@@ -73,6 +73,26 @@
       "members": [],
       "enabled": false,
       "query_policy": "deny"
+    },
+    {
+      "id": "commerce.plan_record.region",
+      "entity_id": "commerce.plan_record",
+      "label": "Plan region",
+      "data_type": "string",
+      "synonyms": [],
+      "members": [],
+      "enabled": false,
+      "query_policy": "deny"
+    },
+    {
+      "id": "commerce.plan_record.period",
+      "entity_id": "commerce.plan_record",
+      "label": "Plan period",
+      "data_type": "datetime",
+      "synonyms": [],
+      "members": [],
+      "enabled": false,
+      "query_policy": "deny"
     }
   ],
   "metrics": [
@@ -109,6 +129,8 @@
       "id": "relation.sales_to_plan",
       "from_entity_id": "commerce.sales_record",
       "to_entity_id": "commerce.plan_record",
+      "from_field_id": "commerce.sales_record.region",
+      "to_field_id": "commerce.plan_record.region",
       "label": "Sales to plan",
       "enabled": false,
       "query_policy": "deny"

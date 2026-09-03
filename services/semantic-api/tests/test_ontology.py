@@ -15,6 +15,42 @@ def test_exact_machine_id_indexes(registry: OntologyRegistry) -> None:
     assert not registry.has_field("region")
 
 
+def test_cross_kind_machine_id_collision_is_rejected(
+    registry: OntologyRegistry,
+) -> None:
+    document = registry.document.model_copy(deep=True)
+    document.metrics[0].id = document.fields[2].id
+
+    try:
+        OntologyRegistry(document)
+    except ValueError as error:
+        assert "reused by field and metric" in str(error)
+    else:
+        raise AssertionError("cross-kind ID collision was accepted")
+
+
+def test_policy_lookup_is_kind_specific(registry: OntologyRegistry) -> None:
+    assert registry.concept_state("metric.profit", "metric") == (
+        True,
+        registry.metrics["metric.profit"].query_policy,
+    )
+    assert registry.concept_state("metric.profit", "field") is None
+
+
+def test_relation_endpoint_references_are_validated(
+    registry: OntologyRegistry,
+) -> None:
+    document = registry.document.model_copy(deep=True)
+    document.relations[0].to_field_id = "commerce.sales_record.period"
+
+    try:
+        OntologyRegistry(document)
+    except ValueError as error:
+        assert "invalid endpoint references" in str(error)
+    else:
+        raise AssertionError("invalid relation endpoint was accepted")
+
+
 def test_relevance_retrieval_returns_only_related_slice(
     registry: OntologyRegistry,
 ) -> None:

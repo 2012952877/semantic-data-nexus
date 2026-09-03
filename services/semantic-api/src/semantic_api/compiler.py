@@ -120,7 +120,11 @@ class SemanticCompiler:
 
         validation_start = perf_counter()
         validation = self.validator.validate(
-            provider_result.candidate, initialization.selected_semantic_context
+            provider_result.candidate,
+            initialization.selected_semantic_context,
+            initialization.resolved_terms,
+            initialization.time_windows,
+            request.compilation_mode,
         )
         validation_ms = self._elapsed_ms(validation_start)
         tokens = self._tokens(provider_result)
@@ -173,7 +177,11 @@ class SemanticCompiler:
         provider_ms += self._elapsed_ms(repair_start)
         repair_validation_start = perf_counter()
         repaired = self.validator.validate(
-            repair_result.candidate, initialization.selected_semantic_context
+            repair_result.candidate,
+            initialization.selected_semantic_context,
+            initialization.resolved_terms,
+            initialization.time_windows,
+            request.compilation_mode,
         )
         validation_ms += self._elapsed_ms(repair_validation_start)
         repair_tokens = self._tokens(repair_result)

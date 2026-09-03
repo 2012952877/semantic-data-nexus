@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from importlib.resources import files
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 from semantic_api.models import (
     OntologyDocument,
@@ -34,11 +34,22 @@ class OntologyRegistry:
         self.metrics = self._unique_index(document.metrics, "metric")
         self.relations = self._unique_index(document.relations, "relation")
         self.members: dict[str, tuple[str, OntologyMember]] = {}
+        global_ids: dict[str, str] = {}
+        for kind, index in (
+            ("entity", self.entities),
+            ("field", self.fields),
+            ("metric", self.metrics),
+            ("relation", self.relations),
+        ):
+            for machine_id in index:
+                self._register_global_id(global_ids, machine_id, kind)
         for field in document.fields:
             for member in field.members:
                 if member.id in self.members:
                     raise ValueError(f"duplicate ontology member ID: {member.id}")
+                self._register_global_id(global_ids, member.id, "member")
                 self.members[member.id] = (field.id, member)
+        self._validate_references()
 
     @staticmethod
     def _unique_index(items: Iterable[_IdentifiedType], kind: str) -> dict[str, _IdentifiedType]:
@@ -49,6 +60,41 @@ class OntologyRegistry:
                 raise ValueError(f"duplicate ontology {kind} ID: {item_id}")
             index[item_id] = item
         return index
+
+    @staticmethod
+    def _register_global_id(index: dict[str, str], machine_id: str, kind: str) -> None:
+        existing_kind = index.get(machine_id)
+        if existing_kind is not None:
+            raise ValueError(f"ontology ID {machine_id!r} is reused by {existing_kind} and {kind}")
+        index[machine_id] = kind
+
+    def _validate_references(self) -> None:
+        for field in self.fields.values():
+            if field.entity_id not in self.entities:
+                raise ValueError(
+                    f"ontology field {field.id!r} references unknown entity {field.entity_id!r}"
+                )
+        for metric in self.metrics.values():
+            if metric.entity_id not in self.entities:
+                raise ValueError(
+                    f"ontology metric {metric.id!r} references unknown entity {metric.entity_id!r}"
+                )
+        for relation in self.relations.values():
+            from_field = self.fields.get(relation.from_field_id)
+            to_field = self.fields.get(relation.to_field_id)
+            if (
+                relation.from_entity_id not in self.entities
+                or relation.to_entity_id not in self.entities
+                or from_field is None
+                or to_field is None
+                or from_field.entity_id != relation.from_entity_id
+                or to_field.entity_id != relation.to_entity_id
+            ):
+                raise ValueError(
+                    f"ontology relation {relation.id!r} has invalid endpoint references"
+                )
+            if from_field.data_type is not to_field.data_type:
+                raise ValueError(f"ontology relation {relation.id!r} has incompatible key types")
 
     @classmethod
     def load_default(cls) -> OntologyRegistry:
@@ -71,21 +117,33 @@ class OntologyRegistry:
     def has_member(self, machine_id: str) -> bool:
         return machine_id in self.members
 
-    def concept_state(self, machine_id: str) -> tuple[bool, QueryPolicy] | None:
-        concept: OntologyEntity | OntologyField | OntologyMetric | OntologyRelation | None
-        concept = self.entities.get(machine_id)
-        if concept is None:
-            concept = self.fields.get(machine_id)
-        if concept is None:
-            concept = self.metrics.get(machine_id)
-        if concept is None:
-            concept = self.relations.get(machine_id)
+    def concept_state(
+        self,
+        machine_id: str,
+        kind: Literal["entity", "field", "metric", "relation"],
+    ) -> tuple[bool, QueryPolicy] | None:
+        concepts: dict[
+            str,
+            dict[str, OntologyEntity]
+            | dict[str, OntologyField]
+            | dict[str, OntologyMetric]
+            | dict[str, OntologyRelation],
+        ] = {
+            "entity": self.entities,
+            "field": self.fields,
+            "metric": self.metrics,
+            "relation": self.relations,
+        }
+        concept = concepts[kind].get(machine_id)
         if concept is not None:
             return concept.enabled, concept.query_policy
-        member_entry = self.members.get(machine_id)
-        if member_entry is not None:
-            return member_entry[1].enabled, QueryPolicy.ALLOW
         return None
+
+    def member_state(self, machine_id: str) -> tuple[bool, QueryPolicy] | None:
+        member_entry = self.members.get(machine_id)
+        if member_entry is None:
+            return None
+        return member_entry[1].enabled, QueryPolicy.ALLOW
 
     def retrieve(
         self,
