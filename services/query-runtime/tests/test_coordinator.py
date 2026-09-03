@@ -706,6 +706,119 @@ async def test_noncooperative_resolver_cannot_extend_node_deadline(
 
 
 @pytest.mark.asyncio
+async def test_timed_out_operator_retains_input_and_output_memory_until_settled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, resolver, table_bytes = _memory_chain_fixture()
+    release = asyncio.Event()
+    operator_started = asyncio.Event()
+    resolver_calls = 0
+    original_resolver_execute = resolver.execute
+
+    async def counted_resolver_execute(fragment, cancel_event):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        return await original_resolver_execute(fragment, cancel_event)
+
+    async def cancellation_resistant_operator(operation, inputs, cancel_event):
+        operator_started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        return inputs[0]
+
+    monkeypatch.setattr(resolver, "execute", counted_resolver_execute)
+    coordinator = QueryCoordinator(
+        resolver=resolver,
+        result_store=InlineResultStore(),
+        limits=ResourceLimits(
+            max_bytes=table_bytes,
+            max_in_flight_bytes=table_bytes * 2,
+            node_timeout_seconds=0.02,
+        ),
+    )
+    monkeypatch.setattr(
+        coordinator.executor, "execute", cancellation_resistant_operator
+    )
+
+    outcome = await coordinator.run(plan, run_id="run-retained-input")
+    assert outcome.summary.state is ExecutionState.TIMED_OUT
+    await operator_started.wait()
+    assert coordinator._memory.current == table_bytes * 2
+
+    blocked = await coordinator.run(plan, run_id="run-retained-input-blocked")
+    assert blocked.summary.diagnostic_code == "LIMIT_IN_FLIGHT_BYTES_EXCEEDED"
+    assert resolver_calls == 1
+
+    release.set()
+    for _ in range(200):
+        if coordinator._memory.current == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert coordinator._memory.current == 0
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_multi_input_retention_does_not_leak_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = join_sort_fixture()
+    operator_release = asyncio.Event()
+    first_retained = asyncio.Event()
+    retain_release = asyncio.Event()
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        limits=ResourceLimits(
+            max_bytes=100_000,
+            max_in_flight_bytes=300_000,
+            node_timeout_seconds=0.02,
+        ),
+    )
+
+    async def cancellation_resistant_join(operation, inputs, cancel_event):
+        while not operator_release.is_set():
+            try:
+                await operator_release.wait()
+            except asyncio.CancelledError:
+                continue
+        return inputs[0]
+
+    original_retain = coordinator._memory.retain
+    retained_count = 0
+
+    async def pausing_retain(run_id: str, node_id: str) -> None:
+        nonlocal retained_count
+        await original_retain(run_id, node_id)
+        retained_count += 1
+        if retained_count == 1:
+            first_retained.set()
+            await retain_release.wait()
+
+    monkeypatch.setattr(coordinator.executor, "execute", cancellation_resistant_join)
+    monkeypatch.setattr(coordinator._memory, "retain", pausing_retain)
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-retention-race")
+    )
+    await first_retained.wait()
+    task.cancel()
+    retain_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    operator_release.set()
+    for _ in range(200):
+        if coordinator._memory.current == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert coordinator._memory.current == 0
+    assert not coordinator._memory._retainers
+    assert not coordinator._memory._release_pending
+
+
+@pytest.mark.asyncio
 async def test_global_memory_budget_counts_parallel_tables(tmp_path: Path) -> None:
     fixture = join_sort_fixture()
     budget = 100_000

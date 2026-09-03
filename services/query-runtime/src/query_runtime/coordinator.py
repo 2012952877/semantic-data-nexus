@@ -61,6 +61,8 @@ class _MemoryBudget:
         self.current = 0
         self._reservations: dict[tuple[str, str], int] = {}
         self._deferred: set[tuple[str, str]] = set()
+        self._retainers: dict[tuple[str, str], int] = {}
+        self._release_pending: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
 
     async def reserve(self, run_id: str, node_id: str, size: int) -> None:
@@ -94,8 +96,12 @@ class _MemoryBudget:
     async def release(self, run_id: str, node_id: str) -> None:
         async with self._lock:
             key = (run_id, node_id)
+            if self._retainers.get(key, 0) > 0:
+                self._release_pending.add(key)
+                return
             size = self._reservations.pop(key, 0)
             self._deferred.discard(key)
+            self._release_pending.discard(key)
             self.current = max(0, self.current - size)
 
     async def defer(self, run_id: str, node_id: str) -> None:
@@ -104,14 +110,48 @@ class _MemoryBudget:
             if key in self._reservations:
                 self._deferred.add(key)
 
+    async def retain(self, run_id: str, node_id: str) -> None:
+        async with self._lock:
+            key = (run_id, node_id)
+            if key not in self._reservations:
+                raise RuntimeFailure(
+                    "MEMORY_RESERVATION_MISSING",
+                    "Cannot retain an input without an active memory reservation",
+                    details={"node_id": node_id},
+                )
+            self._retainers[key] = self._retainers.get(key, 0) + 1
+
+    async def release_retained(self, run_id: str, node_id: str) -> None:
+        async with self._lock:
+            key = (run_id, node_id)
+            retained = self._retainers.get(key, 0)
+            if retained <= 1:
+                self._retainers.pop(key, None)
+                if key in self._release_pending:
+                    size = self._reservations.pop(key, 0)
+                    self._deferred.discard(key)
+                    self._release_pending.discard(key)
+                    self.current = max(0, self.current - size)
+                return
+            self._retainers[key] = retained - 1
+
     async def release_run(self, run_id: str) -> None:
         async with self._lock:
+            retained = {
+                key
+                for key in self._reservations
+                if key[0] == run_id and self._retainers.get(key, 0) > 0
+            }
+            self._release_pending.update(retained)
             keys = [
                 key
                 for key in self._reservations
-                if key[0] == run_id and key not in self._deferred
+                if key[0] == run_id
+                and key not in self._deferred
+                and key not in retained
             ]
             released = sum(self._reservations.pop(key) for key in keys)
+            self._release_pending.difference_update(keys)
             self.current = max(0, self.current - released)
 
 
@@ -414,7 +454,9 @@ class QueryCoordinator:
         machine = StateMachine()
         started = time.monotonic()
         reserved = False
+        cleanup_deferred = False
         execution: asyncio.Task[tuple[pa.Table, CommittedManifest]] | None = None
+        inputs: tuple[pa.Table, ...] = ()
         machine.transition(ExecutionState.READY)
         await emitter.emit(
             scope="node",
@@ -450,13 +492,19 @@ class QueryCoordinator:
                 )
                 if execution not in done:
                     cancel_event.set()
-                    await memory.defer(run_id, node.id)
-                    execution.cancel()
-                    self._defer_node_cleanup(
-                        execution, memory, run_id, node.id
+                    was_cancelled = await self._handoff_deferred_execution(
+                        execution,
+                        memory,
+                        run_id,
+                        node.id,
+                        node.dependencies,
+                        inputs,
                     )
+                    cleanup_deferred = True
                     if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                         self._request_resolver_cancel(run_id, node.id)
+                    if was_cancelled:
+                        raise asyncio.CancelledError
                     await self._emit_node_terminal(
                         machine,
                         emitter,
@@ -521,10 +569,20 @@ class QueryCoordinator:
         except asyncio.CancelledError:
             if machine.state in TERMINAL_STATES:
                 raise
-            if execution is not None and not execution.done():
-                await memory.defer(run_id, node.id)
-                execution.cancel()
-                self._defer_node_cleanup(execution, memory, run_id, node.id)
+            if (
+                execution is not None
+                and not execution.done()
+                and not cleanup_deferred
+            ):
+                await self._handoff_deferred_execution(
+                    execution,
+                    memory,
+                    run_id,
+                    node.id,
+                    node.dependencies,
+                    inputs,
+                )
+                cleanup_deferred = True
             if reserved:
                 await memory.release(run_id, node.id)
             cancel_event.set()
@@ -758,12 +816,77 @@ class QueryCoordinator:
         memory: _MemoryBudget,
         run_id: str,
         node_id: str,
+        dependency_ids: tuple[str, ...],
+        retained_inputs: tuple[pa.Table, ...],
     ) -> None:
         cleanup = asyncio.create_task(
-            self._observe_node_cleanup(execution, memory, run_id, node_id)
+            self._observe_node_cleanup(
+                execution,
+                memory,
+                run_id,
+                node_id,
+                dependency_ids,
+                retained_inputs,
+            )
         )
         self._node_cleanups.add(cleanup)
         cleanup.add_done_callback(self._finish_node_cleanup)
+
+    async def _handoff_deferred_execution(
+        self,
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+        dependency_ids: tuple[str, ...],
+        retained_inputs: tuple[pa.Table, ...],
+    ) -> bool:
+        handoff = asyncio.create_task(
+            self._prepare_deferred_execution(
+                execution,
+                memory,
+                run_id,
+                node_id,
+                dependency_ids,
+                retained_inputs,
+            )
+        )
+        was_cancelled = await _wait_for_task_completion(handoff)
+        handoff.result()
+        return was_cancelled
+
+    async def _prepare_deferred_execution(
+        self,
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+        dependency_ids: tuple[str, ...],
+        retained_inputs: tuple[pa.Table, ...],
+    ) -> None:
+        retained: list[str] = []
+        try:
+            await memory.defer(run_id, node_id)
+            for dependency in dependency_ids:
+                await memory.retain(run_id, dependency)
+                retained.append(dependency)
+        except BaseException:
+            for dependency in reversed(retained):
+                await memory.release_retained(run_id, dependency)
+            execution.cancel()
+            self._defer_node_cleanup(
+                execution, memory, run_id, node_id, (), ()
+            )
+            raise
+        execution.cancel()
+        self._defer_node_cleanup(
+            execution,
+            memory,
+            run_id,
+            node_id,
+            tuple(retained),
+            retained_inputs,
+        )
 
     async def _observe_node_cleanup(
         self,
@@ -771,6 +894,8 @@ class QueryCoordinator:
         memory: _MemoryBudget,
         run_id: str,
         node_id: str,
+        dependency_ids: tuple[str, ...],
+        retained_inputs: tuple[pa.Table, ...],
     ) -> None:
         done, _ = await asyncio.wait(
             {execution},
@@ -780,15 +905,24 @@ class QueryCoordinator:
             execution.cancel()
             execution.add_done_callback(
                 lambda task: self._schedule_late_execution_release(
-                    task, memory, run_id, node_id
+                    task,
+                    memory,
+                    run_id,
+                    node_id,
+                    dependency_ids,
+                    retained_inputs,
                 )
             )
             return
         try:
             execution.result()
         except (asyncio.CancelledError, Exception):
-            return
-        await memory.release(run_id, node_id)
+            pass
+        else:
+            await memory.release(run_id, node_id)
+        finally:
+            for dependency in dependency_ids:
+                await memory.release_retained(run_id, dependency)
 
     def _schedule_late_execution_release(
         self,
@@ -796,27 +930,40 @@ class QueryCoordinator:
         memory: _MemoryBudget,
         run_id: str,
         node_id: str,
+        dependency_ids: tuple[str, ...],
+        retained_inputs: tuple[pa.Table, ...],
     ) -> None:
         release = asyncio.create_task(
-            self._release_successful_late_execution(
-                execution, memory, run_id, node_id
+            self._release_late_execution(
+                execution,
+                memory,
+                run_id,
+                node_id,
+                dependency_ids,
+                retained_inputs,
             )
         )
         self._deferred_releases.add(release)
         release.add_done_callback(self._finish_deferred_release)
 
-    async def _release_successful_late_execution(
+    async def _release_late_execution(
         self,
         execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
         memory: _MemoryBudget,
         run_id: str,
         node_id: str,
+        dependency_ids: tuple[str, ...],
+        retained_inputs: tuple[pa.Table, ...],
     ) -> None:
         try:
             execution.result()
         except (asyncio.CancelledError, Exception):
-            return
-        await memory.release(run_id, node_id)
+            pass
+        else:
+            await memory.release(run_id, node_id)
+        finally:
+            for dependency in dependency_ids:
+                await memory.release_retained(run_id, dependency)
 
     def _finish_node_cleanup(self, task: asyncio.Task[None]) -> None:
         self._node_cleanups.discard(task)
