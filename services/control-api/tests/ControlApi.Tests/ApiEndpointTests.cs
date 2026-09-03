@@ -486,6 +486,116 @@ public sealed class ApiEndpointTests
         Assert.Equal(0, backend.StatusCalls);
     }
 
+    [Fact]
+    public async Task FeedbackWaitsForPendingStartProjection()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartEntered = NewGate(),
+            ReleaseStart = NewGate()
+        };
+        var coordinator = new ObservableRunDispatchCoordinator();
+        await using var factory = new ControlApiFactory(
+            backend,
+            dispatchCoordinator: coordinator);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+
+        var createTask = client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("feedback-start-race", "synthetic-workload"));
+        await backend.StartEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var pending = Assert.Single(list!.Items);
+
+        var feedbackTask = client.PostAsJsonAsync(
+            $"/api/v1/runs/{pending.Id}/feedback",
+            new SubmitFeedbackRequest(
+                "feedback-race",
+                5,
+                FeedbackOutcome.Helpful,
+                ["clear"],
+                pending.Version),
+            JsonOptions);
+        await coordinator.WaitForAttemptAsync(2).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(feedbackTask.IsCompleted);
+
+        backend.ReleaseStart.TrySetResult(true);
+        var created = await createTask;
+        var feedback = await feedbackTask;
+        var current = await client.GetFromJsonAsync<RunMetadata>(
+            $"/api/v1/runs/{pending.Id}",
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, feedback.StatusCode);
+        Assert.Equal(RunState.Starting, current!.State);
+        Assert.Equal(1, backend.StartCalls);
+    }
+
+    [Fact]
+    public async Task CancellationBeforeInitialDispatchFinalizesLocally()
+    {
+        var backend = new StubSemanticBackendClient();
+        var coordinator = new DelayedFirstRunDispatchCoordinator();
+        await using var factory = new ControlApiFactory(
+            backend,
+            dispatchCoordinator: coordinator);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+
+        var createTask = client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("cancel-before-start", "synthetic-workload"));
+        await coordinator.FirstAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var pending = Assert.Single(list!.Items);
+
+        var cancel = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{pending.Id}/cancel",
+            new CancelRunRequest(pending.Version),
+            JsonOptions);
+        var locallyCancelled = await cancel.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        coordinator.ReleaseFirst.TrySetResult(true);
+        var create = await createTask;
+        var createReplay = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, cancel.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, create.StatusCode);
+        Assert.Equal(RunState.Cancelled, locallyCancelled!.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, locallyCancelled.CancellationDelivery);
+        Assert.Equal(RunState.Cancelled, createReplay!.State);
+        Assert.Equal(0, backend.StartCalls);
+        Assert.Equal(0, backend.CancelCalls);
+    }
+
+    [Fact]
+    public async Task NonexistentRunsDoNotAllocateDispatchGates()
+    {
+        var coordinator = new ObservableRunDispatchCoordinator();
+        await using var factory = new ControlApiFactory(
+            dispatchCoordinator: coordinator);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var missing = RunId.New();
+
+        var cancel = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{missing}/cancel",
+            new CancelRunRequest(null));
+        var status = await client.GetAsync($"/api/v1/runs/{missing}/semantic-status");
+        var feedback = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{missing}/feedback",
+            new SubmitFeedbackRequest(
+                "missing-feedback",
+                5,
+                FeedbackOutcome.Helpful,
+                [],
+                1),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.NotFound, cancel.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, status.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, feedback.StatusCode);
+        Assert.Equal(0, coordinator.AttemptCount);
+    }
+
     private static JsonSerializerOptions CreateJsonOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);

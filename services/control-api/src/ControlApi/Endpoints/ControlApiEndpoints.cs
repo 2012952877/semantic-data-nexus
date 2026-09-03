@@ -234,6 +234,11 @@ public static class ControlApiEndpoints
             return problem;
         }
 
+        if (await repository.GetAsync(id, cancellationToken) is null)
+        {
+            return NotFound(context);
+        }
+
         await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
             id,
             cancellationToken);
@@ -267,6 +272,11 @@ public static class ControlApiEndpoints
             return problem;
         }
 
+        if (await repository.GetAsync(id, cancellationToken) is null)
+        {
+            return NotFound(context);
+        }
+
         await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
             id,
             cancellationToken);
@@ -291,6 +301,7 @@ public static class ControlApiEndpoints
         ClaimsPrincipal principal,
         HttpContext context,
         IRunRepository repository,
+        IRunDispatchCoordinator dispatchCoordinator,
         CancellationToken cancellationToken)
     {
         if (!TryRunId(runId, context, out var id, out var problem))
@@ -304,6 +315,14 @@ public static class ControlApiEndpoints
             return validation;
         }
 
+        if (await repository.GetAsync(id, cancellationToken) is null)
+        {
+            return NotFound(context);
+        }
+
+        await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
+            id,
+            cancellationToken);
         var created = await repository.SubmitFeedbackAsync(
             id,
             request,

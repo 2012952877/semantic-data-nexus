@@ -252,6 +252,27 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                     $"Run version {expectedVersion} is stale; current version is {current.Version}.");
             }
 
+            if (current.State == RunState.StartPending)
+            {
+                var now = timeProvider.GetUtcNow();
+                var cancelled = current with
+                {
+                    State = RunState.Cancelled,
+                    CancellationDelivery = CancellationDeliveryState.Delivered,
+                    CancellationGeneration = current.CancellationGeneration + 1,
+                    UpdatedAt = now,
+                    StartedAt = current.CreatedAt,
+                    CompletedAt = now,
+                    Version = current.Version + 1
+                };
+                runs[id] = cancelled;
+                return Task.FromResult(new MutationResult(
+                    cancelled,
+                    true,
+                    false,
+                    cancelled.CancellationGeneration));
+            }
+
             var updated = current with
             {
                 State = RunState.CancelRequested,

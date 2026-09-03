@@ -84,7 +84,7 @@ public static class RunStateMachine
         {
             [RunState.StartPending] =
                 [RunState.DispatchUnknown, RunState.Queued, RunState.Starting, RunState.Running,
-                    RunState.CancelRequested, RunState.Succeeded, RunState.Failed],
+                    RunState.CancelRequested, RunState.Cancelled, RunState.Succeeded, RunState.Failed],
             [RunState.DispatchUnknown] =
                 [RunState.Queued, RunState.Starting, RunState.Running, RunState.CancelRequested,
                     RunState.Succeeded, RunState.Failed],

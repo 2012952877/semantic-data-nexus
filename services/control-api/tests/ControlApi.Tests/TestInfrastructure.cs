@@ -76,6 +76,8 @@ public sealed class ObservableRunDispatchCoordinator : IRunDispatchCoordinator
     private readonly Dictionary<int, TaskCompletionSource<bool>> waiters = [];
     private int attempts;
 
+    public int AttemptCount => Volatile.Read(ref attempts);
+
     public ValueTask<IAsyncDisposable> AcquireAsync(
         RunId runId,
         CancellationToken cancellationToken)
@@ -113,6 +115,31 @@ public sealed class ObservableRunDispatchCoordinator : IRunDispatchCoordinator
         }
 
         return waiter.Task.WaitAsync(cancellationToken);
+    }
+}
+
+public sealed class DelayedFirstRunDispatchCoordinator : IRunDispatchCoordinator
+{
+    private readonly RunDispatchCoordinator inner = new();
+    private int attempts;
+
+    public TaskCompletionSource<bool> FirstAttempted { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public TaskCompletionSource<bool> ReleaseFirst { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async ValueTask<IAsyncDisposable> AcquireAsync(
+        RunId runId,
+        CancellationToken cancellationToken)
+    {
+        if (Interlocked.Increment(ref attempts) == 1)
+        {
+            FirstAttempted.TrySetResult(true);
+            await ReleaseFirst.Task.WaitAsync(cancellationToken);
+        }
+
+        return await inner.AcquireAsync(runId, cancellationToken);
     }
 }
 

@@ -39,7 +39,8 @@ public sealed class RepositoryTests
             default);
 
         Assert.True(first.Changed);
-        Assert.True(first.RequiresDispatch);
+        Assert.False(first.RequiresDispatch);
+        Assert.Equal(RunState.Cancelled, first.Run.State);
         Assert.False(second.Changed);
         Assert.False(second.RequiresDispatch);
         Assert.Equal(delivered.Version, second.Run.Version);
