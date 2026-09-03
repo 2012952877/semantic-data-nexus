@@ -1,0 +1,34 @@
+{
+  "contract_version": "ontology/v0",
+  "ontology_id": "retail_demo",
+  "version": "retail.v1",
+  "entities": [
+    {
+      "id": "sales",
+      "description": "Synthetic quarterly regional sales facts",
+      "fields": [
+        { "id": "region", "data_type": "string", "nullable": false },
+        { "id": "quarter", "data_type": "string", "nullable": false },
+        { "id": "profit", "data_type": "decimal", "nullable": false }
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "id": "profit",
+      "entity": "sales",
+      "field": "profit",
+      "aggregation": "SUM",
+      "description": "Synthetic profit metric used only by the example"
+    }
+  ],
+  "relations": [],
+  "resolvers": [
+    {
+      "id": "sales_region_values",
+      "entity": "sales",
+      "field": "region",
+      "kind": "static"
+    }
+  ]
+}

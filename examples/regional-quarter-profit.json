@@ -1,0 +1,75 @@
+{
+  "contract_version": "sqg/v0",
+  "query_id": "regional_quarter_profit",
+  "ontology_version": "retail.v1",
+  "nodes": [
+    {
+      "id": "select_sales",
+      "operator": "SELECT",
+      "inputs": [],
+      "params": {
+        "entity": "sales",
+        "fields": ["region", "quarter", "profit"]
+      },
+      "outputs": [
+        { "name": "region", "data_type": "string", "nullable": false },
+        { "name": "quarter", "data_type": "string", "nullable": false },
+        { "name": "profit", "data_type": "decimal", "nullable": false }
+      ]
+    },
+    {
+      "id": "filter_quarter",
+      "operator": "FILTER",
+      "inputs": ["select_sales"],
+      "params": {
+        "predicate": { "field": "quarter", "op": "EQ", "value": "2026-Q2" }
+      },
+      "outputs": [
+        { "name": "region", "data_type": "string", "nullable": false },
+        { "name": "quarter", "data_type": "string", "nullable": false },
+        { "name": "profit", "data_type": "decimal", "nullable": false }
+      ]
+    },
+    {
+      "id": "aggregate_profit",
+      "operator": "AGGREGATE",
+      "inputs": ["filter_quarter"],
+      "params": {
+        "group_by": ["region", "quarter"],
+        "measures": [{ "metric": "profit", "name": "profit" }]
+      },
+      "outputs": [
+        { "name": "region", "data_type": "string", "nullable": false },
+        { "name": "quarter", "data_type": "string", "nullable": false },
+        { "name": "profit", "data_type": "decimal", "nullable": false }
+      ]
+    },
+    {
+      "id": "sort_profit",
+      "operator": "SORT",
+      "inputs": ["aggregate_profit"],
+      "params": {
+        "keys": [{ "field": "profit", "direction": "DESC" }]
+      },
+      "outputs": [
+        { "name": "region", "data_type": "string", "nullable": false },
+        { "name": "quarter", "data_type": "string", "nullable": false },
+        { "name": "profit", "data_type": "decimal", "nullable": false }
+      ]
+    },
+    {
+      "id": "project_answer",
+      "operator": "PROJECT",
+      "inputs": ["sort_profit"],
+      "params": {
+        "fields": ["region", "quarter", "profit"]
+      },
+      "outputs": [
+        { "name": "region", "data_type": "string", "nullable": false },
+        { "name": "quarter", "data_type": "string", "nullable": false },
+        { "name": "profit", "data_type": "decimal", "nullable": false }
+      ]
+    }
+  ],
+  "root": "project_answer"
+}
