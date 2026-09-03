@@ -39,7 +39,7 @@ Vue Router 使用浏览器历史模式，部署静态产物时需要将未知路
 - `src/views/`：路由级页面；技术细节通过 `details` 渐进展示。
 - `src/components/`：应用壳、阶段账本、结果表与运行详情。
 
-Mock 历史使用 `semantic-nexus:runs`，载荷包含 `version: 1`，只保存在当前浏览器。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic 与 Manifest。损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略；刷新时仍在运行的记录会终止为可重试的中断诊断。
+Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus:run:v1:`），只保存在当前浏览器。逐记录写入和 storage event 同步避免不同标签页覆盖彼此，运行 ID 使用 UUID。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic、Manifest 与执行租约。损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略；只有当前所有者或心跳超过 30 秒的运行才会被终止为可重试的中断诊断。旧版聚合键 `semantic-nexus:runs` 会被安全迁移。
 
 ## Mock 场景
 

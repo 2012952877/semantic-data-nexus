@@ -99,6 +99,10 @@ export interface Run {
   diagnostics: Diagnostic[]
   manifest?: CommittedManifest
   scenario: MockScenario
+  executionLease?: {
+    ownerId: string
+    heartbeatAt: string
+  }
 }
 
 export interface OntologyField {

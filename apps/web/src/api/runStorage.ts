@@ -13,11 +13,17 @@ import type {
 
 export const RUN_STORAGE_KEY = 'semantic-nexus:runs'
 export const RUN_STORAGE_QUARANTINE_KEY = 'semantic-nexus:runs:quarantine'
+export const RUN_STORAGE_RECORD_PREFIX = 'semantic-nexus:run:v1:'
 export const RUN_STORAGE_VERSION = 1
 
 export interface StoredRuns {
   version: number
   runs: Run[]
+}
+
+interface StoredRun {
+  version: number
+  run: Run
 }
 
 interface ParsedStoredRuns {
@@ -162,6 +168,10 @@ export const isRun = (value: unknown): value is Run =>
   && value.diagnostics.every(isDiagnostic)
   && (value.manifest === undefined || isManifest(value.manifest))
   && isEnumValue(value.scenario, scenarios)
+  && (value.executionLease === undefined
+    || (isRecord(value.executionLease)
+      && isString(value.executionLease.ownerId)
+      && isDateString(value.executionLease.heartbeatAt)))
 
 export const parseStoredRuns = (raw: string): ParsedStoredRuns => {
   let parsed: unknown
@@ -182,3 +192,22 @@ export const parseStoredRuns = (raw: string): ParsedStoredRuns => {
     reason: runs.length !== parsed.runs.length ? 'invalid-run-entry' : undefined,
   }
 }
+
+export const parseStoredRun = (raw: string): Run | undefined => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(parsed) || parsed.version !== RUN_STORAGE_VERSION || !isRun(parsed.run)) {
+    return undefined
+  }
+  return parsed.run
+}
+
+export const serializeStoredRun = (run: Run) =>
+  JSON.stringify({ version: RUN_STORAGE_VERSION, run } satisfies StoredRun)
+
+export const runStorageKey = (id: string) =>
+  `${RUN_STORAGE_RECORD_PREFIX}${encodeURIComponent(id)}`

@@ -6,7 +6,9 @@ import {
 import {
   RUN_STORAGE_KEY,
   RUN_STORAGE_QUARANTINE_KEY,
+  RUN_STORAGE_RECORD_PREFIX,
   RUN_STORAGE_VERSION,
+  runStorageKey,
 } from '@/api/runStorage'
 import type { AskRequest, Run } from '@/domain'
 
@@ -23,16 +25,17 @@ const store = (runs: unknown[], version = RUN_STORAGE_VERSION) => {
 }
 
 describe('run history storage', () => {
-  it('continues IDs after the highest persisted synthetic ID', async () => {
-    const firstClient = new MockSemanticNexusClient(0, false)
+  it('uses collision-resistant IDs and merges stale cross-tab clients', async () => {
+    const firstClient = new MockSemanticNexusClient(0, false, 'client-a')
+    const secondClient = new MockSemanticNexusClient(0, false, 'client-b')
     const first = await firstClient.startRun(request)
-    const reloadedClient = new MockSemanticNexusClient(0, false)
-    const second = await reloadedClient.startRun(request)
+    const second = await secondClient.startRun(request)
 
-    expect(first.id).toBe('run-syn-1003')
-    expect(second.id).toBe('run-syn-1004')
-    expect((await reloadedClient.listRuns()).map((run) => run.id)).toEqual(
-      expect.arrayContaining(['run-syn-1003', 'run-syn-1004']),
+    expect(first.id).toMatch(/^run-syn-[0-9a-f-]{36}$/)
+    expect(second.id).toMatch(/^run-syn-[0-9a-f-]{36}$/)
+    expect(second.id).not.toBe(first.id)
+    expect((await firstClient.listRuns()).map((run) => run.id)).toEqual(
+      expect.arrayContaining([first.id, second.id]),
     )
   })
 
@@ -71,7 +74,7 @@ describe('run history storage', () => {
       key,
       value,
     ) {
-      if (key === RUN_STORAGE_KEY) {
+      if (key.startsWith(RUN_STORAGE_RECORD_PREFIX)) {
         throw new DOMException('Quota exceeded', 'QuotaExceededError')
       }
       originalSetItem.call(this, key, value)
@@ -109,6 +112,54 @@ describe('run history storage', () => {
     }))
   })
 
+  it('does not terminalize another client active under a fresh heartbeat', async () => {
+    const active = createSeedRun('run-syn-active-tab', '其他标签页运行', 'succeeded', 1)
+    active.state = 'running'
+    active.completedAt = undefined
+    active.result = undefined
+    active.manifest = undefined
+    active.stages = createStages()
+    active.stages[0]!.state = 'running'
+    active.executionLease = {
+      ownerId: 'client-a',
+      heartbeatAt: new Date().toISOString(),
+    }
+    store([active])
+
+    const otherClient = new MockSemanticNexusClient(0, false, 'client-b')
+
+    await expect(otherClient.getRun(active.id)).resolves.toEqual(
+      expect.objectContaining({ state: 'running' }),
+    )
+  })
+
+  it('terminalizes another client run after its heartbeat becomes stale', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T12:00:00Z'))
+    const active = createSeedRun('run-syn-stale-later', '稍后过期运行', 'succeeded', 1)
+    active.state = 'running'
+    active.completedAt = undefined
+    active.result = undefined
+    active.manifest = undefined
+    active.stages = createStages()
+    active.stages[0]!.state = 'running'
+    active.executionLease = {
+      ownerId: 'client-a',
+      heartbeatAt: new Date().toISOString(),
+    }
+    store([active])
+    const observer = new MockSemanticNexusClient(0, false, 'client-b')
+
+    vi.advanceTimersByTime(30_001)
+    const expired = await observer.getRun(active.id)
+
+    expect(expired?.state).toBe('failed')
+    expect(expired?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'MOCK_RUN_INTERRUPTED',
+    }))
+    vi.useRealTimers()
+  })
+
   it('surfaces quota failures and does not retain a phantom run', async () => {
     const client = new MockSemanticNexusClient(0, false)
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
@@ -120,7 +171,7 @@ describe('run history storage', () => {
     setItem.mockRestore()
   })
 
-  it('rolls back stage progress when a later persistence write fails', async () => {
+  it('terminalizes and removes a run when a later persistence write fails', async () => {
     const client = new MockSemanticNexusClient(0, false)
     const originalSetItem = Storage.prototype.setItem
     let writes = 0
@@ -137,10 +188,44 @@ describe('run history storage', () => {
     })
 
     await expect(client.startRun(request)).rejects.toBeInstanceOf(RunHistoryStorageError)
-    const [rolledBack] = await client.listRuns()
+    const [aborted] = await client.listRuns()
 
-    expect(rolledBack?.state).toBe('running')
-    expect(rolledBack?.stages.every((stage) => stage.state === 'pending')).toBe(true)
+    expect(aborted?.state).toBe('failed')
+    expect(aborted?.stages[0]?.state).toBe('failed')
+    expect(aborted?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'RUN_PROGRESS_NOT_PERSISTED',
+    }))
+    expect(window.localStorage.getItem(runStorageKey(aborted!.id))).toBeNull()
+    setItem.mockRestore()
+  })
+
+  it('fails Generate and removes an uncommitted result when the final write fails', async () => {
+    const client = new MockSemanticNexusClient(0, false)
+    const originalSetItem = Storage.prototype.setItem
+    let writes = 0
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key,
+      value,
+    ) {
+      writes += 1
+      if (writes === 7) {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError')
+      }
+      originalSetItem.call(this, key, value)
+    })
+
+    await expect(client.startRun(request)).rejects.toBeInstanceOf(RunHistoryStorageError)
+    const [aborted] = await client.listRuns()
+
+    expect(aborted?.state).toBe('failed')
+    expect(aborted?.stages.find((stage) => stage.key === 'generate')?.state).toBe('failed')
+    expect(aborted?.result).toBeUndefined()
+    expect(aborted?.manifest).toBeUndefined()
+    expect(aborted?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'RESULT_COMMIT_NOT_PERSISTED',
+    }))
+    expect(window.localStorage.getItem(runStorageKey(aborted!.id))).toBeNull()
     setItem.mockRestore()
   })
 

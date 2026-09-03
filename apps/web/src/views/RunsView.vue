@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref } from 'vue'
 
 import { nexusClientKey } from '@/api/clientContext'
+import { RUN_STORAGE_KEY, RUN_STORAGE_RECORD_PREFIX } from '@/api/runStorage'
 import StatusBadge from '@/components/StatusBadge.vue'
 import type { Run } from '@/domain'
 
@@ -10,8 +11,23 @@ if (!client) throw new Error('SemanticNexusClient is not provided')
 
 const runs = ref<Run[]>([])
 
-onMounted(async () => {
+const loadRuns = async () => {
   runs.value = await client.listRuns()
+}
+
+const handleStorage = (event: StorageEvent) => {
+ if (event.key === RUN_STORAGE_KEY || event.key?.startsWith(RUN_STORAGE_RECORD_PREFIX)) {
+   void loadRuns()
+ }
+}
+
+onMounted(() => {
+ void loadRuns()
+ window.addEventListener('storage', handleStorage)
+})
+
+onUnmounted(() => {
+ window.removeEventListener('storage', handleStorage)
 })
 
 const formatTime = (value: string) =>
