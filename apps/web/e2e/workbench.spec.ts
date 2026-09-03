@@ -14,6 +14,10 @@ test('stable routes render their primary surfaces', async ({ page }) => {
     await expect(page.getByRole('main').getByText(heading, { exact: false }).first()).toBeVisible()
   }
 
+  await page.goto('/runs')
+  await expect(page.getByRole('table', { name: '运行列表' })).toBeVisible()
+  await expect(page.getByRole('columnheader')).toHaveCount(4)
+
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/ask')
   await page.keyboard.press('Tab')
@@ -41,16 +45,19 @@ test('keeps another tab active and cancels without committing a result', async (
 
   const observer = await context.newPage()
   await observer.goto('/runs')
-  const activeRow = observer.getByRole('link').filter({ hasText: question })
+  const activeRow = observer.getByRole('row').filter({ hasText: question })
   await expect(activeRow).toContainText('运行中')
   await expect(activeRow).not.toContainText('失败')
+  await activeRow.getByRole('link').click()
 
   await page.getByRole('button', { name: '取消运行' }).click()
 
   await expect(page.getByText('运行已停止')).toBeVisible()
   await expect(page.getByText('没有执行或提交剩余阶段')).toBeVisible()
   await expect(page.getByText('结果已提交')).toHaveCount(0)
-  await expect(activeRow).toContainText('已取消')
+  await expect(
+    observer.locator('.run-title-line').getByText('已取消', { exact: true }),
+  ).toBeVisible()
   await observer.close()
 })
 
@@ -68,36 +75,44 @@ test('prevents a stale owner loop from resurrecting a terminalized run', async (
   await page.getByLabel('你想了解什么？').fill(question)
   await page.getByRole('button', { name: '开始受控运行' }).click()
 
-  await observer.evaluate((targetQuestion) => {
+  await expect.poll(() => observer.evaluate((targetQuestion) =>
+    Object.keys(localStorage).some((candidate) => {
+      if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
+      return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
+    }), question)).toBe(true)
+  await observer.evaluate(async (targetQuestion) => {
     const key = Object.keys(localStorage).find((candidate) => {
       if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
       return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
     })
     if (!key) throw new Error('Active run record not found')
-    const record = JSON.parse(localStorage.getItem(key) ?? '{}')
-    const run = record.run
-    run.state = 'failed'
-    run.completedAt = new Date().toISOString()
-    delete run.executionLease
-    const failedIndex = Math.max(0, run.stages.findIndex(
-      (stage: { state: string }) => stage.state === 'pending' || stage.state === 'running',
-    ))
-    run.stages.forEach((stage: { state: string }, index: number) => {
-      if (index === failedIndex) stage.state = 'failed'
-      else if (index > failedIndex || stage.state !== 'succeeded') stage.state = 'canceled'
+    const id = JSON.parse(localStorage.getItem(key) ?? '{}').run.id
+    await navigator.locks.request(`semantic-nexus:run:${id}`, { mode: 'exclusive' }, async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2_200))
+      const record = JSON.parse(localStorage.getItem(key) ?? '{}')
+      const run = record.run
+      run.state = 'failed'
+      run.completedAt = new Date().toISOString()
+      delete run.executionLease
+      const failedIndex = Math.max(0, run.stages.findIndex(
+        (stage: { state: string }) => stage.state === 'pending' || stage.state === 'running',
+      ))
+      run.stages.forEach((stage: { state: string }, index: number) => {
+        if (index === failedIndex) stage.state = 'failed'
+        else if (index > failedIndex || stage.state !== 'succeeded') stage.state = 'canceled'
+      })
+      run.diagnostics = [{
+        code: 'MOCK_RUN_INTERRUPTED',
+        title: '观察者已终止过期运行',
+        message: '执行租约已失效。',
+        recovery: '重新发起运行。',
+        severity: 'warning',
+      }]
+      localStorage.setItem(key, JSON.stringify(record))
     })
-    run.diagnostics = [{
-      code: 'MOCK_RUN_INTERRUPTED',
-      title: '观察者已终止过期运行',
-      message: '执行租约已失效。',
-      recovery: '重新发起运行。',
-      severity: 'warning',
-    }]
-    localStorage.setItem(key, JSON.stringify(record))
   }, question)
 
   await expect(page.getByText('观察者已终止过期运行')).toBeVisible()
-  await page.waitForTimeout(800)
   const persistedState = await observer.evaluate((targetQuestion) => {
     const key = Object.keys(localStorage).find((candidate) => {
       if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
@@ -122,18 +137,21 @@ test('observer expires a closed owner lease without reloading', async ({ page, c
   await page.getByLabel('你想了解什么？').fill(question)
   await page.getByRole('button', { name: '开始受控运行' }).click()
 
-  const activeRow = observer.getByRole('link').filter({ hasText: question })
+  const activeRow = observer.getByRole('row').filter({ hasText: question })
   await expect(activeRow).toContainText('运行中')
 
-  await page.evaluate((targetQuestion) => {
+  await page.evaluate(async (targetQuestion) => {
     const key = Object.keys(localStorage).find((candidate) => {
       if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
       return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
     })
     if (!key) throw new Error('Active run record not found')
-    const record = JSON.parse(localStorage.getItem(key) ?? '{}')
-    record.run.executionLease.heartbeatAt = new Date(Date.now() - 29_500).toISOString()
-    localStorage.setItem(key, JSON.stringify(record))
+    const id = JSON.parse(localStorage.getItem(key) ?? '{}').run.id
+    await navigator.locks.request(`semantic-nexus:run:${id}`, { mode: 'exclusive' }, () => {
+      const record = JSON.parse(localStorage.getItem(key) ?? '{}')
+      record.run.executionLease.heartbeatAt = new Date(Date.now() - 29_500).toISOString()
+      localStorage.setItem(key, JSON.stringify(record))
+    })
   }, question)
   await page.close()
 

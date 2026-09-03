@@ -194,7 +194,7 @@ describe('run history storage', () => {
     store([active])
     const observer = new MockSemanticNexusClient(0, false, 'client-b')
 
-    vi.advanceTimersByTime(30_001)
+    await vi.advanceTimersByTimeAsync(30_001)
     const persisted = parseStoredRun(
       window.localStorage.getItem(runStorageKey(active.id)) ?? '',
     )
@@ -268,7 +268,25 @@ describe('run history storage', () => {
     vi.useRealTimers()
   })
 
-  it('reschedules observer expiry when the owner renews its heartbeat', () => {
+  it('reports a terminal stale owner state before startRun resolves', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T12:00:00Z'))
+    const progress: Run[] = []
+    const owner = new MockSemanticNexusClient(31_000, false, 'client-a')
+    const runPromise = owner.startRun(request, (run) => progress.push(run))
+
+    await vi.advanceTimersByTimeAsync(31_000)
+    const result = await runPromise
+
+    expect(result.state).toBe('failed')
+    expect(progress.at(-1)?.state).toBe('failed')
+    expect(parseStoredRun(
+      window.localStorage.getItem(runStorageKey(result.id)) ?? '',
+    )?.state).toBe('failed')
+    vi.useRealTimers()
+  })
+
+  it('reschedules observer expiry when the owner renews its heartbeat', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-03T12:00:00Z'))
     const active = createSeedRun('run-syn-renewed', '续期运行', 'succeeded', 1)
@@ -286,24 +304,35 @@ describe('run history storage', () => {
     store([active])
     new MockSemanticNexusClient(0, false, 'client-b')
 
-    vi.advanceTimersByTime(20_000)
+    await vi.advanceTimersByTimeAsync(20_000)
     active.executionLease.heartbeatAt = new Date().toISOString()
     const serialized = serializeStoredRun(active)
     window.localStorage.setItem(runStorageKey(active.id), serialized)
     window.dispatchEvent(new CustomEvent(RUN_STORAGE_CHANGE_EVENT, {
       detail: { id: active.id, newValue: serialized, sourceId: 'client-a' },
     }))
-    vi.advanceTimersByTime(10_001)
+    await vi.advanceTimersByTimeAsync(10_001)
 
     expect(parseStoredRun(
       window.localStorage.getItem(runStorageKey(active.id)) ?? '',
     )?.state).toBe('running')
 
-    vi.advanceTimersByTime(20_000)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(parseStoredRun(
       window.localStorage.getItem(runStorageKey(active.id)) ?? '',
     )?.state).toBe('failed')
     vi.useRealTimers()
+  })
+
+  it('fails closed when the browser cannot provide an exclusive lock', async () => {
+    const locks = navigator.locks
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+    const client = new MockSemanticNexusClient(0, false)
+
+    await expect(client.startRun(request)).rejects.toBeInstanceOf(RunHistoryStorageError)
+    await expect(client.listRuns()).resolves.toEqual([])
+
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: locks })
   })
 
   it('surfaces quota failures and does not retain a phantom run', async () => {

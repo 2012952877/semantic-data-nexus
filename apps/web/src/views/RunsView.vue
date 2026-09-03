@@ -59,21 +59,45 @@ const formatTime = (value: string) =>
       <RouterLink class="primary-button" to="/ask">提出新问题</RouterLink>
     </header>
 
-    <section class="runs-ledger" aria-labelledby="runs-table-heading">
+    <section aria-labelledby="runs-table-heading">
       <h2 id="runs-table-heading" class="sr-only">运行列表</h2>
-      <div class="runs-ledger-head" aria-hidden="true">
-        <span>问题 / 运行 ID</span><span>状态</span><span>创建时间</span><span>耗时</span>
+      <div
+        class="runs-ledger"
+        role="table"
+        aria-labelledby="runs-table-heading"
+        aria-colcount="4"
+      >
+        <div role="rowgroup">
+          <div class="runs-ledger-head" role="row">
+            <span id="runs-question-heading" role="columnheader">问题 / 运行 ID</span>
+            <span id="runs-status-heading" role="columnheader">状态</span>
+            <span id="runs-created-heading" role="columnheader">创建时间</span>
+            <span id="runs-elapsed-heading" role="columnheader">耗时</span>
+          </div>
+        </div>
+        <div role="rowgroup">
+          <div v-for="run in runs" :key="run.id" class="run-row" role="row">
+            <span class="run-question" role="cell">
+              <RouterLink :to="`/runs/${run.id}`">
+                <strong>{{ run.question }}</strong>
+                <small>{{ run.id }}</small>
+              </RouterLink>
+            </span>
+            <span role="cell">
+              <StatusBadge :state="run.state" />
+            </span>
+            <time role="cell" :datetime="run.createdAt">
+              {{ formatTime(run.createdAt) }}
+            </time>
+            <span role="cell">
+              {{ (run.elapsedMs / 1000).toFixed(2) }}s
+            </span>
+          </div>
+          <div v-if="!runs.length" class="empty-row" role="row">
+            <span role="cell" aria-colspan="4">还没有运行记录。</span>
+          </div>
+        </div>
       </div>
-      <RouterLink v-for="run in runs" :key="run.id" :to="`/runs/${run.id}`" class="run-row">
-        <span class="run-question">
-          <strong>{{ run.question }}</strong>
-          <small>{{ run.id }}</small>
-        </span>
-        <StatusBadge :state="run.state" />
-        <time :datetime="run.createdAt">{{ formatTime(run.createdAt) }}</time>
-        <span>{{ (run.elapsedMs / 1000).toFixed(2) }}s</span>
-      </RouterLink>
-      <div v-if="!runs.length" class="empty-row">还没有运行记录。</div>
     </section>
   </div>
 </template>

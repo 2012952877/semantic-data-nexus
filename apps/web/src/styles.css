@@ -880,6 +880,18 @@ tbody tr:hover {
   gap: 7px;
 }
 
+.run-question a {
+  display: grid;
+  gap: 7px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.run-question a:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+}
+
 .run-question strong {
   line-height: 1.35;
 }
@@ -1558,7 +1570,14 @@ tbody tr:hover {
   }
 
   .runs-ledger-head {
-    display: none;
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .run-row {

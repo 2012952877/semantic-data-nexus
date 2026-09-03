@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { inject, onMounted, ref, watch } from 'vue'
+import { inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { nexusClientKey } from '@/api/clientContext'
+import {
+  RUN_STORAGE_CHANGE_EVENT,
+  RUN_STORAGE_KEY,
+  runStorageKey,
+} from '@/api/runStorage'
 import RunDetailContent from '@/components/RunDetailContent.vue'
 import type { Run } from '@/domain'
 
@@ -13,14 +18,37 @@ const route = useRoute()
 const run = ref<Run>()
 const loading = ref(true)
 
-const load = async () => {
-  loading.value = true
-  run.value = await client.getRun(String(route.params.id))
-  loading.value = false
+const load = async (showLoading = true) => {
+  if (showLoading) loading.value = true
+  try {
+    run.value = await client.getRun(String(route.params.id))
+  } finally {
+    if (showLoading) loading.value = false
+  }
 }
 
-onMounted(load)
-watch(() => route.params.id, load)
+const handleStorage = (event: StorageEvent) => {
+  const id = String(route.params.id)
+  if (event.key === RUN_STORAGE_KEY || event.key === runStorageKey(id)) {
+    void load(false)
+  }
+}
+
+const handleLocalStorage = (event: Event) => {
+  const detail = (event as CustomEvent<{ id?: string }>).detail
+  if (!detail?.id || detail.id === String(route.params.id)) void load(false)
+}
+
+onMounted(() => {
+  void load()
+  window.addEventListener('storage', handleStorage)
+  window.addEventListener(RUN_STORAGE_CHANGE_EVENT, handleLocalStorage)
+})
+onUnmounted(() => {
+  window.removeEventListener('storage', handleStorage)
+  window.removeEventListener(RUN_STORAGE_CHANGE_EVENT, handleLocalStorage)
+})
+watch(() => route.params.id, () => load())
 </script>
 
 <template>

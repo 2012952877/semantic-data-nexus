@@ -39,7 +39,7 @@ Vue Router 使用浏览器历史模式，部署静态产物时需要将未知路
 - `src/views/`：路由级页面；技术细节通过 `details` 渐进展示。
 - `src/components/`：应用壳、阶段账本、结果表与运行详情。
 
-Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus:run:v1:`），只保存在当前浏览器。逐记录写入和 storage event 同步避免不同标签页覆盖彼此，运行 ID 使用 UUID。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic、Manifest 与执行租约。租约包含 owner、稳定 generation 和可续期 heartbeat；每次异步阶段提交前都会重新读取记录并核对租约，旧 owner 无法覆盖已经终止的运行。观察者会按 heartbeat 安排并重排到期计时器，因此 owner 页面关闭后无需刷新也能将过期运行转为可重试的中断诊断。损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略，旧版聚合键 `semantic-nexus:runs` 会被安全迁移。
+Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus:run:v1:`），只保存在当前浏览器。每条记录的 compare-and-write 都在该运行专属的 Web Lock 内完成；浏览器不提供 Web Locks 时写入会失败关闭，而不会降级为非原子更新。逐记录事务和 storage event 同步避免不同标签页覆盖彼此，运行 ID 使用 UUID。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic、Manifest 与执行租约。租约包含 owner、稳定 generation 和可续期 heartbeat；每次异步阶段提交前都会在锁内重新读取记录并核对 active 状态及完整租约，旧 owner 无法覆盖已经终止的运行。观察者会按 heartbeat 安排并重排到期计时器，因此 owner 页面关闭后无需刷新也能将过期运行转为可重试的中断诊断。损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略，旧版聚合键 `semantic-nexus:runs` 会在同一锁协议下安全迁移。
 
 ## Mock 场景
 
