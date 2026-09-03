@@ -1,0 +1,38 @@
+name: Infrastructure Bicep
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/infra-bicep.yml'
+      - 'infra/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/infra-bicep.yml'
+      - 'infra/**'
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bicep CLI
+        run: az bicep install
+
+      - name: Build template
+        run: az bicep build --file infra/bicep/main.bicep --stdout --only-show-errors > /dev/null
+
+      - name: Validate development parameters
+        run: az bicep build-params --file infra/bicep/parameters/dev.bicepparam --outfile /tmp/dev.parameters.json --only-show-errors
+
+      - name: Validate production parameters
+        run: az bicep build-params --file infra/bicep/parameters/prod.bicepparam --outfile /tmp/prod.parameters.json --only-show-errors
+
+      - name: Run infrastructure regression assertions
+        shell: pwsh
+        run: ./infra/scripts/test-template.ps1
