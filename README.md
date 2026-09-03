@@ -39,9 +39,11 @@
 - Python 3.12 + Pydantic v2 强类型模型；
 - 节点 ID、依赖顺序、输入数量、字段可用性、输出契约和 Ontology 精确成员关系的确定性校验；
 - Run Event / State、Result Manifest / Answer / Lineage 的初始契约；
-- 可运行 CLI、合成示例、自动化测试和 CI。
+- 可运行 CLI、合成示例、自动化测试和 CI；
+- 独立的确定性语义评估套件与安全合成数据；
+- 独立的 Azure Bicep 部署基线（不改变 semantic-core 的本地可运行性）。
 
-尚未实现：LLM 调用、SQL 生成与执行、Databricks 连接、Web UI、控制面 API、持久化服务和 Azure 基础设施。
+尚未实现：LLM 调用、SQL 生成与执行、Databricks 连接、Web UI、控制面 API 和持久化应用服务。Azure 基线当前只部署安全资源边界与占位工作负载，不代表上述应用能力已经实现。
 
 ## 快速开始
 
@@ -102,11 +104,13 @@ contracts/v0/                 语言无关、版本化 JSON Schema
 packages/semantic-core/       当前唯一实现：SQG / Ontology 模型与校验
 examples/                     无敏感信息的合成契约示例
 tests/                        结构、语义和 Schema 测试
+evals/                        确定性语义 golden evaluation 套件
+data/synthetic/               可重复生成的安全合成数据
 docs/architecture/            架构边界与技术选型
 docs/adr/                     可追踪的架构决策
 apps/                         未来 Vue 3 UX 边界（当前仅说明）
 services/                     未来控制面/编译/运行服务边界（当前仅说明）
-infra/                        未来 IaC 边界；本阶段不含可部署资源
+infra/                        Azure Bicep 安全部署基线与运维说明
 ```
 
 ## 路线图

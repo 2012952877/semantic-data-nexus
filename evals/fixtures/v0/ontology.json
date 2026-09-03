@@ -1,0 +1,110 @@
+{
+  "structure_version": "ontology-v0",
+  "status": "evaluation-draft",
+  "entities": [
+    {
+      "id": "date",
+      "source": "dates",
+      "grain": ["date_id"],
+      "fields": ["date_id", "year", "quarter", "month", "day_of_week"]
+    },
+    {
+      "id": "region",
+      "source": "regions",
+      "grain": ["region_id"],
+      "fields": ["region_id", "region_name", "region_code"]
+    },
+    {
+      "id": "product",
+      "source": "products",
+      "grain": ["product_id"],
+      "fields": ["product_id", "product_name", "category", "unit_price", "unit_cost"]
+    },
+    {
+      "id": "customer",
+      "source": "customers",
+      "grain": ["customer_id"],
+      "fields": ["customer_id", "customer_label", "home_region_id", "segment"],
+      "policy": "aggregate_only"
+    },
+    {
+      "id": "order",
+      "source": "orders",
+      "grain": ["order_id"],
+      "fields": ["order_id", "order_date", "status", "promotion_code"]
+    },
+    {
+      "id": "order_item",
+      "source": "order_items",
+      "grain": ["order_item_id"],
+      "fields": ["quantity", "net_revenue", "total_cost", "discount_rate"]
+    }
+  ],
+  "metrics": [
+    {
+      "id": "sales",
+      "label": "销售额",
+      "expression": "sum(order_item.net_revenue)",
+      "type": "decimal"
+    },
+    {
+      "id": "cost",
+      "label": "成本",
+      "expression": "sum(order_item.total_cost)",
+      "type": "decimal"
+    },
+    {
+      "id": "gross_profit",
+      "label": "毛利润",
+      "expression": "sales - cost",
+      "type": "decimal"
+    },
+    {
+      "id": "gross_margin",
+      "label": "毛利率",
+      "expression": "safe_divide(gross_profit, sales)",
+      "type": "decimal",
+      "zero_denominator": "null"
+    },
+    {
+      "id": "order_count",
+      "label": "订单数",
+      "expression": "count_distinct(order.order_id)",
+      "type": "integer"
+    },
+    {
+      "id": "return_count",
+      "label": "退货订单数",
+      "expression": "count_distinct(order.order_id where status = returned)",
+      "type": "integer"
+    }
+  ],
+  "relations": [
+    {"id": "order_date", "from": "order.order_date", "to": "date.date_id", "cardinality": "many_to_one"},
+    {"id": "order_region", "from": "order.region_id", "to": "region.region_id", "cardinality": "many_to_one"},
+    {"id": "order_customer", "from": "order.customer_id", "to": "customer.customer_id", "cardinality": "many_to_one"},
+    {"id": "customer_home_region", "from": "customer.home_region_id", "to": "region.region_id", "cardinality": "many_to_one"},
+    {"id": "item_order", "from": "order_item.order_id", "to": "order.order_id", "cardinality": "many_to_one"},
+    {"id": "item_product", "from": "order_item.product_id", "to": "product.product_id", "cardinality": "many_to_one"}
+  ],
+  "synonyms": {
+    "sales": ["销售额", "营收", "收入"],
+    "gross_profit": ["毛利润", "毛利"],
+    "gross_margin": ["毛利率"],
+    "region": ["区域", "地区"],
+    "product": ["产品", "商品"],
+    "order_count": ["订单数", "单量"]
+  },
+  "query_policies": [
+    {
+      "id": "customer_aggregate_only",
+      "entity": "customer",
+      "rule": "grouped aggregates are allowed; row-level customer output is denied"
+    },
+    {
+      "id": "bounded_top_n",
+      "operator": "TOP_N",
+      "maximum": 100
+    }
+  ]
+}
