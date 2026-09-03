@@ -77,7 +77,7 @@ public enum RunState
 
 public static class RunStateMachine
 {
-    private static readonly IReadOnlyDictionary<RunState, RunState[]> AllowedTransitions =
+    private static readonly Dictionary<RunState, RunState[]> AllowedTransitions =
         new Dictionary<RunState, RunState[]>
         {
             [RunState.Queued] =
