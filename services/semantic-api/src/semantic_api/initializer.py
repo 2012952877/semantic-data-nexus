@@ -334,6 +334,8 @@ class DeterministicInitializer:
                     r"(?:do\s+not\s+(?:include|use|show)|"
                     r"does\s+not\s+include|don't\s+include|"
                     r"must\s+not\s+include|should\s+not\s+include|"
+                    r"(?:shouldn|mustn)['\u2019]t\s+(?:include|use|show)|"
+                    r"(?:isn|wasn)['\u2019]t\s+(?:including|using|showing)|"
                     r"not\s+including|"
                     r"exclude|excluding|except(?:\s+for)?|"
                     r"other\s+than|not|without)(?:\s+the)?\s*$"
@@ -355,6 +357,8 @@ class DeterministicInitializer:
                 (
                     r"[\s,]*(?:(?:(?:is|was)\s+)?"
                     r"(?:excluded|omitted|left\s+out|not\s+included)|"
+                    r"(?:isn|wasn)['\u2019]t\s+(?:included|used|shown)|"
+                    r"(?:shouldn|mustn)['\u2019]t\s+(?:be\s+)?(?:included|used|shown)|"
                     r"(?:should|must)\s+(?:be\s+(?:excluded|omitted|left\s+out)|"
                     r"not\s+be\s+included))\b"
                 ),
