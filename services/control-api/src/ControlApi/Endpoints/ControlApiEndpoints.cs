@@ -1,5 +1,6 @@
-using System.Security.Claims;
 using System.Diagnostics;
+using System.Net;
+using System.Security.Claims;
 using ControlApi.Authentication;
 using ControlApi.Contracts;
 using ControlApi.Domain;
@@ -242,21 +243,116 @@ public static class ControlApiEndpoints
         await using var dispatchLease = await dispatchCoordinator.AcquireAsync(
             id,
             cancellationToken);
-        var result = await repository.RequestCancellationAsync(
-            id,
-            request?.ExpectedVersion,
-            cancellationToken);
+        var current = await repository.GetAsync(id, cancellationToken) ??
+            throw new RunNotFoundException(id);
+        var expectedVersion = request?.ExpectedVersion;
+        MutationResult result;
+        if (current.State == RunState.DispatchUnknown)
+        {
+            if (expectedVersion is not null && current.Version != expectedVersion)
+            {
+                throw new OptimisticConcurrencyException(
+                    $"Run version {expectedVersion} is stale; current version is {current.Version}.");
+            }
+
+            result = await repository.RequestCancellationAsync(
+                id,
+                expectedVersion,
+                cancellationToken);
+            try
+            {
+                var status = await semanticBackend.GetStatusAsync(id, cancellationToken);
+                current = await repository.ApplySemanticStatusAsync(
+                    id,
+                    result.Run.Version,
+                    status,
+                    CancellationToken.None);
+                if (current.State.IsTerminal())
+                {
+                    return TypedResults.Accepted($"/api/v1/runs/{id}", current);
+                }
+            }
+            catch (SemanticBackendException exception)
+                when (exception.FailureKind == SemanticFailureKind.NotFound)
+            {
+                var cancelled = await repository.FinalizeCancellationWithoutBackendAsync(
+                    id,
+                    expectedVersion: null,
+                    expectedGeneration: result.CancellationGeneration,
+                    CancellationToken.None);
+                return TypedResults.Accepted($"/api/v1/runs/{id}", cancelled);
+            }
+        }
+        else
+        {
+            result = await repository.RequestCancellationAsync(
+                id,
+                expectedVersion,
+                cancellationToken);
+        }
         var responseRun = result.Run;
         if (result.RequiresDispatch)
         {
-            await semanticBackend.RequestCancellationAsync(id, cancellationToken);
-            responseRun = await repository.MarkCancellationDeliveredAsync(
-                id,
-                result.CancellationGeneration,
-                CancellationToken.None);
+            try
+            {
+                await semanticBackend.RequestCancellationAsync(id, cancellationToken);
+                responseRun = await repository.MarkCancellationDeliveredAsync(
+                    id,
+                    result.CancellationGeneration,
+                    CancellationToken.None);
+            }
+            catch (SemanticBackendException exception)
+                when (exception.FailureKind == SemanticFailureKind.NotFound)
+            {
+                responseRun = await ReconcileMissingCancellation(
+                    id,
+                    result,
+                    repository,
+                    semanticBackend,
+                    cancellationToken);
+            }
         }
 
         return TypedResults.Accepted($"/api/v1/runs/{id}", responseRun);
+    }
+
+    private static async Task<RunMetadata> ReconcileMissingCancellation(
+        RunId id,
+        MutationResult cancellation,
+        IRunRepository repository,
+        ISemanticBackendClient semanticBackend,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var current = await repository.GetAsync(id, cancellationToken) ??
+                throw new RunNotFoundException(id);
+            var status = await semanticBackend.GetStatusAsync(id, cancellationToken);
+            var updated = await repository.ApplySemanticStatusAsync(
+                id,
+                current.Version,
+                status,
+                CancellationToken.None);
+            if (!updated.State.IsTerminal())
+            {
+                throw new SemanticBackendException(
+                    "semantic_backend_cancel_failed",
+                    "The semantic backend run exists but did not accept cancellation.",
+                    HttpStatusCode.NotFound,
+                    SemanticFailureKind.UnknownOutcome);
+            }
+
+            return updated;
+        }
+        catch (SemanticBackendException exception)
+            when (exception.FailureKind == SemanticFailureKind.NotFound)
+        {
+            return await repository.FinalizeCancellationWithoutBackendAsync(
+                id,
+                expectedVersion: null,
+                expectedGeneration: cancellation.CancellationGeneration,
+                CancellationToken.None);
+        }
     }
 
     private static async Task<IResult> GetSemanticStatus(

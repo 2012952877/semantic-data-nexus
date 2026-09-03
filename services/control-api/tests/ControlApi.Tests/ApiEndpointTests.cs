@@ -459,6 +459,8 @@ public sealed class ApiEndpointTests
         Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
         var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
         var unknown = Assert.Single(list!.Items);
+        backend.Runs[unknown.Id] =
+            StubSemanticBackendClient.Status(unknown.Id, RunState.Running);
         backend.StartException = null;
         backend.CancelEntered = NewGate();
         backend.ReleaseCancel = NewGate();
@@ -471,19 +473,200 @@ public sealed class ApiEndpointTests
         await coordinator.WaitForAttemptAsync(3).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(duplicateTask.IsCompleted);
         Assert.Equal(1, backend.StartCalls);
-        Assert.Equal(0, backend.StatusCalls);
+        Assert.Equal(1, backend.StatusCalls);
 
         backend.ReleaseCancel.TrySetResult(true);
         var cancelled = await cancelTask;
         var duplicate = await duplicateTask;
         var replay = await duplicate.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        var repeatedCancellation = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
 
         Assert.Equal(HttpStatusCode.Accepted, cancelled.StatusCode);
         Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, repeatedCancellation.StatusCode);
         Assert.Equal(RunState.CancelRequested, replay!.State);
         Assert.Equal(CancellationDeliveryState.Delivered, replay.CancellationDelivery);
         Assert.Equal(1, backend.StartCalls);
-        Assert.Equal(0, backend.StatusCalls);
+        Assert.Equal(1, backend.StatusCalls);
+        Assert.Equal(1, backend.CancelCalls);
+    }
+
+    [Fact]
+    public async Task UnknownStartCancellationFinalizesLocallyWhenBackendConfirmsAbsence()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout.")
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("cancel-absent-start", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+
+        var cancelled = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var result = await cancelled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        var replay = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var replayResult = await replay.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, cancelled.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
+        Assert.Equal(RunState.Cancelled, result!.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, result.CancellationDelivery);
+        Assert.Equal(result.Version, replayResult!.Version);
+        Assert.Equal(1, backend.StatusCalls);
+        Assert.Equal(0, backend.CancelCalls);
+    }
+
+    [Fact]
+    public async Task MissingCancellationAndStatusFinalizeUnknownStartIdempotently()
+    {
+        var notFound = new SemanticBackendException(
+            "semantic_backend_status_failed",
+            "Synthetic run was not found.",
+            HttpStatusCode.NotFound,
+            SemanticFailureKind.NotFound);
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout."),
+            CancelException = notFound
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("cancel-missing-recheck", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+        backend.StatusResponses.Enqueue(id =>
+            StubSemanticBackendClient.Status(id, RunState.Running));
+        backend.StatusResponses.Enqueue(_ => throw notFound);
+
+        var cancelled = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var result = await cancelled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        var replay = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var replayResult = await replay.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, cancelled.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
+        Assert.Equal(RunState.Cancelled, result!.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, result.CancellationDelivery);
+        Assert.Equal(result.Version, replayResult!.Version);
+        Assert.Equal(2, backend.StatusCalls);
+        Assert.Equal(1, backend.CancelCalls);
+    }
+
+    [Fact]
+    public async Task TransientUnknownStartReconciliationPersistsCancellationIntent()
+    {
+        var unavailable = new SemanticBackendException(
+            "semantic_backend_unavailable",
+            "Synthetic backend failure.");
+        var notFound = new SemanticBackendException(
+            "semantic_backend_status_failed",
+            "Synthetic run was not found.",
+            HttpStatusCode.NotFound,
+            SemanticFailureKind.NotFound);
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout."),
+            StatusException = unavailable
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("cancel-transient-reconcile", "synthetic-workload");
+
+        var failedStart = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failedStart.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+
+        var failedCancel = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var afterFailure = await client.GetFromJsonAsync<RunMetadata>(
+            $"/api/v1/runs/{unknown.Id}",
+            JsonOptions);
+        var duplicate = await client.PostAsJsonAsync("/api/v1/runs", request);
+        var duplicateRun = await duplicate.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadGateway, failedCancel.StatusCode);
+        Assert.Equal(RunState.CancelRequested, afterFailure!.State);
+        Assert.Equal(CancellationDeliveryState.Pending, afterFailure.CancellationDelivery);
+        Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        Assert.Equal(RunState.CancelRequested, duplicateRun!.State);
+        Assert.Equal(1, backend.StartCalls);
+
+        backend.StatusException = null;
+        backend.CancelException = notFound;
+        var retried = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var result = await retried.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, retried.StatusCode);
+        Assert.Equal(RunState.Cancelled, result!.State);
+        Assert.Equal(1, backend.CancelCalls);
+        Assert.Equal(2, backend.StatusCalls);
+        Assert.Equal(1, backend.StartCalls);
+    }
+
+    [Fact]
+    public async Task UnknownStartCancellationReplayAcceptsReconciledTerminalRun()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout.")
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("cancel-terminal-reconcile", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+        backend.Runs[unknown.Id] =
+            StubSemanticBackendClient.Status(unknown.Id, RunState.Succeeded);
+
+        var cancelled = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var result = await cancelled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        var replay = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{unknown.Id}/cancel",
+            new CancelRunRequest(unknown.Version));
+        var replayResult = await replay.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, cancelled.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
+        Assert.Equal(RunState.Succeeded, result!.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, result.CancellationDelivery);
+        Assert.Equal(result.Version, replayResult!.Version);
+        Assert.Equal(1, backend.StatusCalls);
+        Assert.Equal(0, backend.CancelCalls);
     }
 
     [Fact]

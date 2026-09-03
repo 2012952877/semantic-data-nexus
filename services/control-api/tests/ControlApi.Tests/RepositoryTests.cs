@@ -357,6 +357,40 @@ public sealed class RepositoryTests
     }
 
     [Fact]
+    public async Task UnknownDispatchCanFinalizeCancellationWithoutBackend()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var created = await repository.CreateAsync(
+            new CreateRunRequest("cancel-unknown-dispatch", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        var unknown = await repository.MarkStartDispatchUnknownAsync(
+            created.Run.Id,
+            "semantic_backend_timeout",
+            default);
+
+        var cancellation = await repository.RequestCancellationAsync(
+            created.Run.Id,
+            unknown.Version,
+            default);
+        var cancelled = await repository.FinalizeCancellationWithoutBackendAsync(
+            created.Run.Id,
+            expectedVersion: null,
+            expectedGeneration: cancellation.CancellationGeneration,
+            default);
+        var replay = await repository.FinalizeCancellationWithoutBackendAsync(
+            created.Run.Id,
+            expectedVersion: null,
+            expectedGeneration: cancellation.CancellationGeneration,
+            default);
+
+        Assert.Equal(RunState.Cancelled, cancelled.State);
+        Assert.Equal(CancellationDeliveryState.Delivered, cancelled.CancellationDelivery);
+        Assert.Equal(1, cancelled.CancellationGeneration);
+        Assert.Equal(cancelled.Version, replay.Version);
+    }
+
+    [Fact]
     public async Task StaleCancellationGenerationCannotAcknowledgeDelivery()
     {
         var repository = new InMemoryRunRepository(TimeProvider.System);

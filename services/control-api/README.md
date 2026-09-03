@@ -66,9 +66,14 @@ it missing. Only a definitive backend rejection marks the run failed.
 
 Start, reconciliation, status refresh, cancellation, and feedback mutation hold
 a per-`RunId` dispatch lease in M0 so metadata writes cannot make a completed
-backend start look pending and cancellation cannot lose to a late start. A
-cancellation that acquires the lease before initial dispatch finalizes locally
-without creating backend work. Cancellation persists a monotonic generation
+backend start look pending and cancellation cannot lose to a late start.
+Cancellation from `DispatchUnknown` first reconciles status by `RunId`: a
+present backend run receives cancellation, while a definitive 404 finalizes
+locally. A cancellation 404 triggers one status recheck so a run that never
+reached the backend cannot remain permanently `CancelRequested`; ambiguous
+failures stay retryable. A cancellation that acquires the lease before initial
+dispatch finalizes locally without creating backend work. Cancellation persists
+a monotonic generation
 plus `Pending`/`Delivered` ownership. Failed delivery remains retryable, while a
 delivered generation is not posted again. Active backend observations update
 projection details without replacing local `CancelRequested`; a terminal

@@ -159,6 +159,7 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
     public int CancelCalls { get; private set; }
     public Dictionary<RunId, SemanticRunStatus> Runs { get; } = [];
     public ConcurrentQueue<string> Operations { get; } = new();
+    public ConcurrentQueue<Func<RunId, SemanticRunStatus>> StatusResponses { get; } = new();
 
     public async Task<SemanticRunStatus> StartAsync(
         SemanticRunStart request,
@@ -192,6 +193,11 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
             throw StatusException;
         }
 
+        if (StatusResponses.TryDequeue(out var response))
+        {
+            return Task.FromResult(response(runId));
+        }
+
         return Task.FromResult(
             Runs.GetValueOrDefault(runId) ??
             throw new SemanticBackendException(
@@ -215,7 +221,6 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
         {
             throw CancelException;
         }
-        Runs[runId] = Status(runId, RunState.Cancelled);
         Runs[runId] = Status(runId, RunState.Cancelled);
     }
 

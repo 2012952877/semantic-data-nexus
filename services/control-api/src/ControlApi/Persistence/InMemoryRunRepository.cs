@@ -241,6 +241,17 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                     current.CancellationGeneration));
             }
 
+            if (current.State.IsTerminal() &&
+                current.CancellationGeneration > 0 &&
+                current.CancellationDelivery == CancellationDeliveryState.Delivered)
+            {
+                return Task.FromResult(new MutationResult(
+                    current,
+                    false,
+                    false,
+                    current.CancellationGeneration));
+            }
+
             if (current.State.IsTerminal())
             {
                 throw new InvalidRunTransitionException(current.State, RunState.CancelRequested);
@@ -325,6 +336,57 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             };
             runs[id] = updated;
             return Task.FromResult(updated);
+        }
+    }
+
+    public Task<RunMetadata> FinalizeCancellationWithoutBackendAsync(
+        RunId id,
+        long? expectedVersion,
+        long? expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            var current = GetRequired(id);
+            if (current.State == RunState.Cancelled &&
+                current.CancellationDelivery == CancellationDeliveryState.Delivered)
+            {
+                return Task.FromResult(current);
+            }
+
+            if (expectedVersion is not null && current.Version != expectedVersion)
+            {
+                throw new OptimisticConcurrencyException(
+                    $"Run version {expectedVersion} is stale; current version is {current.Version}.");
+            }
+
+            if (expectedGeneration is not null &&
+                current.CancellationGeneration != expectedGeneration)
+            {
+                throw new OptimisticConcurrencyException(
+                    $"Cancellation generation {expectedGeneration} is stale; current generation is " +
+                    $"{current.CancellationGeneration}.");
+            }
+
+            if (current.State != RunState.CancelRequested)
+            {
+                throw new InvalidRunTransitionException(current.State, RunState.Cancelled);
+            }
+
+            var now = timeProvider.GetUtcNow();
+            var cancelled = current with
+            {
+                State = RunState.Cancelled,
+                CancellationDelivery = CancellationDeliveryState.Delivered,
+                CancellationGeneration = current.CancellationGeneration,
+                UpdatedAt = now,
+                StartedAt = current.StartedAt ?? current.CreatedAt,
+                CompletedAt = now,
+                Version = current.Version + 1
+            };
+            runs[id] = cancelled;
+            return Task.FromResult(cancelled);
         }
     }
 

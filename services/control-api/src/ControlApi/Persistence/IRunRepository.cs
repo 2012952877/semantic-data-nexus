@@ -48,6 +48,12 @@ public interface IRunRepository
         long expectedGeneration,
         CancellationToken cancellationToken);
 
+    Task<RunMetadata> FinalizeCancellationWithoutBackendAsync(
+        RunId id,
+        long? expectedVersion,
+        long? expectedGeneration,
+        CancellationToken cancellationToken);
+
     Task<RunFeedback> SubmitFeedbackAsync(
         RunId id,
         SubmitFeedbackRequest request,
