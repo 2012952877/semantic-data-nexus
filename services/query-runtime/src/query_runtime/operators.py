@@ -72,25 +72,20 @@ class DuckDBOperatorExecutor:
             )
             if cancelled in done and cancel_event.is_set() and not work.done():
                 connection.interrupt()
-                try:
-                    await work
-                except Exception:
-                    pass
+                await _await_worker(work)
                 raise asyncio.CancelledError
             result = await work
             self.enforce_limits(result)
             return result
         except asyncio.CancelledError:
             connection.interrupt()
-            with suppress(Exception):
-                await asyncio.shield(work)
+            await _await_worker(work)
             raise
         finally:
             cancelled.cancel()
             if not work.done():
                 connection.interrupt()
-                with suppress(Exception):
-                    await asyncio.shield(work)
+                await _await_worker(work)
             connection.close()
 
     def _execute_sync(
@@ -313,3 +308,15 @@ class DuckDBOperatorExecutor:
                 "Operator output exceeded the configured byte limit",
                 details={"bytes": table.nbytes, "limit": self.limits.max_bytes},
             )
+
+
+async def _await_worker(work: asyncio.Task[pa.Table]) -> None:
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError:
+            continue
+        except Exception:
+            break
+    with suppress(asyncio.CancelledError, Exception):
+        work.result()

@@ -105,6 +105,11 @@ class _SlowWriteStore(ParquetResultStore):
         )
 
 
+class _FailingCleanupStore(ParquetResultStore):
+    def _remove_temporary(self, temporary: Path) -> None:
+        raise OSError("synthetic cleanup failure")
+
+
 @pytest.mark.asyncio
 async def test_task_cancellation_waits_for_write_and_cleans_temp(tmp_path: Path) -> None:
     store = _SlowWriteStore(tmp_path)
@@ -120,3 +125,21 @@ async def test_task_cancellation_waits_for_write_and_cleans_temp(tmp_path: Path)
     await store.wait_for_cleanup()
     assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240
     assert not list(tmp_path.rglob(".tmp-*"))  # noqa: ASYNC240
+
+
+@pytest.mark.asyncio
+async def test_orphan_cleanup_failure_is_retried_and_surfaced(
+    tmp_path: Path,
+) -> None:
+    store = _FailingCleanupStore(tmp_path)
+    cancelled = asyncio.Event()
+    cancelled.set()
+    with pytest.raises(asyncio.CancelledError):
+        await store.commit(
+            "run-orphan", "node-orphan", pa.table({"x": [1]}), cancelled
+        )
+    with pytest.raises(ResultStoreFailure) as error:
+        await store.wait_for_cleanup()
+    assert error.value.code == "RESULT_ORPHAN_CLEANUP_FAILED"
+    assert list(tmp_path.rglob(".tmp-*"))  # noqa: ASYNC240
+    assert not list(tmp_path.rglob("_COMMITTED"))  # noqa: ASYNC240

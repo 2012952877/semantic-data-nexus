@@ -142,6 +142,7 @@ class ParquetResultStore:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._cleanup_failures: list[ResultStoreFailure] = []
 
     async def commit(
         self,
@@ -207,19 +208,41 @@ class ParquetResultStore:
         with suppress(asyncio.CancelledError, Exception):
             write_task.result()
         if temporary.exists():  # noqa: ASYNC240
-            removal = asyncio.create_task(asyncio.to_thread(shutil.rmtree, temporary))
-            while not removal.done():
+            last_error: OSError | None = None
+            for _ in range(3):
+                removal = asyncio.create_task(
+                    asyncio.to_thread(self._remove_temporary, temporary)
+                )
+                while not removal.done():
+                    try:
+                        await asyncio.shield(removal)
+                    except asyncio.CancelledError:
+                        continue
+                    except OSError:
+                        break
                 try:
-                    await asyncio.shield(removal)
-                except asyncio.CancelledError:
-                    continue
-            with suppress(Exception):
-                removal.result()
+                    removal.result()
+                    return
+                except FileNotFoundError:
+                    return
+                except OSError as exc:
+                    last_error = exc
+            raise ResultStoreFailure(
+                "RESULT_ORPHAN_CLEANUP_FAILED",
+                "Cancelled result temporary data could not be removed",
+            ) from last_error
+
+    def _remove_temporary(self, temporary: Path) -> None:
+        shutil.rmtree(temporary)
 
     def _finish_cleanup(self, task: asyncio.Task[None]) -> None:
         self._cleanup_tasks.discard(task)
-        with suppress(asyncio.CancelledError, Exception):
+        try:
             task.result()
+        except asyncio.CancelledError:
+            return
+        except ResultStoreFailure as exc:
+            self._cleanup_failures.append(exc)
 
     async def wait_for_cleanup(self) -> None:
         while self._cleanup_tasks:
@@ -227,6 +250,9 @@ class ParquetResultStore:
                 *(asyncio.shield(task) for task in tuple(self._cleanup_tasks)),
                 return_exceptions=True,
             )
+        await asyncio.sleep(0)
+        if self._cleanup_failures:
+            raise self._cleanup_failures[0]
 
     def _write_temporary(
         self,

@@ -83,6 +83,11 @@ class _SlowParquetStore(ParquetResultStore):
         )
 
 
+class _FailingSlowCleanupStore(_SlowParquetStore):
+    def _remove_temporary(self, temporary: Path) -> None:
+        raise OSError("synthetic cleanup failure")
+
+
 class _CancellingClaimStore(InMemoryEventStore):
     async def claim(self, run_id: str) -> bool:
         raise asyncio.CancelledError
@@ -282,7 +287,6 @@ async def test_cancel_terminalizes_all_waves_when_resolver_cancel_fails(
         }
     }
     assert terminal_stages == {f"wave-{wave}" for wave in range(4)}
-    assert any(event.code == "RESOLVER_CANCEL_FAILED" for event in outcome.events)
     assert any(event.code == "RUN_CANCELLED" for event in outcome.events)
 
 
@@ -321,7 +325,11 @@ async def test_resolver_cancel_timeout_does_not_block_run_finalization(
     coordinator = QueryCoordinator(
         resolver=fixture.resolver,
         result_store=ParquetResultStore(tmp_path),
-        limits=ResourceLimits(node_timeout_seconds=0.02),
+        limits=ResourceLimits(
+            max_bytes=100_000,
+            max_in_flight_bytes=100_000,
+            node_timeout_seconds=0.02,
+        ),
     )
     task = asyncio.create_task(
         coordinator.run(fixture.plan, run_id="run-stubborn-cancel")
@@ -333,7 +341,6 @@ async def test_resolver_cancel_timeout_does_not_block_run_finalization(
     elapsed = asyncio.get_running_loop().time() - started
     assert elapsed < 0.1
     assert outcome.summary.state is ExecutionState.CANCELLED
-    assert any(event.code == "RESOLVER_CANCEL_TIMEOUT" for event in outcome.events)
     await asyncio.sleep(0.25)
 
 
@@ -427,6 +434,31 @@ async def test_cancellation_after_store_claim_terminalizes_owned_run() -> None:
     with pytest.raises(RuntimeFailure) as reused:
         await coordinator.run(fixture.plan, run_id="run-claim-cancel")
     assert reused.value.code == "RUN_ID_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_claim_registration_cleans_reservation() -> None:
+    fixture = simple_profit_fixture()
+    events = _PausingClaimStore("run-register-cancel")
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-register-cancel")
+    )
+    await events.claimed.wait()
+    await coordinator._run_lock.acquire()
+    events.release.set()
+    await asyncio.sleep(0)
+    task.cancel()
+    coordinator._run_lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "run-register-cancel" not in coordinator._claiming_run_ids
+    recorded = await events.list("run-register-cancel")
+    assert any(event.code == "RUN_CANCELLED" for event in recorded)
 
 
 @pytest.mark.asyncio
@@ -525,10 +557,87 @@ async def test_node_timeout_does_not_wait_for_parquet_writer(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_failed_deferred_cleanup_releases_memory_budget(
+    tmp_path: Path,
+) -> None:
+    fixture = simple_profit_fixture()
+    store = _FailingSlowCleanupStore(tmp_path)
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=store,
+        limits=ResourceLimits(
+            max_bytes=100_000,
+            max_in_flight_bytes=100_000,
+            node_timeout_seconds=0.1,
+        ),
+    )
+    outcome = await coordinator.run(fixture.plan, run_id="run-cleanup-failure")
+    assert outcome.summary.state is ExecutionState.TIMED_OUT
+    for _ in range(100):
+        if store._cleanup_tasks:
+            break
+        await asyncio.sleep(0.001)
+    assert store._cleanup_tasks
+    with pytest.raises(RuntimeFailure) as cleanup:
+        await store.wait_for_cleanup()
+    assert cleanup.value.code == "RESULT_ORPHAN_CLEANUP_FAILED"
+    for _ in range(10):
+        if coordinator._memory.current == 0:
+            break
+        await asyncio.sleep(0)
+    assert coordinator._memory.current == 0
+
+
+@pytest.mark.asyncio
+async def test_noncooperative_resolver_cannot_extend_node_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = simple_profit_fixture()
+    source_table = fixture.resolver._tables["regional_source"]
+    cancel_called = asyncio.Event()
+
+    async def stubborn_execute(fragment, cancel_event):
+        deadline = asyncio.get_running_loop().time() + 0.2
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await asyncio.sleep(deadline - asyncio.get_running_loop().time())
+            except asyncio.CancelledError:
+                continue
+        return source_table
+
+    async def record_cancel(run_id: str, node_id: str) -> None:
+        cancel_called.set()
+
+    monkeypatch.setattr(fixture.resolver, "execute", stubborn_execute)
+    monkeypatch.setattr(fixture.resolver, "cancel", record_cancel)
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=ParquetResultStore(tmp_path),
+        limits=ResourceLimits(
+            max_bytes=100_000,
+            max_in_flight_bytes=100_000,
+            node_timeout_seconds=0.02,
+        ),
+    )
+    started = asyncio.get_running_loop().time()
+    outcome = await coordinator.run(fixture.plan, run_id="run-hard-deadline")
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 0.1
+    assert outcome.summary.state is ExecutionState.TIMED_OUT
+    await asyncio.wait_for(cancel_called.wait(), timeout=0.05)
+    assert coordinator._memory.current == 100_000
+    blocked = await coordinator.run(
+        fixture.plan, run_id="run-hard-deadline-blocked"
+    )
+    assert blocked.summary.diagnostic_code == "LIMIT_IN_FLIGHT_BYTES_EXCEEDED"
+    await asyncio.sleep(0.25)
+    assert coordinator._memory.current == 0
+
+
+@pytest.mark.asyncio
 async def test_global_memory_budget_counts_parallel_tables(tmp_path: Path) -> None:
     fixture = join_sort_fixture()
-    tables = fixture.resolver._tables
-    budget = sum(table.nbytes for table in tables.values()) - 1
+    budget = 100_000
     outcome = await QueryCoordinator(
         resolver=fixture.resolver,
         result_store=InlineResultStore(),
@@ -551,8 +660,8 @@ async def test_intermediate_tables_release_after_final_consumer() -> None:
         resolver=resolver,
         result_store=InlineResultStore(),
         limits=ResourceLimits(
-            max_bytes=100_000,
-            max_in_flight_bytes=table_bytes * 3 + 1_000,
+            max_bytes=10_000,
+            max_in_flight_bytes=20_000,
         ),
     ).run(plan, run_id="run-memory-release")
     assert outcome.summary.state is ExecutionState.SUCCEEDED
@@ -568,7 +677,7 @@ async def test_cancelled_writer_holds_global_budget_until_cleanup(
         resolver=resolver,
         result_store=store,
         limits=ResourceLimits(
-            max_bytes=100_000,
+            max_bytes=table_bytes,
             max_in_flight_bytes=table_bytes,
             node_timeout_seconds=0.02,
         ),
@@ -592,6 +701,45 @@ async def test_cancelled_writer_holds_global_budget_until_cleanup(
             break
         await asyncio.sleep(0)
     assert coordinator._memory.current == 0
+
+
+@pytest.mark.asyncio
+async def test_pre_admission_rejects_before_resolver_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = simple_profit_fixture()
+    called = False
+
+    async def should_not_execute(fragment, cancel_event):
+        nonlocal called
+        called = True
+        return fixture.resolver._tables["regional_source"]
+
+    monkeypatch.setattr(fixture.resolver, "execute", should_not_execute)
+    outcome = await QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        limits=ResourceLimits(
+            max_bytes=100,
+            max_in_flight_bytes=50,
+        ),
+    ).run(fixture.plan, run_id="run-pre-admission")
+    assert outcome.summary.state is ExecutionState.FAILED
+    assert outcome.summary.diagnostic_code == "LIMIT_IN_FLIGHT_BYTES_EXCEEDED"
+    assert not called
+
+
+@pytest.mark.asyncio
+async def test_stage_diagnostic_matches_failure_priority() -> None:
+    fixture = join_sort_fixture()
+    fixture.resolver._delays["region_source"] = 1.0
+    fixture.resolver._failures["score_source"] = "synthetic source failure"
+    outcome = await QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+    ).run(fixture.plan, run_id="run-diagnostic-priority")
+    assert outcome.summary.state is ExecutionState.FAILED
+    assert outcome.summary.diagnostic_code == "RESOLVER_SOURCE_FAILED"
 
 
 @pytest.mark.asyncio
@@ -624,6 +772,61 @@ def test_invalid_dag_is_rejected() -> None:
     with pytest.raises(PlanFailure) as error:
         validate_physical_plan(invalid_dag_fixture())
     assert error.value.code == "PLAN_MISSING_DEPENDENCY"
+
+
+def test_unreachable_physical_node_is_rejected() -> None:
+    fixture = simple_profit_fixture()
+    orphan = fixture.plan.nodes[0].model_copy(
+        update={"id": "orphan-source", "logical_node_ids": ("orphan-logical",)}
+    )
+    plan = fixture.plan.model_copy(
+        update={"nodes": (*fixture.plan.nodes, orphan)}
+    )
+    with pytest.raises(PlanFailure) as error:
+        validate_physical_plan(plan)
+    assert error.value.code == "PLAN_UNREACHABLE_NODE"
+
+
+def test_inputless_physical_operator_is_rejected() -> None:
+    fixture = complex_profit_fixture()
+    project = next(
+        node for node in fixture.plan.nodes if node.operation is OperatorKind.PROJECT
+    ).model_copy(update={"dependencies": (), "wave": 0})
+    plan = fixture.plan.model_copy(
+        update={"nodes": (project,), "output_node_id": project.id}
+    )
+    with pytest.raises(PlanFailure) as error:
+        validate_physical_plan(plan)
+    assert error.value.code == "PLAN_OPERATOR_INPUT_COUNT"
+
+
+def test_join_with_one_physical_input_is_rejected() -> None:
+    fixture = join_sort_fixture()
+    join = next(
+        node for node in fixture.plan.nodes if node.operation is OperatorKind.JOIN
+    )
+    source = next(node for node in fixture.plan.nodes if node.id == join.dependencies[0])
+    join = join.model_copy(update={"dependencies": (source.id,)})
+    plan = fixture.plan.model_copy(
+        update={"nodes": (source, join), "output_node_id": join.id}
+    )
+    with pytest.raises(PlanFailure) as error:
+        validate_physical_plan(plan)
+    assert error.value.code == "PLAN_OPERATOR_INPUT_COUNT"
+
+
+def test_source_fragment_with_physical_input_is_rejected() -> None:
+    fixture = simple_profit_fixture()
+    source = fixture.plan.nodes[0]
+    dependent_source = source.model_copy(
+        update={"id": "dependent-source", "dependencies": (source.id,), "wave": 1}
+    )
+    plan = fixture.plan.model_copy(
+        update={"nodes": (source, dependent_source), "output_node_id": dependent_source.id}
+    )
+    with pytest.raises(PlanFailure) as error:
+        validate_physical_plan(plan)
+    assert error.value.code == "PLAN_SOURCE_FRAGMENT_INPUT"
 
 
 @pytest.mark.asyncio

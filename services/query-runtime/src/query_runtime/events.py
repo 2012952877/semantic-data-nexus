@@ -101,14 +101,13 @@ class InMemoryEventStore:
                     )
                 except TimeoutError:
                     async with self._lock:
-                        if (
-                            queue not in self._subscribers[run_id]
-                            or any(
-                                event.scope == "run"
-                                and event.state in TERMINAL_STATES
-                                for event in self._events.get(run_id, ())
-                            )
-                        ):
+                        closing = queue in self._closing_subscribers
+                        if closing and queue.empty():
+                            self._closing_subscribers.discard(queue)
+                            return
+                        if closing:
+                            continue
+                        if queue not in self._subscribers[run_id]:
                             return
                         sequence = len(self._events.get(run_id, ()))
                     yield DiagnosticEvent(

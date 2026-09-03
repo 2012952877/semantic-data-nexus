@@ -228,6 +228,11 @@ class CapabilityPlanner:
                     ),
                 )
             else:
+                if not dependency_ids:
+                    raise PlanFailure(
+                        "PLAN_ROOT_LOCAL_UNSUPPORTED",
+                        f"Root operation '{operation.kind}' cannot execute locally without input",
+                    )
                 physical_node = PhysicalNode(
                     id=node_id,
                     kind=PhysicalNodeKind.OPERATOR,

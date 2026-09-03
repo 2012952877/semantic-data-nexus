@@ -16,7 +16,7 @@ from query_runtime.domain import (
     ScalarType,
     SourceFragment,
 )
-from query_runtime.errors import BindingFailure, RuntimeFailure
+from query_runtime.errors import BindingFailure, PlanFailure, RuntimeFailure
 from query_runtime.events import StateMachine
 from query_runtime.lineage import LineageRecorder
 from query_runtime.planner import (
@@ -170,7 +170,9 @@ def test_capability_specific_limits_retain_operator_locally() -> None:
             )
         },
     )
-    assert planner.plan(graph).nodes[0].kind is PhysicalNodeKind.OPERATOR
+    with pytest.raises(PlanFailure) as error:
+        planner.plan(graph)
+    assert error.value.code == "PLAN_ROOT_LOCAL_UNSUPPORTED"
 
 
 def test_physical_node_operation_must_match_payload() -> None:
@@ -333,3 +335,35 @@ def test_supported_operation_after_local_node_stays_local() -> None:
     by_operation = {node.operation: node for node in plan.nodes}
     assert by_operation[OperatorKind.SORT].kind is PhysicalNodeKind.OPERATOR
     assert by_operation[OperatorKind.JOIN].kind is PhysicalNodeKind.OPERATOR
+
+
+def test_non_pushable_root_operation_is_rejected() -> None:
+    graph = ValidatedLogicalGraph(
+        id="root-local",
+        nodes=(
+            LogicalNode(
+                id="filter",
+                source_alias="source",
+                operation=OperatorSpec(kind=OperatorKind.FILTER),
+            ),
+        ),
+        output_node_id="filter",
+    )
+    planner = CapabilityPlanner(
+        binder=ExactConceptBinder({}),
+        sources={
+            "source": BoundSource(
+                alias="source", source_type="synthetic", object_name="facts"
+            )
+        },
+        capabilities={
+            "source": CapabilityCatalog(
+                source_alias="source",
+                source_type="synthetic",
+                operator_kinds=frozenset({OperatorKind.SOURCE}),
+            )
+        },
+    )
+    with pytest.raises(PlanFailure) as error:
+        planner.plan(graph)
+    assert error.value.code == "PLAN_ROOT_LOCAL_UNSUPPORTED"

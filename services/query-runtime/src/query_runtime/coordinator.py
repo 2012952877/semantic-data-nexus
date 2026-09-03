@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Any
 
 import pyarrow as pa
 
@@ -17,6 +18,7 @@ from query_runtime.domain import (
     DiagnosticEvent,
     ExecutionState,
     LineageGraph,
+    OperatorKind,
     PhysicalNode,
     PhysicalNodeKind,
     PhysicalPlan,
@@ -75,6 +77,19 @@ class _MemoryBudget:
                 )
             self.current += size
             self._reservations[(run_id, node_id)] = size
+
+    async def reconcile(self, run_id: str, node_id: str, size: int) -> None:
+        async with self._lock:
+            key = (run_id, node_id)
+            reserved = self._reservations[key]
+            if size > reserved:
+                raise ResourceLimitFailure(
+                    "LIMIT_ADMISSION_ESTIMATE_EXCEEDED",
+                    "Node output exceeded its pre-admitted memory reservation",
+                    details={"reserved_bytes": reserved, "actual_bytes": size},
+                )
+            self.current -= reserved - size
+            self._reservations[key] = size
 
     async def release(self, run_id: str, node_id: str) -> None:
         async with self._lock:
@@ -165,6 +180,8 @@ class QueryCoordinator:
         self._run_lock = asyncio.Lock()
         self._memory = _MemoryBudget(self.limits.max_in_flight_bytes)
         self._deferred_releases: set[asyncio.Task[None]] = set()
+        self._node_cleanups: set[asyncio.Task[None]] = set()
+        self._resolver_cancellations: set[asyncio.Task[None]] = set()
 
     async def cancel(self, run_id: str) -> bool:
         async with self._run_lock:
@@ -265,7 +282,8 @@ class QueryCoordinator:
                     (
                         item.diagnostic_code
                         for item in outcomes
-                        if item.diagnostic_code is not None
+                        if item.state is stage_state
+                        and item.diagnostic_code is not None
                     ),
                     f"RUN_{stage_state.value}",
                 )
@@ -396,6 +414,7 @@ class QueryCoordinator:
         machine = StateMachine()
         started = time.monotonic()
         reserved = False
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]] | None = None
         machine.transition(ExecutionState.READY)
         await emitter.emit(
             scope="node",
@@ -419,12 +438,40 @@ class QueryCoordinator:
                     metadata={"wave": node.wave, "operation": node.operation.value},
                 )
                 inputs = tuple(tables[dependency] for dependency in node.dependencies)
-                table, manifest = await asyncio.wait_for(
+                execution = asyncio.create_task(
                     self._perform_and_commit(
                         node, run_id, inputs, cancel_event, memory
-                    ),
-                    timeout=self.limits.node_timeout_seconds,
+                    )
                 )
+                done, _ = await asyncio.wait(
+                    {execution},
+                    timeout=self.limits.node_timeout_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if execution not in done:
+                    cancel_event.set()
+                    await memory.defer(run_id, node.id)
+                    execution.cancel()
+                    self._defer_node_cleanup(
+                        execution, memory, run_id, node.id
+                    )
+                    if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
+                        self._request_resolver_cancel(run_id, node.id)
+                    machine.transition(ExecutionState.TIMED_OUT)
+                    await emitter.emit(
+                        scope="node",
+                        scope_id=node.id,
+                        state=machine.state,
+                        code="NODE_TIMEOUT",
+                        message="Node exceeded its configured execution time",
+                        duration_ms=_duration(started),
+                    )
+                    return _NodeOutcome(
+                        node.id,
+                        machine.state,
+                        diagnostic_code="NODE_TIMEOUT",
+                    )
+                table, manifest = execution.result()
                 reserved = True
                 if cancel_event.is_set():
                     await memory.release(run_id, node.id)
@@ -455,7 +502,7 @@ class QueryCoordinator:
                 await memory.release(run_id, node.id)
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
-                await self._cancel_resolver(run_id, node.id, emitter)
+                self._request_resolver_cancel(run_id, node.id)
             machine.transition(ExecutionState.TIMED_OUT)
             await emitter.emit(
                 scope="node",
@@ -469,11 +516,15 @@ class QueryCoordinator:
                 node.id, machine.state, diagnostic_code="NODE_TIMEOUT"
             )
         except asyncio.CancelledError:
+            if execution is not None and not execution.done():
+                await memory.defer(run_id, node.id)
+                execution.cancel()
+                self._defer_node_cleanup(execution, memory, run_id, node.id)
             if reserved:
                 await memory.release(run_id, node.id)
             cancel_event.set()
             if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
-                await self._cancel_resolver(run_id, node.id, emitter)
+                self._request_resolver_cancel(run_id, node.id)
             machine.transition(ExecutionState.CANCELLED)
             await emitter.emit(
                 scope="node",
@@ -528,12 +579,13 @@ class QueryCoordinator:
         cancel_event: asyncio.Event,
         memory: _MemoryBudget,
     ) -> tuple[pa.Table, CommittedManifest]:
-        table = await self._perform_node(node, inputs, cancel_event)
-        self.executor.enforce_limits(table)
-        if cancel_event.is_set():
-            raise asyncio.CancelledError
-        await memory.reserve(run_id, node.id, table.nbytes)
+        await memory.reserve(run_id, node.id, self.limits.max_bytes)
         try:
+            table = await self._perform_node(node, inputs, cancel_event)
+            self.executor.enforce_limits(table)
+            await memory.reconcile(run_id, node.id, table.nbytes)
+            if cancel_event.is_set():
+                raise asyncio.CancelledError
             manifest = await self.result_store.commit(
                 run_id, node.id, table, cancel_event
             )
@@ -572,36 +624,57 @@ class QueryCoordinator:
                 )
             self._claiming_run_ids.add(run_id)
         claim = asyncio.create_task(self.event_store.claim(run_id))
-        was_cancelled = False
-        while not claim.done():
-            try:
-                await asyncio.shield(claim)
-            except asyncio.CancelledError:
-                was_cancelled = True
+        was_cancelled = await _wait_for_task_completion(claim)
         if claim.cancelled():
-            async with self._run_lock:
-                self._claiming_run_ids.discard(run_id)
+            settlement = asyncio.create_task(
+                self._settle_claim(run_id, cancel_event, register=False)
+            )
+            await _wait_for_task_completion(settlement)
             raise asyncio.CancelledError
         try:
             claimed = claim.result()
         except Exception:
-            async with self._run_lock:
-                self._claiming_run_ids.discard(run_id)
+            settlement = asyncio.create_task(
+                self._settle_claim(run_id, cancel_event, register=False)
+            )
+            await _wait_for_task_completion(settlement)
             raise
         if not claimed:
-            async with self._run_lock:
-                self._claiming_run_ids.discard(run_id)
+            settlement = asyncio.create_task(
+                self._settle_claim(run_id, cancel_event, register=False)
+            )
+            was_cancelled = (
+                await _wait_for_task_completion(settlement)
+                or was_cancelled
+            )
             if was_cancelled:
                 raise asyncio.CancelledError
             raise RuntimeFailure(
                 "RUN_ID_CONFLICT",
                 "Run ID has already been used by this coordinator",
             )
-        async with self._run_lock:
-            self._claiming_run_ids.discard(run_id)
-            self._register_run(run_id, cancel_event)
+        settlement = asyncio.create_task(
+            self._settle_claim(run_id, cancel_event, register=True)
+        )
+        was_cancelled = (
+            await _wait_for_task_completion(settlement)
+            or was_cancelled
+        )
+        settlement.result()
         if was_cancelled:
             raise asyncio.CancelledError
+
+    async def _settle_claim(
+        self,
+        run_id: str,
+        cancel_event: asyncio.Event,
+        *,
+        register: bool,
+    ) -> None:
+        async with self._run_lock:
+            self._claiming_run_ids.discard(run_id)
+            if register:
+                self._register_run(run_id, cancel_event)
 
     def _register_run(self, run_id: str, cancel_event: asyncio.Event) -> None:
         self._known_run_ids.add(run_id)
@@ -621,20 +694,119 @@ class QueryCoordinator:
         run_id: str,
         node_id: str,
     ) -> None:
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                continue
-        while True:
-            try:
-                await memory.release(run_id, node_id)
-                break
-            except asyncio.CancelledError:
-                continue
+        try:
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+        finally:
+            while True:
+                try:
+                    await memory.release(run_id, node_id)
+                    break
+                except asyncio.CancelledError:
+                    continue
 
     def _finish_deferred_release(self, task: asyncio.Task[None]) -> None:
         self._deferred_releases.discard(task)
+        with suppress(asyncio.CancelledError, Exception):
+            task.result()
+
+    def _defer_node_cleanup(
+        self,
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+    ) -> None:
+        cleanup = asyncio.create_task(
+            self._observe_node_cleanup(execution, memory, run_id, node_id)
+        )
+        self._node_cleanups.add(cleanup)
+        cleanup.add_done_callback(self._finish_node_cleanup)
+
+    async def _observe_node_cleanup(
+        self,
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+    ) -> None:
+        done, _ = await asyncio.wait(
+            {execution},
+            timeout=min(1.0, self.limits.node_timeout_seconds),
+        )
+        if execution not in done:
+            execution.cancel()
+            execution.add_done_callback(
+                lambda task: self._schedule_late_execution_release(
+                    task, memory, run_id, node_id
+                )
+            )
+            return
+        try:
+            execution.result()
+        except (asyncio.CancelledError, Exception):
+            return
+        await memory.release(run_id, node_id)
+
+    def _schedule_late_execution_release(
+        self,
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+    ) -> None:
+        release = asyncio.create_task(
+            self._release_successful_late_execution(
+                execution, memory, run_id, node_id
+            )
+        )
+        self._deferred_releases.add(release)
+        release.add_done_callback(self._finish_deferred_release)
+
+    async def _release_successful_late_execution(
+        self,
+        execution: asyncio.Task[tuple[pa.Table, CommittedManifest]],
+        memory: _MemoryBudget,
+        run_id: str,
+        node_id: str,
+    ) -> None:
+        try:
+            execution.result()
+        except (asyncio.CancelledError, Exception):
+            return
+        await memory.release(run_id, node_id)
+
+    def _finish_node_cleanup(self, task: asyncio.Task[None]) -> None:
+        self._node_cleanups.discard(task)
+        with suppress(asyncio.CancelledError, Exception):
+            task.result()
+
+    def _request_resolver_cancel(self, run_id: str, node_id: str) -> None:
+        cancellation = asyncio.create_task(
+            self._bounded_resolver_cancel(run_id, node_id)
+        )
+        self._resolver_cancellations.add(cancellation)
+        cancellation.add_done_callback(self._finish_resolver_cancel)
+
+    async def _bounded_resolver_cancel(self, run_id: str, node_id: str) -> None:
+        cancellation = asyncio.create_task(self.resolver.cancel(run_id, node_id))
+        done, _ = await asyncio.wait(
+            {cancellation},
+            timeout=min(1.0, self.limits.node_timeout_seconds),
+        )
+        if cancellation not in done:
+            cancellation.cancel()
+            cancellation.add_done_callback(_consume_task_result)
+            return
+        _consume_task_result(cancellation)
+
+    def _finish_resolver_cancel(self, task: asyncio.Task[None]) -> None:
+        self._resolver_cancellations.discard(task)
         with suppress(asyncio.CancelledError, Exception):
             task.result()
 
@@ -711,43 +883,6 @@ class QueryCoordinator:
                 message="Run cancelled by caller",
             )
 
-    async def _cancel_resolver(
-        self, run_id: str, node_id: str, emitter: _Emitter
-    ) -> None:
-        timeout = min(1.0, self.limits.node_timeout_seconds)
-        cancellation = asyncio.create_task(self.resolver.cancel(run_id, node_id))
-        try:
-            done, _ = await asyncio.wait(
-                {cancellation},
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        except asyncio.CancelledError:
-            cancellation.cancel()
-            cancellation.add_done_callback(_consume_task_result)
-            code = "RESOLVER_CANCEL_INTERRUPTED"
-        else:
-            if cancellation not in done:
-                cancellation.cancel()
-                cancellation.add_done_callback(_consume_task_result)
-                code = "RESOLVER_CANCEL_TIMEOUT"
-            else:
-                try:
-                    cancellation.result()
-                except asyncio.CancelledError:
-                    code = "RESOLVER_CANCEL_INTERRUPTED"
-                except Exception:
-                    code = "RESOLVER_CANCEL_FAILED"
-                else:
-                    return
-        await emitter.emit(
-            scope="node",
-            scope_id=node_id,
-            state=ExecutionState.RUNNING,
-            code=code,
-            message="Source cancellation did not complete cleanly",
-        )
-
     async def _terminalize_waves(
         self,
         nodes_by_wave: dict[int, list[PhysicalNode]],
@@ -800,6 +935,25 @@ def validate_physical_plan(plan: PhysicalPlan) -> None:
     if plan.output_node_id not in by_id:
         raise PlanFailure("PLAN_OUTPUT_MISSING", "Physical plan output node does not exist")
     for node in plan.nodes:
+        if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT and node.dependencies:
+            raise PlanFailure(
+                "PLAN_SOURCE_FRAGMENT_INPUT",
+                f"Source fragment node '{node.id}' cannot accept physical inputs",
+                details={"node_id": node.id, "actual_inputs": len(node.dependencies)},
+            )
+        if node.kind is PhysicalNodeKind.OPERATOR:
+            required_inputs = 2 if node.operation is OperatorKind.JOIN else 1
+            if len(node.dependencies) != required_inputs:
+                raise PlanFailure(
+                    "PLAN_OPERATOR_INPUT_COUNT",
+                    f"Operator node '{node.id}' requires {required_inputs} input(s)",
+                    details={
+                        "node_id": node.id,
+                        "operation": node.operation.value,
+                        "required_inputs": required_inputs,
+                        "actual_inputs": len(node.dependencies),
+                    },
+                )
         for dependency in node.dependencies:
             if dependency not in by_id:
                 raise PlanFailure(
@@ -811,6 +965,21 @@ def validate_physical_plan(plan: PhysicalPlan) -> None:
                     "PLAN_WAVE_INVALID",
                     "Dependency waves must precede dependent node waves",
                 )
+    reachable: set[str] = set()
+    pending = [plan.output_node_id]
+    while pending:
+        node_id = pending.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        pending.extend(by_id[node_id].dependencies)
+    unreachable = sorted(set(by_id) - reachable)
+    if unreachable:
+        raise PlanFailure(
+            "PLAN_UNREACHABLE_NODE",
+            "Physical plan contains nodes outside the output dependency closure",
+            details={"nodes": unreachable},
+        )
     indegree = {node.id: len(node.dependencies) for node in plan.nodes}
     dependents: dict[str, list[str]] = defaultdict(list)
     for node in plan.nodes:
@@ -845,6 +1014,16 @@ def _duration(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
 
-def _consume_task_result(task: asyncio.Task[None]) -> None:
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
     with suppress(asyncio.CancelledError, Exception):
         task.result()
+
+
+async def _wait_for_task_completion(task: asyncio.Task[Any]) -> bool:
+    was_cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            was_cancelled = True
+    return was_cancelled
