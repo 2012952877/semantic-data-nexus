@@ -109,8 +109,10 @@ def _difference(
     )
 
 
-def validate_plan(plan: dict[str, Any]) -> list[str]:
+def validate_plan(plan: Any) -> list[str]:
     """Return generic graph integrity errors without assuming a compiler contract."""
+    if not isinstance(plan, dict):
+        return ["plan must be an object"]
     errors: list[str] = []
     operators = plan.get("operators", [])
     edges = plan.get("edges", [])
@@ -258,8 +260,40 @@ def _compare_exact(
     *,
     unordered: bool = False,
 ) -> bool:
-    left = sorted(expected) if unordered and isinstance(expected, list) else expected
-    right = sorted(actual) if unordered and isinstance(actual, list) else actual
+    def canonical(value: Any) -> Any:
+        value = _normalize_temporal(value)
+        if isinstance(value, dict):
+            return [
+                [
+                    f"{type(key).__name__}:{key!r}",
+                    canonical(item),
+                ]
+                for key, item in sorted(
+                    value.items(),
+                    key=lambda pair: (type(pair[0]).__name__, repr(pair[0])),
+                )
+            ]
+        if isinstance(value, (list, tuple)):
+            return [canonical(item) for item in value]
+        return value
+
+    def sort_key(value: Any) -> str:
+        return json.dumps(
+            canonical(value),
+            ensure_ascii=False,
+            default=str,
+        )
+
+    left = (
+        sorted(expected, key=sort_key)
+        if unordered and isinstance(expected, list)
+        else expected
+    )
+    right = (
+        sorted(actual, key=sort_key)
+        if unordered and isinstance(actual, list)
+        else actual
+    )
     if left == right:
         return True
     _difference(differences, dimension, path, expected, actual)
@@ -275,21 +309,37 @@ def _numbers_equal(expected: Any, actual: Any, tolerance: float) -> bool:
             and isinstance(actual, bool)
             and expected == actual
         )
+    if isinstance(expected, int) and isinstance(actual, int):
+        return expected == actual
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        return math.isclose(float(expected), float(actual), abs_tol=tolerance, rel_tol=0.0)
+        try:
+            expected_number = float(expected)
+            actual_number = float(actual)
+        except (OverflowError, ValueError):
+            return False
+        return math.isclose(
+            expected_number,
+            actual_number,
+            abs_tol=tolerance,
+            rel_tol=0.0,
+        )
     return expected == actual
 
 
 def compare_rows(
-    expected: list[dict[str, Any]],
-    actual: list[dict[str, Any]],
+    expected: Any,
+    actual: Any,
     tolerance: float,
 ) -> tuple[bool, str | None]:
+    if not isinstance(expected, list) or not isinstance(actual, list):
+        return False, "rows must be lists"
     if len(expected) != len(actual):
         return False, f"row count differs: expected {len(expected)}, got {len(actual)}"
     for row_index, (expected_row, actual_row) in enumerate(
         zip(expected, actual, strict=True)
     ):
+        if not isinstance(expected_row, dict) or not isinstance(actual_row, dict):
+            return False, f"row {row_index} must be an object"
         if set(expected_row) != set(actual_row):
             return False, f"row {row_index} columns differ"
         for column, expected_value in expected_row.items():
@@ -308,7 +358,102 @@ def _dimension_score(checks: Iterable[bool]) -> float:
     return 100.0 * sum(values) / len(values) if values else 100.0
 
 
-def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> CaseReport:
+def _container_type_errors(expected: Any, actual: Any, path: str) -> list[str]:
+    errors: list[str] = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return [f"{path} must be an object"]
+        for key, expected_value in expected.items():
+            if key in actual:
+                errors.extend(
+                    _container_type_errors(
+                        expected_value,
+                        actual[key],
+                        f"{path}.{key}",
+                    )
+                )
+    elif isinstance(expected, list):
+        if not isinstance(actual, list):
+            return [f"{path} must be a list"]
+        if expected and isinstance(expected[0], (dict, list)):
+            for index, actual_item in enumerate(actual):
+                errors.extend(
+                    _container_type_errors(
+                        expected[0],
+                        actual_item,
+                        f"{path}[{index}]",
+                    )
+                )
+        elif expected:
+            for index, actual_item in enumerate(actual):
+                if isinstance(actual_item, (dict, list)):
+                    errors.append(f"{path}[{index}] must be a scalar")
+        elif path in {"plan.nodes", "result.schema", "result.rows"}:
+            for index, actual_item in enumerate(actual):
+                if not isinstance(actual_item, dict):
+                    errors.append(f"{path}[{index}] must be an object")
+        elif path == "plan.edges":
+            for index, actual_item in enumerate(actual):
+                if not isinstance(actual_item, list):
+                    errors.append(f"{path}[{index}] must be a list")
+        elif path in {
+            "semantic.entities",
+            "semantic.fields",
+            "semantic.metrics",
+            "semantic.relations",
+            "plan.operators",
+            "result.grain",
+            "result.order_by",
+            "lineage.entities",
+            "lineage.fields",
+        }:
+            for index, actual_item in enumerate(actual):
+                if isinstance(actual_item, (dict, list)):
+                    errors.append(f"{path}[{index}] must be a scalar")
+    elif isinstance(actual, (dict, list)):
+        errors.append(f"{path} must be a scalar")
+    return errors
+
+
+def _resolve_weights(golden_suite: dict[str, Any]) -> dict[str, float]:
+    declared = golden_suite.get("weights", DEFAULT_WEIGHTS)
+    if not isinstance(declared, dict):
+        raise ValueError("suite weights must be an object")
+    expected_dimensions = set(DEFAULT_WEIGHTS)
+    if set(declared) != expected_dimensions:
+        raise ValueError(
+            "suite weights must declare exactly: "
+            + ", ".join(DEFAULT_WEIGHTS)
+        )
+    weights: dict[str, float] = {}
+    for dimension in DEFAULT_WEIGHTS:
+        value = declared[dimension]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"suite weight {dimension} must be a finite non-negative number"
+            )
+        try:
+            converted = float(value)
+        except (OverflowError, ValueError) as error:
+            raise ValueError(
+                f"suite weight {dimension} must be a finite non-negative number"
+            ) from error
+        if not math.isfinite(converted) or converted < 0:
+            raise ValueError(
+                f"suite weight {dimension} must be a finite non-negative number"
+            )
+        weights[dimension] = converted
+    total = sum(weights.values())
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("suite weights must have a finite positive total")
+    return weights
+
+
+def evaluate_case(
+    golden: dict[str, Any],
+    actual: Any,
+    weights: dict[str, float] | None = None,
+) -> CaseReport:
     case_id = golden["id"]
     expected = golden["expected"]
     differences: list[Difference] = []
@@ -328,15 +473,71 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
             dimension_scores={dimension: 0.0 for dimension in DEFAULT_WEIGHTS},
             differences=differences,
         )
+    if not isinstance(actual, dict):
+        for dimension in DEFAULT_WEIGHTS:
+            _difference(
+                differences,
+                dimension,
+                f"cases.{case_id}",
+                "candidate case object",
+                actual,
+                "INVALID_CANDIDATE_SHAPE: candidate case must be an object",
+            )
+        return CaseReport(
+            case_id=case_id,
+            score=0.0,
+            dimension_scores={dimension: 0.0 for dimension in DEFAULT_WEIGHTS},
+            differences=differences,
+        )
 
-    semantic_checks = []
+    dimension_paths = {
+        "semantic": "semantic",
+        "time_range": "semantic",
+        "member_normalization": "semantic",
+        "plan": "plan",
+        "result": "execution_result",
+        "behavior": "governance",
+        "governance": "governance",
+        "lineage": "observability",
+    }
+    shape_checks: dict[str, list[bool]] = {
+        dimension: [] for dimension in DEFAULT_WEIGHTS
+    }
+    for path, dimension in dimension_paths.items():
+        if path not in actual:
+            continue
+        if path == "lineage":
+            expected_value = {
+                "entities": expected["semantic"].get("entities", []),
+                "fields": expected["semantic"].get("fields", []),
+            }
+        else:
+            expected_value = expected.get(path, {})
+        errors = _container_type_errors(expected_value, actual[path], path)
+        if errors:
+            shape_checks[dimension].append(False)
+        for error in errors:
+            code = "INVALID_PLAN_SHAPE" if dimension == "plan" else "INVALID_CANDIDATE_SHAPE"
+            _difference(
+                differences,
+                dimension,
+                path,
+                type(expected_value).__name__,
+                actual[path],
+                f"{code}: {error}",
+            )
+
+    actual_semantic = (
+        actual.get("semantic", {}) if isinstance(actual.get("semantic"), dict) else {}
+    )
+    semantic_checks = shape_checks["semantic"]
     for key in ("entities", "fields", "metrics", "relations"):
         semantic_checks.append(
             _compare_exact(
                 "semantic",
                 f"semantic.{key}",
                 expected["semantic"].get(key, []),
-                actual.get("semantic", {}).get(key, []),
+                actual_semantic.get(key, []),
                 differences,
                 unordered=True,
             )
@@ -353,8 +554,9 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
         )
 
     expected_plan = expected.get("plan", {})
-    actual_plan = actual.get("plan", {})
-    plan_checks = [
+    actual_plan_value = actual.get("plan", {})
+    actual_plan = actual_plan_value if isinstance(actual_plan_value, dict) else {}
+    plan_checks = shape_checks["plan"] + [
         _compare_exact(
             "plan",
             "plan.operators",
@@ -377,7 +579,7 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
             differences,
         ),
     ]
-    plan_errors = validate_plan(actual_plan)
+    plan_errors = validate_plan(actual_plan_value)
     plan_checks.append(not plan_errors)
     if plan_errors:
         _difference(
@@ -390,8 +592,10 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
         )
 
     expected_result = expected.get("result", {})
-    actual_result = actual.get("result", {})
-    result_checks = []
+    actual_result = (
+        actual.get("result", {}) if isinstance(actual.get("result"), dict) else {}
+    )
+    result_checks = shape_checks["execution_result"]
     for key in ("schema", "grain", "order_by"):
         result_checks.append(
             _compare_exact(
@@ -419,7 +623,7 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
             rows_message,
         )
 
-    governance_checks = [
+    governance_checks = shape_checks["governance"] + [
         _compare_exact(
             "governance",
             "behavior",
@@ -437,9 +641,12 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
     ]
 
     lineage_required = expected.get("observability", {}).get("lineage_required", False)
-    actual_lineage = actual.get("lineage")
+    actual_lineage_value = actual.get("lineage")
+    actual_lineage = (
+        actual_lineage_value if isinstance(actual_lineage_value, dict) else None
+    )
     lineage_present = not lineage_required or bool(actual_lineage)
-    observability_checks = [lineage_present]
+    observability_checks = shape_checks["observability"] + [lineage_present]
     if not lineage_present:
         _difference(
             differences,
@@ -468,9 +675,11 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
         "governance": _dimension_score(governance_checks),
         "observability": _dimension_score(observability_checks),
     }
+    active_weights = weights or DEFAULT_WEIGHTS
+    total_weight = sum(active_weights.values())
     score = sum(
-        dimension_scores[dimension] * weight / 100.0
-        for dimension, weight in DEFAULT_WEIGHTS.items()
+        dimension_scores[dimension] * weight / total_weight
+        for dimension, weight in active_weights.items()
     )
     return CaseReport(
         case_id=case_id,
@@ -481,16 +690,28 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
 
 
 def evaluate_bundle(
-    golden_suite: dict[str, Any],
-    candidate_bundle: dict[str, Any],
+    golden_suite: Any,
+    candidate_bundle: Any,
 ) -> EvaluationReport:
     golden_suite = _normalize_temporal(golden_suite)
     candidate_bundle = _normalize_temporal(candidate_bundle)
+    if not isinstance(golden_suite, dict):
+        raise ValueError("golden suite must be an object")
+    weights = _resolve_weights(golden_suite)
+    if not isinstance(candidate_bundle, dict):
+        candidate_bundle = {}
     candidates = candidate_bundle.get("cases", {})
     if isinstance(candidates, list):
-        candidates = {candidate["id"]: candidate for candidate in candidates}
+        candidates = {
+            candidate["id"]: candidate
+            for candidate in candidates
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("id"), str)
+        }
+    elif not isinstance(candidates, dict):
+        candidates = {}
     reports = [
-        evaluate_case(case, candidates.get(case["id"]))
+        evaluate_case(case, candidates.get(case["id"]), weights)
         for case in golden_suite.get("cases", [])
     ]
     dimension_scores = {
@@ -502,9 +723,10 @@ def evaluate_bundle(
         else 0.0
         for dimension in DEFAULT_WEIGHTS
     }
+    total_weight = sum(weights.values())
     score = sum(
-        dimension_scores[dimension] * weight / 100.0
-        for dimension, weight in DEFAULT_WEIGHTS.items()
+        dimension_scores[dimension] * weight / total_weight
+        for dimension, weight in weights.items()
     )
     return EvaluationReport(
         suite_version=golden_suite.get("suite_version", "unknown"),

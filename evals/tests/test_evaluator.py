@@ -5,6 +5,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from semantic_eval.evaluator import (
     compare_rows,
     evaluate_bundle,
@@ -56,6 +58,25 @@ def test_numeric_tolerance_is_absolute() -> None:
     matched, message = compare_rows(expected, [{"gross_margin": 0.401}], 0.0001)
     assert not matched
     assert "gross_margin differs" in str(message)
+
+
+def test_large_integer_pairs_compare_exactly() -> None:
+    large = 2**53
+    assert compare_rows([{"value": large}], [{"value": large}], 100)[0]
+    matched, message = compare_rows(
+        [{"value": large}],
+        [{"value": large + 1}],
+        100,
+    )
+    assert not matched
+    assert "value differs" in str(message)
+    mixed, mixed_message = compare_rows(
+        [{"value": 1.0}],
+        [{"value": 10**400}],
+        0,
+    )
+    assert not mixed
+    assert "value differs" in str(mixed_message)
 
 
 def test_boolean_is_not_accepted_as_a_number() -> None:
@@ -123,6 +144,119 @@ def test_plan_nodes_are_required_and_structurally_consistent() -> None:
     )
     assert inconsistent_case.dimension_scores["plan"] < 100
     assert "operator sequence" in inconsistent_case.differences[-1].message
+
+
+def test_null_plan_and_malformed_nested_values_report_without_crashing() -> None:
+    golden_suite = suite()
+    case_id = "regional-quarterly-gross-profit"
+
+    null_plan = copy.deepcopy(passing())
+    null_plan["cases"][case_id]["plan"] = None
+    null_report = evaluate_bundle(golden_suite, null_plan)
+    null_case = next(case for case in null_report.cases if case.case_id == case_id)
+    assert null_case.dimension_scores["plan"] < 100
+    assert any(
+        "INVALID_PLAN_SHAPE" in difference.message
+        for difference in null_case.differences
+    )
+
+    malformed = copy.deepcopy(passing())
+    actual = malformed["cases"][case_id]
+    actual["semantic"]["entities"] = [{1: "x", "a": "y"}]
+    actual["result"]["rows"] = [[]]
+    actual["lineage"]["entities"] = None
+    malformed_report = evaluate_bundle(golden_suite, malformed)
+    malformed_case = next(
+        case for case in malformed_report.cases if case.case_id == case_id
+    )
+    assert not malformed_case.passed
+    assert {
+        difference.dimension for difference in malformed_case.differences
+    } >= {"semantic", "execution_result", "observability"}
+    assert any(
+        difference.dimension == "semantic"
+        and "INVALID_CANDIDATE_SHAPE" in difference.message
+        for difference in malformed_case.differences
+    )
+    json.dumps(malformed_report.to_dict())
+
+
+def test_suite_declared_weights_control_case_and_bundle_scores() -> None:
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    candidate_case = copy.deepcopy(passing()["cases"][golden_case["id"]])
+    candidate_case["semantic"]["metrics"] = ["sales"]
+    candidate = {"cases": {golden_case["id"]: candidate_case}}
+
+    semantic_only = {
+        "suite_version": "test",
+        "weights": {
+            "semantic": 100,
+            "plan": 0,
+            "execution_result": 0,
+            "governance": 0,
+            "observability": 0,
+        },
+        "cases": [golden_case],
+    }
+    semantic_report = evaluate_bundle(semantic_only, candidate)
+    assert semantic_report.score == semantic_report.dimension_scores["semantic"]
+
+    plan_only = copy.deepcopy(semantic_only)
+    plan_only["weights"] = {
+        "semantic": 0,
+        "plan": 1,
+        "execution_result": 0,
+        "governance": 0,
+        "observability": 0,
+    }
+    plan_report = evaluate_bundle(plan_only, candidate)
+    assert plan_report.score == 100
+    assert not plan_report.passed
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        None,
+        {"semantic": 1},
+        {
+            "semantic": True,
+            "plan": 1,
+            "execution_result": 1,
+            "governance": 1,
+            "observability": 1,
+        },
+        {
+            "semantic": 0,
+            "plan": 0,
+            "execution_result": 0,
+            "governance": 0,
+            "observability": 0,
+        },
+        {
+            "semantic": 1e308,
+            "plan": 1e308,
+            "execution_result": 1e308,
+            "governance": 1e308,
+            "observability": 1e308,
+        },
+        {
+            "semantic": 10**400,
+            "plan": 1,
+            "execution_result": 1,
+            "governance": 1,
+            "observability": 1,
+        },
+    ],
+)
+def test_invalid_suite_weights_are_rejected(weights) -> None:
+    golden_suite = {
+        "suite_version": "test",
+        "weights": weights,
+        "cases": [],
+    }
+    with pytest.raises(ValueError, match="suite weight"):
+        evaluate_bundle(golden_suite, {"cases": {}})
 
 
 def test_disconnected_and_malformed_node_fields_return_diagnostics() -> None:
