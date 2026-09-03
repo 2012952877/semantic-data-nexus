@@ -1,0 +1,69 @@
+{
+  "artifact_version": "plan-fixtures-v0",
+  "fixtures": [
+    {
+      "id": "duplicate-node",
+      "expected_diagnostic": "DUPLICATE_NODE_ID",
+      "plan": {
+        "nodes": [
+          {
+            "id": "n1",
+            "outputs": [
+              "sales"
+            ]
+          },
+          {
+            "id": "n1",
+            "outputs": [
+              "profit"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "missing-dependency",
+      "expected_diagnostic": "MISSING_DEPENDENCY",
+      "plan": {
+        "nodes": [
+          {
+            "id": "aggregate",
+            "depends_on": [
+              "missing_scan"
+            ],
+            "inputs": [],
+            "outputs": [
+              "sales"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "invalid-column-flow",
+      "expected_diagnostic": "INVALID_COLUMN_FLOW",
+      "plan": {
+        "nodes": [
+          {
+            "id": "scan",
+            "outputs": [
+              "sales"
+            ]
+          },
+          {
+            "id": "derive",
+            "depends_on": [
+              "scan"
+            ],
+            "inputs": [
+              "gross_profit"
+            ],
+            "outputs": [
+              "gross_margin"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

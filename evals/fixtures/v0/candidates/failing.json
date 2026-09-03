@@ -1,0 +1,2307 @@
+{
+  "artifact_version": "candidate-v0",
+  "cases": {
+    "regional-quarterly-gross-profit": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2024-04-01",
+        "source": "explicit_quarter"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "SORT",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:SORT"
+          ],
+          [
+            "4:SORT",
+            "5:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "gross_profit",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "gross_profit desc",
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "北辰区",
+            "gross_profit": 2334.0
+          },
+          {
+            "region_name": "西岭区",
+            "gross_profit": 2095.5
+          },
+          {
+            "region_name": "南港区",
+            "gross_profit": 1863.0
+          },
+          {
+            "region_name": "东湖区",
+            "gross_profit": 1059.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:regional-quarterly-gross-profit"
+      }
+    },
+    "regional-quarterly-gross-profit-q4": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "gross_profit"
+        ],
+        "relations": [
+          "item_order",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-10-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_quarter"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "SORT",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:SORT"
+          ],
+          [
+            "4:SORT",
+            "5:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "gross_profit",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "gross_profit desc",
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "南港区",
+            "gross_profit": 2541.0
+          },
+          {
+            "region_name": "北辰区",
+            "gross_profit": 2119.5
+          },
+          {
+            "region_name": "东湖区",
+            "gross_profit": 1972.5
+          },
+          {
+            "region_name": "西岭区",
+            "gross_profit": 1887.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:regional-quarterly-gross-profit-q4"
+      }
+    },
+    "monthly-regional-sales-comparison": {
+      "semantic": {
+        "entities": [
+          "date",
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "date.month",
+          "region.region_code"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_region",
+          "order_date"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2024-04-01",
+        "source": "explicit_quarter"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "DERIVE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PIVOT"
+          ],
+          [
+            "4:PIVOT",
+            "5:DERIVE"
+          ],
+          [
+            "5:DERIVE",
+            "6:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "month",
+            "type": "string"
+          },
+          {
+            "name": "north_sales",
+            "type": "decimal"
+          },
+          {
+            "name": "south_sales",
+            "type": "decimal"
+          },
+          {
+            "name": "east_sales",
+            "type": "decimal"
+          },
+          {
+            "name": "west_sales",
+            "type": "decimal"
+          },
+          {
+            "name": "total_sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "date.month"
+        ],
+        "order_by": [
+          "month asc"
+        ],
+        "rows": [
+          {
+            "month": "2024-01",
+            "north_sales": 1872.0,
+            "south_sales": 2121.0,
+            "east_sales": 117.0,
+            "west_sales": 2452.5,
+            "total_sales": 6562.5
+          },
+          {
+            "month": "2024-02",
+            "north_sales": 2142.0,
+            "south_sales": 321.0,
+            "east_sales": 2064.0,
+            "west_sales": 1191.0,
+            "total_sales": 5718.0
+          },
+          {
+            "month": "2024-03",
+            "north_sales": 1446.0,
+            "south_sales": 1689.0,
+            "east_sales": 114.0,
+            "west_sales": 1236.0,
+            "total_sales": 4485.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "date",
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "date.month",
+          "region.region_code"
+        ],
+        "artifact": "reference:monthly-regional-sales-comparison"
+      }
+    },
+    "top-three-products-by-sales": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "product"
+        ],
+        "fields": [
+          "product.product_id",
+          "product.product_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "item_product"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "TOP_N",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:TOP_N"
+          ],
+          [
+            "4:TOP_N",
+            "5:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "product_id",
+            "type": "string"
+          },
+          {
+            "name": "product_name",
+            "type": "string"
+          },
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "product.product_id",
+          "product.product_name"
+        ],
+        "order_by": [
+          "sales desc",
+          "product_id asc"
+        ],
+        "rows": [
+          {
+            "product_id": "P05",
+            "product_name": "青岚套件",
+            "sales": 22205.0
+          },
+          {
+            "product_id": "P03",
+            "product_name": "云帆增强版",
+            "sales": 12402.0
+          },
+          {
+            "product_id": "P01",
+            "product_name": "晨星标准版",
+            "sales": 11040.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "product"
+        ],
+        "fields": [
+          "product.product_id",
+          "product.product_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:top-three-products-by-sales"
+      }
+    },
+    "category-sales-and-cost": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "product"
+        ],
+        "fields": [
+          "product.category",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales",
+          "cost"
+        ],
+        "relations": [
+          "item_order",
+          "item_product"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "sales",
+            "type": "decimal"
+          },
+          {
+            "name": "cost",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "product.category"
+        ],
+        "order_by": [
+          "category asc"
+        ],
+        "rows": [
+          {
+            "category": "套件",
+            "sales": 22200.0,
+            "cost": 13392.0
+          },
+          {
+            "category": "服务",
+            "sales": 5790.0,
+            "cost": 2352.0
+          },
+          {
+            "category": "设备",
+            "sales": 30093.0,
+            "cost": 18198.0
+          },
+          {
+            "category": "配件",
+            "sales": 11481.0,
+            "cost": 4650.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "product"
+        ],
+        "fields": [
+          "product.category",
+          "order.order_date"
+        ],
+        "artifact": "reference:category-sales-and-cost"
+      }
+    },
+    "enterprise-segment-order-count": {
+      "semantic": {
+        "entities": [
+          "order",
+          "customer",
+          "region"
+        ],
+        "fields": [
+          "customer.segment",
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "order_count"
+        ],
+        "relations": [
+          "order_customer",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {
+        "企业客户": "enterprise"
+      },
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "order_count",
+            "type": "integer"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "东湖区",
+            "order_count": 16
+          },
+          {
+            "region_name": "北辰区",
+            "order_count": 16
+          },
+          {
+            "region_name": "南港区",
+            "order_count": 16
+          },
+          {
+            "region_name": "西岭区",
+            "order_count": 16
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow",
+        "applied_policy": "customer_aggregate_only"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "customer",
+          "region"
+        ],
+        "fields": [
+          "customer.segment",
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:enterprise-segment-order-count"
+      }
+    },
+    "explicit-date-north-sales": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "order.order_date",
+          "region.region_id"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-03-01",
+        "end_exclusive": "2024-03-16",
+        "source": "explicit_dates"
+      },
+      "member_normalization": {
+        "北区": "R01"
+      },
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [],
+        "order_by": [],
+        "rows": [
+          {
+            "sales": 1230.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "order.order_date",
+          "region.region_id"
+        ],
+        "artifact": "reference:explicit-date-north-sales"
+      }
+    },
+    "relative-last-quarter-sales": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-10-01",
+        "end_exclusive": "2025-04-01",
+        "source": "relative_last_quarter",
+        "evaluation_clock": "2025-04-15T09:00:00+08:00"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "东湖区",
+            "sales": 4236.0
+          },
+          {
+            "region_name": "北辰区",
+            "sales": 4614.0
+          },
+          {
+            "region_name": "南港区",
+            "sales": 4435.5
+          },
+          {
+            "region_name": "西岭区",
+            "sales": 5235.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:relative-last-quarter-sales"
+      }
+    },
+    "ambiguous-product-name": {
+      "semantic": {
+        "entities": [
+          "product",
+          "order_item"
+        ],
+        "fields": [
+          "product.product_name"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "clarification",
+        "diagnostic_code": "AMBIGUOUS_MEMBER"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "zero-denominator-gross-margin": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "product"
+        ],
+        "fields": [
+          "product.product_id",
+          "order.order_date"
+        ],
+        "metrics": [
+          "gross_margin"
+        ],
+        "relations": [
+          "item_order",
+          "item_product"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {
+        "远山试用包": "P08"
+      },
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "DERIVE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:DERIVE"
+          ],
+          [
+            "4:DERIVE",
+            "5:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "product_id",
+            "type": "string"
+          },
+          {
+            "name": "gross_margin",
+            "type": "decimal_nullable"
+          }
+        ],
+        "grain": [
+          "product.product_id"
+        ],
+        "order_by": [],
+        "rows": [
+          {
+            "product_id": "P08",
+            "gross_margin": null
+          }
+        ],
+        "tolerance": 0.0001
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "product"
+        ],
+        "fields": [
+          "product.product_id",
+          "order.order_date"
+        ],
+        "artifact": "reference:zero-denominator-gross-margin"
+      }
+    },
+    "valid-no-data-period": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2025-04-01",
+        "end_exclusive": "2025-07-01",
+        "source": "explicit_quarter"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "region_name asc"
+        ],
+        "rows": [],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "no-data"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:valid-no-data-period"
+      }
+    },
+    "customer-row-policy-denied": {
+      "semantic": {
+        "entities": [
+          "customer",
+          "order"
+        ],
+        "fields": [
+          "customer.customer_id",
+          "order.order_id"
+        ],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "policy-denied",
+        "diagnostic_code": "AGGREGATE_ONLY_ENTITY"
+      },
+      "governance": {
+        "decision": "allow",
+        "applied_policy": "customer_aggregate_only"
+      }
+    },
+    "unknown-metric": {
+      "semantic": {
+        "entities": [
+          "region"
+        ],
+        "fields": [
+          "region.region_name"
+        ],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "invalid-concept",
+        "diagnostic_code": "UNKNOWN_METRIC"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "unknown-entity": {
+      "semantic": {
+        "entities": [],
+        "fields": [],
+        "metrics": [
+          "sales"
+        ],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "invalid-concept",
+        "diagnostic_code": "UNKNOWN_ENTITY"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "timeout-fixture": {
+      "semantic": {
+        "entities": [],
+        "fields": [],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "timeout",
+        "diagnostic_code": "EXECUTION_TIMEOUT"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "cancel-fixture": {
+      "semantic": {
+        "entities": [],
+        "fields": [],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "cancelled",
+        "diagnostic_code": "EXECUTION_CANCELLED"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "monthly-order-count": {
+      "semantic": {
+        "entities": [
+          "order",
+          "date"
+        ],
+        "fields": [
+          "date.month",
+          "order.order_date"
+        ],
+        "metrics": [
+          "order_count"
+        ],
+        "relations": [
+          "order_date"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "month",
+            "type": "string"
+          },
+          {
+            "name": "order_count",
+            "type": "integer"
+          }
+        ],
+        "grain": [
+          "date.month"
+        ],
+        "order_by": [
+          "month asc"
+        ],
+        "rows": [
+          {
+            "month": "2024-01",
+            "order_count": 16
+          },
+          {
+            "month": "2024-02",
+            "order_count": 17
+          },
+          {
+            "month": "2024-03",
+            "order_count": 15
+          },
+          {
+            "month": "2024-04",
+            "order_count": 16
+          },
+          {
+            "month": "2024-05",
+            "order_count": 17
+          },
+          {
+            "month": "2024-06",
+            "order_count": 15
+          },
+          {
+            "month": "2024-07",
+            "order_count": 16
+          },
+          {
+            "month": "2024-08",
+            "order_count": 17
+          },
+          {
+            "month": "2024-09",
+            "order_count": 15
+          },
+          {
+            "month": "2024-10",
+            "order_count": 16
+          },
+          {
+            "month": "2024-11",
+            "order_count": 17
+          },
+          {
+            "month": "2024-12",
+            "order_count": 15
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "date"
+        ],
+        "fields": [
+          "date.month",
+          "order.order_date"
+        ],
+        "artifact": "reference:monthly-order-count"
+      }
+    },
+    "returns-by-region": {
+      "semantic": {
+        "entities": [
+          "order",
+          "region"
+        ],
+        "fields": [
+          "order.status",
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "return_count"
+        ],
+        "relations": [
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {
+        "退货": "returned"
+      },
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "return_count",
+            "type": "integer"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "东湖区",
+            "return_count": 5
+          },
+          {
+            "region_name": "北辰区",
+            "return_count": 4
+          },
+          {
+            "region_name": "南港区",
+            "return_count": 3
+          },
+          {
+            "region_name": "西岭区",
+            "return_count": 5
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "region"
+        ],
+        "fields": [
+          "order.status",
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:returns-by-region"
+      }
+    },
+    "promotion-sales": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item"
+        ],
+        "fields": [
+          "order.promotion_code",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [],
+        "order_by": [],
+        "rows": [
+          {
+            "sales": 14469.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item"
+        ],
+        "fields": [
+          "order.promotion_code",
+          "order.order_date"
+        ],
+        "artifact": "reference:promotion-sales"
+      }
+    },
+    "regional-gross-margin": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "gross_margin"
+        ],
+        "relations": [
+          "item_order",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "DERIVE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:DERIVE"
+          ],
+          [
+            "4:DERIVE",
+            "5:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "gross_margin",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "东湖区",
+            "gross_margin": 0.4457
+          },
+          {
+            "region_name": "北辰区",
+            "gross_margin": 0.448
+          },
+          {
+            "region_name": "南港区",
+            "gross_margin": 0.4475
+          },
+          {
+            "region_name": "西岭区",
+            "gross_margin": 0.4394
+          }
+        ],
+        "tolerance": 0.0001
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      }
+    },
+    "year-over-year-sales": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "date"
+        ],
+        "fields": [
+          "date.year",
+          "date.quarter",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_date"
+        ]
+      },
+      "time_range": {
+        "intervals": [
+          {
+            "start": "2024-01-01",
+            "end_exclusive": "2024-04-01"
+          },
+          {
+            "start": "2025-01-01",
+            "end_exclusive": "2025-04-01"
+          }
+        ],
+        "source": "explicit_comparison"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "year",
+            "type": "integer"
+          },
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "date.year"
+        ],
+        "order_by": [
+          "year asc"
+        ],
+        "rows": [
+          {
+            "year": 2024,
+            "sales": 16765.5
+          },
+          {
+            "year": 2025,
+            "sales": 18520.5
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "date"
+        ],
+        "fields": [
+          "date.year",
+          "date.quarter",
+          "order.order_date"
+        ],
+        "artifact": "reference:year-over-year-sales"
+      }
+    },
+    "west-product-profit": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "product",
+          "region"
+        ],
+        "fields": [
+          "product.product_id",
+          "product.product_name",
+          "region.region_id",
+          "order.order_date"
+        ],
+        "metrics": [
+          "gross_profit"
+        ],
+        "relations": [
+          "item_order",
+          "item_product",
+          "order_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {
+        "西区": "R04"
+      },
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "product_id",
+            "type": "string"
+          },
+          {
+            "name": "product_name",
+            "type": "string"
+          },
+          {
+            "name": "gross_profit",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "product.product_id",
+          "product.product_name"
+        ],
+        "order_by": [
+          "product_id asc"
+        ],
+        "rows": [
+          {
+            "product_id": "P01",
+            "product_name": "晨星标准版",
+            "gross_profit": 588.0
+          },
+          {
+            "product_id": "P02",
+            "product_name": "晨星标准版",
+            "gross_profit": 234.0
+          },
+          {
+            "product_id": "P03",
+            "product_name": "云帆增强版",
+            "gross_profit": 1008.0
+          },
+          {
+            "product_id": "P04",
+            "product_name": "云帆轻量版",
+            "gross_profit": 900.0
+          },
+          {
+            "product_id": "P05",
+            "product_name": "青岚套件",
+            "gross_profit": 2568.0
+          },
+          {
+            "product_id": "P06",
+            "product_name": "赤霞模块",
+            "gross_profit": 1185.0
+          },
+          {
+            "product_id": "P07",
+            "product_name": "星河服务包",
+            "gross_profit": 900.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "product",
+          "region"
+        ],
+        "fields": [
+          "product.product_id",
+          "product.product_name",
+          "region.region_id",
+          "order.order_date"
+        ],
+        "artifact": "reference:west-product-profit"
+      }
+    },
+    "orders-without-promotion": {
+      "semantic": {
+        "entities": [
+          "order"
+        ],
+        "fields": [
+          "order.promotion_code",
+          "order.order_date"
+        ],
+        "metrics": [
+          "order_count"
+        ],
+        "relations": []
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:FILTER"
+          ],
+          [
+            "1:FILTER",
+            "2:AGGREGATE"
+          ],
+          [
+            "2:AGGREGATE",
+            "3:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "order_count",
+            "type": "integer"
+          }
+        ],
+        "grain": [],
+        "order_by": [],
+        "rows": [
+          {
+            "order_count": 144
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order"
+        ],
+        "fields": [
+          "order.promotion_code",
+          "order.order_date"
+        ],
+        "artifact": "reference:orders-without-promotion"
+      }
+    },
+    "south-monthly-profit": {
+      "semantic": {
+        "entities": [
+          "order",
+          "order_item",
+          "region",
+          "date"
+        ],
+        "fields": [
+          "date.month",
+          "region.region_id",
+          "order.order_date"
+        ],
+        "metrics": [
+          "gross_profit"
+        ],
+        "relations": [
+          "item_order",
+          "order_region",
+          "order_date"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {
+        "南港区": "R02"
+      },
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:PROJECT"
+          ]
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "month",
+            "type": "string"
+          },
+          {
+            "name": "gross_profit",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "date.month"
+        ],
+        "order_by": [
+          "month asc"
+        ],
+        "rows": [
+          {
+            "month": "2024-01",
+            "gross_profit": 975.0
+          },
+          {
+            "month": "2024-02",
+            "gross_profit": 105.0
+          },
+          {
+            "month": "2024-03",
+            "gross_profit": 783.0
+          },
+          {
+            "month": "2024-04",
+            "gross_profit": 525.0
+          },
+          {
+            "month": "2024-05",
+            "gross_profit": 751.5
+          },
+          {
+            "month": "2024-06",
+            "gross_profit": 282.0
+          },
+          {
+            "month": "2024-07",
+            "gross_profit": 810.0
+          },
+          {
+            "month": "2024-08",
+            "gross_profit": 360.0
+          },
+          {
+            "month": "2024-09",
+            "gross_profit": 804.0
+          },
+          {
+            "month": "2024-10",
+            "gross_profit": 1035.0
+          },
+          {
+            "month": "2024-11",
+            "gross_profit": 558.0
+          },
+          {
+            "month": "2024-12",
+            "gross_profit": 948.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow"
+      },
+      "lineage": {
+        "entities": [
+          "order",
+          "order_item",
+          "region",
+          "date"
+        ],
+        "fields": [
+          "date.month",
+          "region.region_id",
+          "order.order_date"
+        ],
+        "artifact": "reference:south-monthly-profit"
+      }
+    },
+    "invalid-plan-duplicate-node": {
+      "semantic": {
+        "entities": [],
+        "fields": [],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": [],
+        "nodes": [
+          {
+            "id": "n1",
+            "outputs": [
+              "sales"
+            ]
+          },
+          {
+            "id": "n1",
+            "outputs": [
+              "profit"
+            ]
+          }
+        ]
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "invalid-plan",
+        "diagnostic_code": "DUPLICATE_NODE_ID"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "invalid-plan-missing-dependency": {
+      "semantic": {
+        "entities": [],
+        "fields": [],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "invalid-plan",
+        "diagnostic_code": "MISSING_DEPENDENCY"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    },
+    "invalid-plan-column-flow": {
+      "semantic": {
+        "entities": [],
+        "fields": [],
+        "metrics": [],
+        "relations": []
+      },
+      "time_range": {},
+      "member_normalization": {},
+      "plan": {
+        "operators": [],
+        "edges": []
+      },
+      "result": {
+        "schema": [],
+        "grain": [],
+        "order_by": [],
+        "rows": [],
+        "tolerance": 0.0
+      },
+      "behavior": {
+        "class": "invalid-plan",
+        "diagnostic_code": "INVALID_COLUMN_FLOW"
+      },
+      "governance": {
+        "decision": "not_applicable"
+      }
+    }
+  }
+}
