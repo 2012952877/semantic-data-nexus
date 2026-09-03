@@ -10,20 +10,30 @@ import {
   ontology,
   successResult,
 } from './mockFixtures'
+import {
+  parseStoredRuns,
+  RUN_STORAGE_KEY,
+  RUN_STORAGE_QUARANTINE_KEY,
+  RUN_STORAGE_VERSION,
+  type StoredRuns,
+} from './runStorage'
 import type { AskRequest, Run, StageState } from '@/domain'
 
-const STORAGE_KEY = 'semantic-nexus:runs'
-const STORAGE_VERSION = 1
+export class RunHistoryStorageError extends Error {
+  readonly storageCause: unknown
 
-interface StoredRuns {
-  version: number
-  runs: Run[]
+  constructor(cause: unknown) {
+    super('无法保存本地运行历史。请释放浏览器存储空间或允许本地存储后重试。')
+    this.name = 'RunHistoryStorageError'
+    this.storageCause = cause
+  }
 }
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
 export class MockSemanticNexusClient implements SemanticNexusClient {
   private runs = new Map<string, Run>()
+  private persistedSnapshots = new Map<string, Run>()
   private canceled = new Set<string>()
   private sequence = 1003
 
@@ -31,14 +41,17 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     const stored = this.readStoredRuns()
     if (stored.length > 0) {
       stored.forEach((run) => this.runs.set(run.id, run))
+      this.capturePersistedSnapshots()
     } else if (seedHistory) {
       const seeds = [
         createSeedRun('run-syn-1001', '比较各区域第二季度净销售额、目标达成率和同比', 'succeeded', 48),
         createSeedRun('run-syn-1002', '查看 2022 年第一季度西部区域表现', 'empty', 132),
       ]
       seeds.forEach((run) => this.runs.set(run.id, run))
-      this.persist()
+      this.persistBestEffort()
     }
+    this.terminalizeInterruptedRuns()
+    this.sequence = this.nextPersistedSequence()
   }
 
   async listRuns(): Promise<Run[]> {
@@ -51,7 +64,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
   }
 
   async startRun(request: AskRequest, onProgress?: (run: Run) => void): Promise<Run> {
-    const id = `run-syn-${this.sequence++}`
+    const id = this.nextRunId()
     const run: Run = {
       id,
       question: request.question,
@@ -70,7 +83,12 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       scenario: request.scenario,
     }
     this.runs.set(id, run)
-    this.persist()
+    try {
+      this.persist()
+    } catch (error) {
+      this.runs.delete(id)
+      throw error
+    }
 
     for (let index = 0; index < run.stages.length; index += 1) {
       if (this.canceled.has(id)) {
@@ -164,8 +182,15 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
   }
 
   private saveAndNotify(run: Run, onProgress?: (run: Run) => void) {
+    const persisted = this.persistedSnapshots.get(run.id)
     this.runs.set(run.id, run)
-    this.persist()
+    try {
+      this.persist()
+    } catch (error) {
+      if (persisted) this.runs.set(run.id, clone(persisted))
+      else this.runs.delete(run.id)
+      throw error
+    }
     onProgress?.(clone(run))
   }
 
@@ -174,19 +199,106 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
   }
 
   private readStoredRuns(): Run[] {
+    let raw: string | null
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY)
-      if (!raw) return []
-      const stored = JSON.parse(raw) as StoredRuns
-      return stored.version === STORAGE_VERSION && Array.isArray(stored.runs) ? stored.runs : []
+      raw = window.localStorage.getItem(RUN_STORAGE_KEY)
     } catch (error) {
-      console.warn('Ignoring unreadable mock run history.', error)
+      console.warn('Unable to read mock run history.', error)
       return []
     }
+    if (!raw) return []
+
+    const parsed = parseStoredRuns(raw)
+    if (parsed.rejected) {
+      this.quarantine(raw, parsed.reason ?? 'invalid-payload')
+      try {
+        if (parsed.runs.length === 0) {
+          window.localStorage.removeItem(RUN_STORAGE_KEY)
+        } else {
+          this.writeStoredRuns(parsed.runs)
+        }
+      } catch (error) {
+        console.warn('Unable to persist repaired mock run history.', error)
+      }
+    }
+    return parsed.runs
   }
 
   private persist() {
-    const payload: StoredRuns = { version: STORAGE_VERSION, runs: [...this.runs.values()] }
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
+    try {
+      this.writeStoredRuns([...this.runs.values()])
+      this.capturePersistedSnapshots()
+    } catch (error) {
+      throw new RunHistoryStorageError(error)
+    }
+  }
+
+  private persistBestEffort() {
+    try {
+      this.writeStoredRuns([...this.runs.values()])
+      this.capturePersistedSnapshots()
+    } catch (error) {
+      console.warn('Unable to persist hydrated mock run history.', error)
+    }
+  }
+
+  private writeStoredRuns(runs: Run[]) {
+    const payload: StoredRuns = { version: RUN_STORAGE_VERSION, runs }
+    window.localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(payload))
+  }
+
+  private quarantine(payload: string, reason: string) {
+    try {
+      window.localStorage.setItem(RUN_STORAGE_QUARANTINE_KEY, JSON.stringify({
+        quarantinedAt: new Date().toISOString(),
+        reason,
+        payload,
+      }))
+    } catch (error) {
+      console.warn('Unable to quarantine invalid mock run history.', error)
+    }
+  }
+
+  private terminalizeInterruptedRuns() {
+    let changed = false
+    this.runs.forEach((run) => {
+      if (run.state !== 'running' && run.state !== 'queued') return
+      changed = true
+      run.state = 'failed'
+      run.completedAt = new Date().toISOString()
+      const interruptedStage = run.stages.find((stage) => stage.state === 'running')
+        ?? run.stages.find((stage) => stage.state === 'pending')
+      run.stages.forEach((stage) => {
+        if (stage === interruptedStage) stage.state = 'failed'
+        else if (stage.state === 'running' || stage.state === 'pending') stage.state = 'canceled'
+      })
+      run.diagnostics.push({
+        code: 'MOCK_RUN_INTERRUPTED',
+        title: '运行因页面关闭而中断',
+        message: '浏览器在受控运行完成前关闭或重新加载。',
+        recovery: '从原问题重新发起一次运行。',
+        severity: 'warning',
+      })
+    })
+    if (changed) this.persistBestEffort()
+  }
+
+  private nextPersistedSequence() {
+    return [...this.runs.keys()].reduce((next, id) => {
+      const match = /^run-syn-(\d+)$/.exec(id)
+      return match ? Math.max(next, Number(match[1]) + 1) : next
+    }, 1003)
+  }
+
+  private nextRunId() {
+    let id = `run-syn-${this.sequence++}`
+    while (this.runs.has(id)) id = `run-syn-${this.sequence++}`
+    return id
+  }
+
+  private capturePersistedSnapshots() {
+    this.persistedSnapshots = new Map(
+      [...this.runs.entries()].map(([id, run]) => [id, clone(run)]),
+    )
   }
 }

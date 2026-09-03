@@ -16,6 +16,14 @@
   --error-soft: #f4ddd8;
   --warning: #7a5a0c;
   --white: #fffef9;
+  --status-light-pending: #4b574f;
+  --status-light-success: #455d0e;
+  --status-light-empty: #6f5006;
+  --status-light-failed: #922f21;
+  --status-dark-pending: #c0c8c2;
+  --status-dark-success: #b9dd5f;
+  --status-dark-empty: #f0cc6a;
+  --status-dark-failed: #ff9485;
 }
 
 * {
@@ -638,7 +646,7 @@ input[type="radio"] {
 
 .state-pending,
 .state-queued {
-  color: #8c9690;
+  color: var(--status-light-pending);
 }
 
 .state-running {
@@ -646,19 +654,37 @@ input[type="radio"] {
 }
 
 .state-succeeded {
-  color: #71931b;
+  color: var(--status-light-success);
 }
 
 .state-empty {
-  color: #a97d19;
+  color: var(--status-light-empty);
 }
 
 .state-failed {
-  color: #c45142;
+  color: var(--status-light-failed);
 }
 
 .state-canceled {
-  color: #9fa7a2;
+  color: var(--status-light-pending);
+}
+
+.execution-pane .state-pending,
+.execution-pane .state-queued,
+.execution-pane .state-canceled {
+  color: var(--status-dark-pending);
+}
+
+.execution-pane .state-succeeded {
+  color: var(--status-dark-success);
+}
+
+.execution-pane .state-empty {
+  color: var(--status-dark-empty);
+}
+
+.execution-pane .state-failed {
+  color: var(--status-dark-failed);
 }
 
 .stage-running .status-badge {

@@ -16,6 +16,7 @@ pnpm dev
 pnpm test
 pnpm run typecheck
 pnpm run build
+pnpm run test:e2e
 ```
 
 ## 路由
@@ -38,7 +39,7 @@ Vue Router 使用浏览器历史模式，部署静态产物时需要将未知路
 - `src/views/`：路由级页面；技术细节通过 `details` 渐进展示。
 - `src/components/`：应用壳、阶段账本、结果表与运行详情。
 
-Mock 历史使用 `semantic-nexus:runs`，载荷包含 `version: 1`，只保存在当前浏览器。损坏或不同版本的载荷会被忽略。
+Mock 历史使用 `semantic-nexus:runs`，载荷包含 `version: 1`，只保存在当前浏览器。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic 与 Manifest。损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略；刷新时仍在运行的记录会终止为可重试的中断诊断。
 
 ## Mock 场景
 
@@ -48,3 +49,5 @@ Mock 历史使用 `semantic-nexus:runs`，载荷包含 `version: 1`，只保存�
 - **取消**：停止后续阶段，保留问题以便修改或重试。
 
 所有展示数据均为合成区域销售夹具。模型仅提出类型化 SQG，Mock 执行器也不会执行模型生成的 SQL。
+
+根目录 `.github/workflows/web.yml` 会在 Web 文件变化时执行依赖安装、单元测试、类型检查、生产构建与 Chromium E2E。

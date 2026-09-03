@@ -4,13 +4,16 @@ import { vi } from 'vitest'
 import AskView from '@/views/AskView.vue'
 import { nexusClientKey } from '@/api/clientContext'
 import { MockSemanticNexusClient } from '@/api/mockSemanticNexusClient'
+import type { SemanticNexusClient } from '@/api/semanticNexusClient'
 
-const mountAsk = () =>
+const mountAsk = (
+  client: SemanticNexusClient = new MockSemanticNexusClient(20, false),
+) =>
   mount(AskView, {
     attachTo: document.body,
     global: {
       provide: {
-        [nexusClientKey as symbol]: new MockSemanticNexusClient(20, false),
+        [nexusClientKey as symbol]: client,
       },
       stubs: {
         RouterLink: {
@@ -92,5 +95,22 @@ describe('ask workflow', () => {
 
     expect(label.text()).toBe('你想了解什么？')
     expect(textarea.attributes('required')).toBeDefined()
+  })
+
+  it('recovers controls and focuses an actionable client error', async () => {
+    const client = new MockSemanticNexusClient(20, false)
+    vi.spyOn(client, 'startRun').mockRejectedValue(new Error(
+      '无法保存本地运行历史。请释放浏览器存储空间或允许本地存储后重试。',
+    ))
+    const wrapper = mountAsk(client)
+
+    await askQuestion(wrapper)
+
+    const alert = wrapper.get('[role="alert"]')
+    const submit = wrapper.get('button.primary-button')
+    expect(alert.text()).toContain('无法保存本地运行记录')
+    expect(alert.text()).toContain('释放浏览器存储空间')
+    expect(submit.attributes('disabled')).toBeUndefined()
+    expect(document.activeElement).toBe(alert.element)
   })
 })

@@ -27,7 +27,7 @@ export const nodes: PlanNode[] = [
     kind: 'AGGREGATE',
     label: '按区域汇总',
     plainLanguage: '把每个区域的订单收入和目标值分别加总。',
-    inputs: ['sales_fact'],
+    inputs: ['sales'],
     outputFields: ['region', 'revenue', 'target'],
   },
   {
@@ -104,14 +104,18 @@ export const createSqg = (request: AskRequest): SqgSummary => ({
   version: '0.1',
   intent: request.question,
   ontology: 'regional-sales@1.4',
-  resolvedMembers: ['sales.region', 'sales.net_revenue', 'targets.quarterly_target'],
+  resolvedMembers: ['sales.region', 'sales.net_revenue', 'targets.target_amount'],
   metrics: ['net_revenue', 'target_attainment', 'year_over_year'],
-  dimensions: ['region'],
+  dimensions: ['sales.region'],
   filters: [
     {
-      field: 'calendar.quarter',
+      field: 'targets.quarter',
       operator: 'equals',
-      value: request.scenario === 'empty' ? '2022-Q1' : '2025-Q2',
+      value: request.scenario === 'empty'
+        ? '2022-Q1'
+        : request.scenario === 'failure'
+          ? '2025-Q3'
+          : '2025-Q2',
     },
   ],
   policyChecks: ['仅允许已发布指标', '回溯范围小于 36 个月', '结果不包含个人信息'],
@@ -182,6 +186,7 @@ export const ontology: Ontology = {
       fields: [
         { name: 'order_date', type: 'date', description: '订单确认日期，用于按日、月、季度筛选。' },
         { name: 'region', type: 'dimension', description: '销售负责区域，不包含客户地址。' },
+        { name: 'product_category', type: 'dimension', description: '合成商品的业务分类。' },
         { name: 'net_revenue', type: 'measure', description: '扣除退货与折让后的合成销售额。' },
       ],
     },
@@ -190,6 +195,7 @@ export const ontology: Ontology = {
       label: '区域目标',
       description: '每个区域按季度设定的合成目标，用于计算达成率。',
       fields: [
+        { name: 'region', type: 'dimension', description: '目标对应的销售区域。' },
         { name: 'quarter', type: 'period', description: '目标所属季度。' },
         { name: 'target_amount', type: 'measure', description: '该区域的季度销售目标。' },
       ],
@@ -197,14 +203,14 @@ export const ontology: Ontology = {
   ],
   metrics: [
     { name: 'net_revenue', label: '净销售额', expression: 'SUM(sales.net_revenue)', description: '把筛选范围内的净销售额相加。' },
-    { name: 'target_attainment', label: '目标达成率', expression: 'net_revenue / target_amount', description: '实际净销售额占目标金额的比例。' },
+    { name: 'target_attainment', label: '目标达成率', expression: 'net_revenue / targets.target_amount', description: '实际净销售额占目标金额的比例。' },
     { name: 'year_over_year', label: '同比增长', expression: '(current - prior) / prior', description: '与去年同一期间相比的增减幅度。' },
   ],
   relations: [
     { from: 'sales.region', to: 'targets.region', cardinality: '多对一', description: '多笔销售记录对应一个区域目标。' },
   ],
   queryPolicy: {
-    allowedDimensions: ['region', 'quarter', 'product_category'],
+    allowedDimensions: ['sales.region', 'targets.quarter', 'sales.product_category'],
     maxLookbackMonths: 36,
     description: '只允许已发布指标和非敏感维度；单次查询最多回溯 36 个月。',
   },

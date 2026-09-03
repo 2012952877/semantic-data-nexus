@@ -8,6 +8,14 @@ colors:
   signal-lime: "#d9ff55"
   rule-line: "#c9cdc3"
   error-rust: "#a13728"
+  status-light-pending: "#4b574f"
+  status-light-success: "#455d0e"
+  status-light-empty: "#6f5006"
+  status-light-failed: "#922f21"
+  status-dark-pending: "#c0c8c2"
+  status-dark-success: "#b9dd5f"
+  status-dark-empty: "#f0cc6a"
+  status-dark-failed: "#ff9485"
 typography:
   display:
     fontFamily: "Aptos, Segoe UI Variable Text, Segoe UI, sans-serif"
@@ -62,6 +70,7 @@ Registry ink carries operational surfaces, mineral paper carries composition, an
 - **Signal Lime** (`#d9ff55`): primary action, active navigation, live stage.
 - **Rule Line** (`#c9cdc3`): structural separators.
 - **Error Rust** (`#a13728`): failed execution only.
+- **Status inks:** dark, contrast-checked state colors on paper; lighter counterparts on registry ink.
 
 **The One Signal Rule.** Lime marks the next meaningful action or current execution state, never decoration.
 

@@ -21,6 +21,7 @@ const scenario = ref<MockScenario>('success')
 const currentRun = ref<Run>()
 const submitting = ref(false)
 const alertPanel = ref<HTMLElement>()
+const formError = ref('')
 
 const requestForCurrentInput = (): AskRequest => ({
   question: question.value.trim(),
@@ -34,14 +35,25 @@ const submit = async () => {
   if (!question.value.trim() || submitting.value) return
   submitting.value = true
   currentRun.value = undefined
-  const result = await client.startRun(requestForCurrentInput(), (run) => {
-    currentRun.value = run
-  })
-  currentRun.value = result
-  submitting.value = false
-  if (result.state === 'failed' || result.state === 'empty') {
+  formError.value = ''
+  try {
+    const result = await client.startRun(requestForCurrentInput(), (run) => {
+      currentRun.value = run
+    })
+    currentRun.value = result
+    if (result.state === 'failed' || result.state === 'empty') {
+      await nextTick()
+      alertPanel.value?.focus()
+    }
+  } catch (error) {
+    currentRun.value = undefined
+    formError.value = error instanceof Error
+      ? error.message
+      : '运行未能启动。请检查浏览器本地存储设置后重试。'
     await nextTick()
     alertPanel.value?.focus()
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -144,7 +156,21 @@ const useExample = (example: string) => {
 
       <StageProgress :stages="currentRun?.stages ?? createStages()" />
 
-      <div v-if="!currentRun" class="run-placeholder">
+      <div
+        v-if="formError"
+        ref="alertPanel"
+        class="inline-outcome outcome-error"
+        role="alert"
+        tabindex="-1"
+      >
+        <span>运行未启动</span>
+        <h3>无法保存本地运行记录</h3>
+        <p>{{ formError }}</p>
+        <strong>释放浏览器存储空间或允许本地存储，然后重试。</strong>
+        <button class="secondary-button" type="button" @click="retry">重试当前问题</button>
+      </div>
+
+      <div v-else-if="!currentRun" class="run-placeholder">
         <svg viewBox="0 0 120 90" aria-hidden="true">
           <path d="M10 15h100M10 45h100M10 75h100M28 15v60M60 15v60M92 15v60" />
           <circle cx="28" cy="15" r="5" /><circle cx="60" cy="45" r="5" /><circle cx="92" cy="75" r="5" />
