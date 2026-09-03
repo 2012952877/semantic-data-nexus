@@ -92,8 +92,7 @@ az stack group create `
   --name sdn-dev `
   --resource-group <resource-group> `
   --template-file .\infra\bicep\main.bicep `
-  --parameters .\infra\bicep\parameters\dev.bicepparam `
-               $runtimeParametersFile `
+  --parameters $runtimeParametersFile `
   --action-on-unmanage 'deleteResources' `
   --deny-settings-mode 'none'
 

@@ -56,15 +56,6 @@ resource entraAdministrator 'Microsoft.DBforPostgreSQL/flexibleServers/administr
   }
 }
 
-resource firewallRuleResources 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2025-08-01' = [for (ipAddress, index) in allowedIpAddresses: {
-  parent: server
-  name: 'allowed-ip-${index}'
-  properties: {
-    startIpAddress: ipAddress
-    endIpAddress: ipAddress
-  }
-}]
-
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: server
   name: databaseName
@@ -72,7 +63,22 @@ resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-0
     charset: 'UTF8'
     collation: 'en_US.utf8'
   }
+  dependsOn: [
+    entraAdministrator
+  ]
 }
+
+resource firewallRuleResources 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2025-08-01' = [for (ipAddress, index) in allowedIpAddresses: {
+  parent: server
+  name: 'allowed-ip-${index}'
+  properties: {
+    startIpAddress: ipAddress
+    endIpAddress: ipAddress
+  }
+  dependsOn: [
+    database
+  ]
+}]
 
 resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'send-to-log-analytics'

@@ -56,6 +56,8 @@ if ($acrPullAssignments -ne 4) {
 Assert-Pattern $main 'output keyVaultEndpoint string = keyVault\.outputs\.keyVaultEndpoint' 'Key Vault endpoint must use the module output.'
 Assert-Pattern $postgres "(?s)resource firewallRuleResources 'Microsoft\.DBforPostgreSQL/flexibleServers/firewallRules@[^']+' = \[for \(ipAddress, index\) in allowedIpAddresses:" 'Parameterized PostgreSQL firewall resources are missing.'
 Assert-Pattern $postgres '(?s)startIpAddress:\s*ipAddress\s+endIpAddress:\s*ipAddress' 'PostgreSQL firewall entries must allow exact IP addresses only.'
+Assert-Pattern $postgres '(?s)resource database .*?dependsOn:\s*\[\s*entraAdministrator\s*\]' 'The PostgreSQL database must wait for the Entra administrator.'
+Assert-Pattern $postgres '(?s)resource firewallRuleResources .*?dependsOn:\s*\[\s*database\s*\]' 'PostgreSQL firewall rules must wait for database creation.'
 
 if ($postgres -match "startIpAddress:\s*'0\.0\.0\.0'" -or $postgres -match "endIpAddress:\s*'255\.255\.255\.255'") {
     throw 'A broad PostgreSQL firewall range must not be committed.'
@@ -65,10 +67,15 @@ Assert-Pattern $readme '-PostgresEntraAdministratorObjectId <object-id>' 'README
 Assert-Pattern $readme '-PostgresEntraAdministratorPrincipalName <display-name>' 'README what-if example must supply the PostgreSQL administrator principal name.'
 Assert-Pattern $readme '-PostgresFirewallIpAddress <public-ip>' 'README what-if example must supply the exact PostgreSQL firewall IP.'
 Assert-Pattern $readme 'az stack group create' 'README deployments must use an Azure deployment stack.'
+Assert-Pattern $readme '(?s)az stack group create .*?--parameters \$runtimeParametersFile' 'README stack deployment must use only the merged runtime parameter file.'
 Assert-Pattern $readme "--action-on-unmanage 'deleteResources'" 'Deployment stacks must delete resources removed from the template.'
 Assert-Pattern $readme 'useWorkerPlaceholderCommand=false' 'README must preserve real worker image entrypoints.'
 Assert-Pattern $readme 'A plain incremental `az deployment group create` does not delete removed rules' 'README must warn that incremental deployments retain removed firewall rules.'
 Assert-Pattern $validateScript '(?s)az stack-whatif group create .*?--parameters \$runtimeParameters' 'Authenticated preview must use stack what-if with one merged parameter file.'
+
+if ($readme -match '(?s)az stack group create .*?--parameters[^\r\n]*\.bicepparam') {
+    throw 'README stack deployment must not mix a .bicepparam file with merged runtime JSON.'
+}
 
 if ($validateScript -match 'az deployment group what-if' -or $validateScript -match 'postgresAllowedIpAddresses=\$' -or $validateScript -match 'ConvertTo-Json\s+-Compress\s+-InputObject') {
     throw 'What-if must not encode PostgreSQL IP arrays as inline PowerShell arguments.'
