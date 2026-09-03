@@ -4,6 +4,7 @@ param webAppName string
 param controlApiAppName string
 param semanticApiAppName string
 param workerJobName string
+param webIdentityName string
 param controlApiIdentityName string
 param semanticApiIdentityName string
 param workerIdentityName string
@@ -15,6 +16,10 @@ param semanticApiImage string
 param workerImage string
 param minReplicas int
 param tags object
+
+resource webIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' existing = {
+  name: webIdentityName
+}
 
 resource controlApiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' existing = {
   name: controlApiIdentityName
@@ -55,7 +60,10 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${webIdentity.id}': {}
+    }
   }
   properties: {
     environmentId: managedEnvironment.id
@@ -75,7 +83,7 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
       }
       registries: [
         {
-          identity: 'system'
+          identity: webIdentity.id
           server: registryLoginServer
         }
       ]
@@ -85,6 +93,12 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
         {
           name: 'web'
           image: webImage
+          env: [
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: webIdentity.properties.clientId
+            }
+          ]
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'
@@ -147,6 +161,12 @@ resource controlApiApp 'Microsoft.App/containerApps@2025-01-01' = {
         {
           name: 'control-api'
           image: controlApiImage
+          env: [
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: controlApiIdentity.properties.clientId
+            }
+          ]
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'
@@ -209,6 +229,12 @@ resource semanticApiApp 'Microsoft.App/containerApps@2025-01-01' = {
         {
           name: 'semantic-api'
           image: semanticApiImage
+          env: [
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: semanticApiIdentity.properties.clientId
+            }
+          ]
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -265,6 +291,12 @@ resource workerJob 'Microsoft.App/jobs@2025-01-01' = {
         {
           name: 'worker'
           image: workerImage
+          env: [
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: workerIdentity.properties.clientId
+            }
+          ]
           command: [
             '/bin/sh'
             '-c'

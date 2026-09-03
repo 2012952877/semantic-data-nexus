@@ -14,6 +14,7 @@ param postgresSkuTier = 'GeneralPurpose'
 param postgresStorageSizeGb = 128
 param postgresBackupRetentionDays = 35
 param postgresZoneRedundant = true
+param postgresAllowedIpAddresses = []
 param postgresEntraAdministratorObjectId = '00000000-0000-0000-0000-000000000000'
 param postgresEntraAdministratorPrincipalName = 'replace-with-entra-admin-group'
 param postgresEntraAdministratorPrincipalType = 'Group'

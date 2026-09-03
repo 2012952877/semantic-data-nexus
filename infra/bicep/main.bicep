@@ -70,6 +70,9 @@ param postgresBackupRetentionDays int = environment == 'prod' ? 35 : 7
 @description('Enable zone-redundant PostgreSQL high availability.')
 param postgresZoneRedundant bool = environment == 'prod'
 
+@description('Exact PostgreSQL firewall IP addresses for operators or stable workload egress. Empty keeps all public clients blocked.')
+param postgresAllowedIpAddresses array = []
+
 @description('Object ID of the PostgreSQL Microsoft Entra administrator. Override the synthetic example value at deployment time.')
 param postgresEntraAdministratorObjectId string
 
@@ -109,6 +112,7 @@ var names = {
   controlApiApp: '${namePrefix}-control-api'
   semanticApiApp: '${namePrefix}-semantic-api'
   workerJob: '${namePrefix}-worker'
+  webIdentity: '${namePrefix}-${uniqueSuffix}-web-mi'
   controlApiIdentity: '${namePrefix}-${uniqueSuffix}-control-mi'
   semanticApiIdentity: '${namePrefix}-${uniqueSuffix}-semantic-mi'
   workerIdentity: '${namePrefix}-${uniqueSuffix}-worker-mi'
@@ -146,6 +150,7 @@ module identities 'modules/identities.bicep' = {
   name: 'workload-identities'
   params: {
     location: location
+    webIdentityName: names.webIdentity
     controlApiIdentityName: names.controlApiIdentity
     semanticApiIdentityName: names.semanticApiIdentity
     workerIdentityName: names.workerIdentity
@@ -164,6 +169,21 @@ module registry 'modules/registry.bicep' = {
   }
   dependsOn: [
     observability
+  ]
+}
+
+module acrPull 'modules/acr-pull.bicep' = {
+  name: 'least-privilege-acr-pull'
+  params: {
+    registryName: names.registry
+    webIdentityName: names.webIdentity
+    controlApiIdentityName: names.controlApiIdentity
+    semanticApiIdentityName: names.semanticApiIdentity
+    workerIdentityName: names.workerIdentity
+  }
+  dependsOn: [
+    identities
+    registry
   ]
 }
 
@@ -210,6 +230,7 @@ module postgres 'modules/postgres.bicep' = {
     backupRetentionDays: postgresBackupRetentionDays
     zoneRedundant: postgresZoneRedundant
     publicNetworkAccessEnabled: publicNetworkAccessEnabled
+    allowedIpAddresses: postgresAllowedIpAddresses
     entraAdministratorObjectId: postgresEntraAdministratorObjectId
     entraAdministratorPrincipalName: postgresEntraAdministratorPrincipalName
     entraAdministratorPrincipalType: postgresEntraAdministratorPrincipalType
@@ -259,6 +280,7 @@ module containerApps 'modules/container-apps.bicep' = {
     controlApiAppName: names.controlApiApp
     semanticApiAppName: names.semanticApiApp
     workerJobName: names.workerJob
+    webIdentityName: names.webIdentity
     controlApiIdentityName: names.controlApiIdentity
     semanticApiIdentityName: names.semanticApiIdentity
     workerIdentityName: names.workerIdentity
@@ -272,8 +294,7 @@ module containerApps 'modules/container-apps.bicep' = {
     tags: commonTags
   }
   dependsOn: [
-    identities
-    registry
+    acrPull
     observability
   ]
 }
@@ -281,24 +302,21 @@ module containerApps 'modules/container-apps.bicep' = {
 module roleAssignments 'modules/rbac.bicep' = {
   name: 'least-privilege-rbac'
   params: {
-    registryName: names.registry
     storageAccountName: names.storage
     keyVaultName: names.keyVault
     searchServiceName: names.search
     azureOpenAIAccountName: names.azureOpenAI
     enableAzureOpenAI: enableAzureOpenAI
-    webAppName: names.webApp
     controlApiIdentityName: names.controlApiIdentity
     semanticApiIdentityName: names.semanticApiIdentity
     workerIdentityName: names.workerIdentity
   }
   dependsOn: [
-    registry
+    identities
     storage
     keyVault
     search
     aiBoundary
-    containerApps
   ]
 }
 
@@ -310,7 +328,7 @@ output registryResourceId string = resourceId('Microsoft.ContainerRegistry/regis
 output storageResourceId string = resourceId('Microsoft.Storage/storageAccounts', names.storage)
 output storageBlobEndpoint string = 'https://${names.storage}.blob.${az.environment().suffixes.storage}'
 output keyVaultResourceId string = resourceId('Microsoft.KeyVault/vaults', names.keyVault)
-output keyVaultEndpoint string = 'https://${names.keyVault}.${az.environment().suffixes.keyvaultDns}'
+output keyVaultEndpoint string = keyVault.outputs.keyVaultEndpoint
 output postgresResourceId string = resourceId('Microsoft.DBforPostgreSQL/flexibleServers', names.postgres)
 output postgresEndpoint string = '${names.postgres}.postgres.database.azure.com'
 output searchResourceId string = resourceId('Microsoft.Search/searchServices', names.search)

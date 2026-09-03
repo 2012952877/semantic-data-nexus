@@ -7,7 +7,7 @@ This directory defines a clean-room, resource group-scoped Azure baseline for a 
 The deployment creates:
 
 - Azure Container Apps environment with a public web placeholder, internal control and semantic API placeholders, and a manually triggered worker job.
-- User-assigned managed identities for the control API, semantic API, and worker; the web app uses a system-assigned identity.
+- Separate user-assigned managed identities for web, control API, semantic API, and worker.
 - Azure Container Registry with local admin and anonymous access disabled.
 - PostgreSQL Flexible Server with Microsoft Entra authentication enabled and password authentication disabled.
 - StorageV2 account and private `results` blob container with shared-key access disabled, versioning, change feed, and soft delete.
@@ -26,6 +26,7 @@ APIM, Front Door, private endpoints, DNS zones, and hub networking are intention
 - Registered resource providers for the services in `infra/bicep/main.bicep`.
 - A pre-created resource group in the selected Azure region.
 - PostgreSQL Entra administrator details supplied at deployment time. Do not commit real identifiers.
+- One or more exact public IPv4 addresses for PostgreSQL bootstrap and M0 access, or a separately provisioned private network path.
 
 ## Local-to-Azure mapping
 
@@ -42,7 +43,7 @@ APIM, Front Door, private endpoints, DNS zones, and hub networking are intention
 | Local environment values | Managed identity plus Key Vault references where a service cannot use identity |
 | Local logs/traces | Log Analytics and Application Insights |
 
-The committed images are public placeholders. Build immutable application images in ACR and override the image parameters during deployment. The identities already have resource-scoped `AcrPull`.
+The committed images are public placeholders. Build immutable application images in ACR and override the image parameters during deployment. All four user-assigned identities receive resource-scoped `AcrPull` before Container Apps are created, so the same deployment can safely use private ACR image references.
 
 ## Validate and inspect changes
 
@@ -60,17 +61,18 @@ az login
   -ResourceGroup <resource-group> `
   -Environment dev `
   -PostgresEntraAdministratorObjectId <object-id> `
-  -PostgresEntraAdministratorPrincipalName <display-name>
+  -PostgresEntraAdministratorPrincipalName <display-name> `
+  -PostgresFirewallIpAddress <public-ip>
 ```
 
 The CI workflow performs only Bicep build and parameter compilation, so pull requests do not require federated Azure credentials.
 
 ## Deploy
 
-The committed parameter files contain an all-zero synthetic PostgreSQL administrator object ID and are examples, not unattended deployment inputs. Override the administrator values for every what-if and deployment:
+The committed parameter files contain an all-zero synthetic PostgreSQL administrator object ID and an empty allowed-IP list. They are safe examples, not unattended deployment inputs. Override the administrator and exact firewall IP values for every what-if and deployment:
 
 ```powershell
-.\infra\scripts\validate.ps1 -ResourceGroup <resource-group> -Environment dev
+$postgresAllowedIpAddresses = @('<operator-public-ip>', '<stable-workload-egress-ip>') | ConvertTo-Json -Compress
 
 az deployment group create `
   --resource-group <resource-group> `
@@ -78,10 +80,13 @@ az deployment group create `
   --parameters .\infra\bicep\parameters\dev.bicepparam `
   --parameters postgresEntraAdministratorObjectId=<object-id> `
                postgresEntraAdministratorPrincipalName=<display-name> `
-               postgresEntraAdministratorPrincipalType=Group
+               postgresEntraAdministratorPrincipalType=Group `
+               "postgresAllowedIpAddresses=$postgresAllowedIpAddresses"
 ```
 
-No password bootstrap path is provided. Workloads should obtain Microsoft Entra tokens through managed identity.
+No password bootstrap path is provided. The empty firewall default blocks all public PostgreSQL clients. Use exact operator IPs for bootstrap and exact stable workload egress IPs for M0; never use an all-address range. For production, replace public firewall access with private connectivity.
+
+Each container receives its assigned identity's client ID through `AZURE_CLIENT_ID`. Application code should use `DefaultAzureCredential`, which selects that user-assigned identity in Azure, or construct `ManagedIdentityCredential` with the same client ID explicitly.
 
 ## Cost-sensitive defaults
 

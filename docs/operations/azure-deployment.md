@@ -24,7 +24,7 @@ flowchart LR
     Control -. managed identity .-> Vault[Key Vault]
     Semantic -. managed identity .-> Vault
     Worker -. managed identity .-> Vault
-    Web -. system identity .-> ACR
+    Web -. user identity .-> ACR
     Control -. user identity .-> ACR
     Semantic -. user identity .-> ACR
     Worker -. user identity .-> ACR
@@ -38,17 +38,16 @@ Only the web placeholder has external ingress. Control and semantic APIs use env
 
 ## Managed identity flow
 
-- The web app uses a system-assigned identity.
-- Control API, semantic API, and worker use separate user-assigned identities to keep permissions stable across revisions and jobs.
+- Web, control API, semantic API, and worker use separate user-assigned identities to keep permissions stable across revisions and jobs.
 - All workloads receive `AcrPull` scoped to the registry.
 - Semantic API and worker receive `Storage Blob Data Contributor` scoped to the result storage account.
 - Control API, semantic API, and worker receive `Key Vault Secrets User` scoped to the vault.
 - Semantic API receives `Search Index Data Reader`; worker receives `Search Index Data Contributor`.
 - When the optional Azure OpenAI account is enabled, only the semantic API receives `Cognitive Services OpenAI User`.
 
-Application code should use the Azure Identity default credential chain locally and managed identity in Azure. Do not copy access tokens, principal identifiers, keys, or connection strings into environment variables, deployment outputs, logs, or source files.
+The ACR pull assignments are created before any Container App or job. Each container receives the matching identity client ID as `AZURE_CLIENT_ID`. Application code should use `DefaultAzureCredential`, which honors that value for managed identity selection in Azure, or instantiate `ManagedIdentityCredential` with that client ID. Local development can continue through the developer credential chain. Do not log the client ID or copy access tokens, keys, or connection strings into environment variables, deployment outputs, logs, or source files.
 
-PostgreSQL password authentication is disabled. Enable the Entra administrator during deployment using values supplied from the operator's secure session, then use managed-identity tokens for workload database roles. Database grants remain an explicit bootstrap operation and should be audited.
+PostgreSQL password authentication is disabled. Configure the Entra administrator during deployment using values supplied from the operator's secure session, then use managed-identity tokens for workload database roles. Database grants remain an explicit bootstrap operation and should be audited.
 
 ## Secret rotation
 
@@ -64,7 +63,11 @@ Do not emit secret URIs containing sensitive query strings or secret values. A K
 
 ## Networking hardening
 
-Development and the deployable production example use authenticated public endpoints because this baseline does not create private network paths. Never disable public data-plane access before adding:
+Development and the deployable production example use authenticated public endpoints because this baseline does not create private network paths. PostgreSQL still blocks every public client by default: `postgresAllowedIpAddresses` is empty. Supply only exact operator or stable workload egress IPv4 addresses required for M0. The module creates one exact-address firewall rule per value; never use `0.0.0.0`, and remove bootstrap rules after use.
+
+Container Apps consumption egress addresses are not a production stability boundary. If a development deployment temporarily allowlists its reported outbound addresses, revisit the rules after environment changes. Production should use VNet integration, controlled egress, or PostgreSQL private access.
+
+Never disable public data-plane access before adding:
 
 - A Container Apps infrastructure subnet and an internal environment where feasible.
 - Private endpoints and private DNS zones for Blob, Key Vault, PostgreSQL, Search, ACR, Azure OpenAI, Azure Monitor, and Application Insights.

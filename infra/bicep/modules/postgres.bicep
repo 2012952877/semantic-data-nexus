@@ -8,6 +8,7 @@ param storageSizeGb int
 param backupRetentionDays int
 param zoneRedundant bool
 param publicNetworkAccessEnabled bool
+param allowedIpAddresses array
 param entraAdministratorObjectId string
 param entraAdministratorPrincipalName string
 param entraAdministratorPrincipalType string
@@ -54,6 +55,15 @@ resource entraAdministrator 'Microsoft.DBforPostgreSQL/flexibleServers/administr
     tenantId: tenant().tenantId
   }
 }
+
+resource firewallRuleResources 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2025-08-01' = [for (ipAddress, index) in allowedIpAddresses: {
+  parent: server
+  name: 'allowed-ip-${index}'
+  properties: {
+    startIpAddress: ipAddress
+    endIpAddress: ipAddress
+  }
+}]
 
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: server

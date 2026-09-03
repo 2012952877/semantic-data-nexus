@@ -12,6 +12,7 @@ param postgresSkuTier = 'Burstable'
 param postgresStorageSizeGb = 32
 param postgresBackupRetentionDays = 7
 param postgresZoneRedundant = false
+param postgresAllowedIpAddresses = []
 param postgresEntraAdministratorObjectId = '00000000-0000-0000-0000-000000000000'
 param postgresEntraAdministratorPrincipalName = 'replace-with-entra-admin-group'
 param postgresEntraAdministratorPrincipalType = 'Group'

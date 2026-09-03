@@ -4,7 +4,8 @@ param(
     [ValidateSet('dev', 'prod')]
     [string]$Environment = 'dev',
     [string]$PostgresEntraAdministratorObjectId,
-    [string]$PostgresEntraAdministratorPrincipalName
+    [string]$PostgresEntraAdministratorPrincipalName,
+    [string]$PostgresFirewallIpAddress
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,9 +36,20 @@ try {
     }
 
     if ([string]::IsNullOrWhiteSpace($PostgresEntraAdministratorObjectId) -or
-        [string]::IsNullOrWhiteSpace($PostgresEntraAdministratorPrincipalName)) {
-        throw 'PostgreSQL Entra administrator object ID and principal name are required for what-if.'
+        [string]::IsNullOrWhiteSpace($PostgresEntraAdministratorPrincipalName) -or
+        [string]::IsNullOrWhiteSpace($PostgresFirewallIpAddress)) {
+        throw 'PostgreSQL Entra administrator and exact firewall IP parameters are required for what-if.'
     }
+
+    $parsedIpAddress = $null
+    $isValidIpAddress = [System.Net.IPAddress]::TryParse($PostgresFirewallIpAddress, [ref]$parsedIpAddress)
+    if (-not $isValidIpAddress -or
+        $parsedIpAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+        $PostgresFirewallIpAddress -in @('0.0.0.0', '255.255.255.255')) {
+        throw 'PostgresFirewallIpAddress must be one exact, routable IPv4 address.'
+    }
+
+    $allowedIpAddresses = ConvertTo-Json -Compress -InputObject @($PostgresFirewallIpAddress)
 
     az account show --only-show-errors | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -50,6 +62,7 @@ try {
         --parameters $parameterFile `
         --parameters postgresEntraAdministratorObjectId=$PostgresEntraAdministratorObjectId `
                      postgresEntraAdministratorPrincipalName=$PostgresEntraAdministratorPrincipalName `
+                     "postgresAllowedIpAddresses=$allowedIpAddresses" `
         --no-pretty-print `
         --only-show-errors
     if ($LASTEXITCODE -ne 0) {
