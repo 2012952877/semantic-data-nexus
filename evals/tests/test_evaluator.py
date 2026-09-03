@@ -77,6 +77,19 @@ def test_large_integer_pairs_compare_exactly() -> None:
     )
     assert not mixed
     assert "value differs" in str(mixed_message)
+    rounded_float = float(large + 1)
+    zero_tolerance, zero_message = compare_rows(
+        [{"value": large + 1}],
+        [{"value": rounded_float}],
+        0,
+    )
+    assert not zero_tolerance
+    assert "value differs" in str(zero_message)
+    assert compare_rows(
+        [{"value": large + 1}],
+        [{"value": rounded_float}],
+        1,
+    )[0]
 
 
 def test_boolean_is_not_accepted_as_a_number() -> None:
@@ -162,7 +175,7 @@ def test_null_plan_and_malformed_nested_values_report_without_crashing() -> None
 
     malformed = copy.deepcopy(passing())
     actual = malformed["cases"][case_id]
-    actual["semantic"]["entities"] = [{1: "x", "a": "y"}]
+    actual["semantic"]["entities"] = [{"not": "a string"}]
     actual["result"]["rows"] = [[]]
     actual["lineage"]["entities"] = None
     malformed_report = evaluate_bundle(golden_suite, malformed)
@@ -179,6 +192,66 @@ def test_null_plan_and_malformed_nested_values_report_without_crashing() -> None
         for difference in malformed_case.differences
     )
     json.dumps(malformed_report.to_dict())
+
+
+def test_list_candidates_reject_duplicate_missing_and_empty_ids() -> None:
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    case_id = golden_case["id"]
+    valid = copy.deepcopy(passing()["cases"][case_id])
+    valid["id"] = case_id
+    malformed_duplicate = copy.deepcopy(valid)
+    malformed_duplicate["plan"] = None
+
+    duplicate_report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        {"cases": [malformed_duplicate, valid]},
+    )
+    assert duplicate_report.score == 0
+    assert not duplicate_report.passed
+    assert any("duplicate ID" in error for error in duplicate_report.validation_errors)
+
+    invalid_id_report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        {"cases": [{"id": ""}, {"semantic": {}}]},
+    )
+    assert invalid_id_report.score == 0
+    assert len(invalid_id_report.validation_errors) == 2
+    assert all(
+        "non-empty string ID" in error
+        for error in invalid_id_report.validation_errors
+    )
+
+
+def test_yaml_native_values_are_rejected_with_serializable_diagnostics(
+    tmp_path: Path,
+) -> None:
+    candidate_path = tmp_path / "native-values.yaml"
+    candidate_path.write_text(
+        "artifact_version: candidate-v0\n"
+        "blob: !!binary SGVsbG8=\n"
+        "cases:\n"
+        "  regional-quarterly-gross-profit:\n"
+        "    semantic:\n"
+        "      entities: !!set\n"
+        "        order: null\n",
+        encoding="utf-8",
+    )
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        load_document(candidate_path),
+    )
+    assert report.score == 0
+    assert not report.passed
+    assert any("YAML binary" in error for error in report.validation_errors)
+    assert any("YAML set" in error for error in report.validation_errors)
+    json.dumps(report.to_dict())
+
+    with pytest.raises(ValueError, match="non-JSON-compatible"):
+        evaluate_bundle(
+            {"suite_version": "test", "cases": [], "invalid": {1, 2}},
+            {"cases": {}},
+        )
 
 
 def test_suite_declared_weights_control_case_and_bundle_scores() -> None:
@@ -307,10 +380,12 @@ def test_disconnected_and_malformed_node_fields_return_diagnostics() -> None:
     assert "invalid inputs" in diagnostics
 
 
-def test_yaml_temporal_scalars_are_canonical_strings(tmp_path: Path) -> None:
+def test_yaml_temporal_scalars_are_canonicalized_during_evaluation(
+    tmp_path: Path,
+) -> None:
     yaml_path = tmp_path / "candidate.yaml"
     yaml_path.write_text(
-        "start: 2024-01-01\n"
+        "start: 2025-01-01\n"
         "clock: 2025-04-15T09:00:00+08:00\n"
         "dates:\n"
         "  - 2024-03-01\n"
@@ -318,13 +393,68 @@ def test_yaml_temporal_scalars_are_canonical_strings(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     document = load_document(yaml_path)
-    assert document == {
-        "start": "2024-01-01",
-        "clock": "2025-04-15T09:00:00+08:00",
-        "dates": ["2024-03-01"],
-        "2024-01-02": "keyed-date",
+    assert isinstance(document["start"], date)
+
+    golden_case = copy.deepcopy(
+        next(
+            case
+            for case in suite()["cases"]
+            if case["id"] == "relative-last-quarter-sales"
+        )
+    )
+    candidate_case = copy.deepcopy(passing()["cases"][golden_case["id"]])
+    candidate_case["time_range"]["start"] = document["start"]
+    candidate_case["time_range"]["evaluation_clock"] = document["clock"]
+    candidate_case["metadata"] = {
+        key: value
+        for key, value in document.items()
+        if isinstance(key, date)
     }
-    json.dumps(document)
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        {"cases": {golden_case["id"]: candidate_case}},
+    )
+    assert report.passed
+    json.dumps(report.to_dict())
+
+
+def test_yaml_date_candidate_id_is_rejected_before_normalization(
+    tmp_path: Path,
+) -> None:
+    yaml_path = tmp_path / "date-id.yaml"
+    yaml_path.write_text(
+        "artifact_version: candidate-v0\n"
+        "cases:\n"
+        "  - id: 2024-01-01\n",
+        encoding="utf-8",
+    )
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    golden_case["id"] = "2024-01-01"
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        load_document(yaml_path),
+    )
+    assert report.score == 0
+    assert any("non-empty string ID" in error for error in report.validation_errors)
+
+
+def test_recursive_yaml_alias_is_rejected_without_recursion_error(
+    tmp_path: Path,
+) -> None:
+    yaml_path = tmp_path / "recursive.yaml"
+    yaml_path.write_text(
+        "artifact_version: candidate-v0\n"
+        "loop: &loop\n"
+        "  - *loop\n"
+        "cases: {}\n",
+        encoding="utf-8",
+    )
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [copy.deepcopy(suite()["cases"][0])]},
+        load_document(yaml_path),
+    )
+    assert any("recursive YAML alias" in error for error in report.validation_errors)
+    json.dumps(report.to_dict())
 
 
 def test_in_memory_temporal_values_compare_and_serialize() -> None:

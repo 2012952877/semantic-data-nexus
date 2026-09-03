@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -47,13 +48,14 @@ class EvaluationReport:
     score: float
     dimension_scores: dict[str, float]
     cases: list[CaseReport]
+    validation_errors: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
-        return all(case.passed for case in self.cases)
+        return not self.validation_errors and all(case.passed for case in self.cases)
 
     def to_dict(self) -> dict[str, Any]:
-        result = _normalize_temporal(asdict(self))
+        result, _ = _sanitize_json_value(asdict(self), "report")
         result["passed"] = self.passed
         for case, encoded in zip(self.cases, result["cases"], strict=True):
             encoded["passed"] = case.passed
@@ -67,7 +69,6 @@ def load_document(path: str | Path) -> dict[str, Any]:
             document = yaml.safe_load(handle)
         else:
             document = json.load(handle)
-    document = _normalize_temporal(document)
     if not isinstance(document, dict):
         raise ValueError(f"{source} must contain an object at its root")
     return document
@@ -88,6 +89,101 @@ def _normalize_temporal(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_normalize_temporal(item) for item in value)
     return value
+
+
+def _sanitize_json_value(
+    value: Any,
+    path: str,
+    active: set[int] | None = None,
+) -> tuple[Any, list[str]]:
+    if active is None:
+        active = set()
+    if isinstance(value, datetime):
+        return value.isoformat(), []
+    if isinstance(value, date):
+        return value.isoformat(), []
+    if value is None or isinstance(value, (str, int, bool)):
+        return value, []
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value, []
+        return (
+            {"__invalid_json_type__": "non-finite-float"},
+            [f"{path} contains a non-finite float"],
+        )
+    if isinstance(value, bytes):
+        return (
+            {"__invalid_json_type__": "bytes", "length": len(value)},
+            [f"{path} contains YAML binary data"],
+        )
+    if isinstance(value, (set, frozenset)):
+        return (
+            {"__invalid_json_type__": type(value).__name__, "item_count": len(value)},
+            [f"{path} contains a YAML set"],
+        )
+    if isinstance(value, tuple):
+        sanitized_items = []
+        errors = [f"{path} contains a non-JSON tuple"]
+        for index, item in enumerate(value):
+            sanitized, item_errors = _sanitize_json_value(
+                item,
+                f"{path}[{index}]",
+                active,
+            )
+            sanitized_items.append(sanitized)
+            errors.extend(item_errors)
+        return (
+            {"__invalid_json_type__": "tuple", "items": sanitized_items},
+            errors,
+        )
+    if isinstance(value, (dict, list)):
+        identity = id(value)
+        if identity in active:
+            return (
+                {"__invalid_json_type__": "recursive-reference"},
+                [f"{path} contains a recursive YAML alias"],
+            )
+        active.add(identity)
+        try:
+            if isinstance(value, list):
+                sanitized_items = []
+                errors = []
+                for index, item in enumerate(value):
+                    sanitized, item_errors = _sanitize_json_value(
+                        item,
+                        f"{path}[{index}]",
+                        active,
+                    )
+                    sanitized_items.append(sanitized)
+                    errors.extend(item_errors)
+                return sanitized_items, errors
+
+            sanitized_map: dict[str, Any] = {}
+            errors = []
+            for index, (key, item) in enumerate(value.items()):
+                if isinstance(key, str):
+                    sanitized_key = key
+                elif isinstance(key, (date, datetime)):
+                    sanitized_key = key.isoformat()
+                else:
+                    sanitized_key = f"__invalid_key_{index}_{type(key).__name__}__"
+                    errors.append(
+                        f"{path} contains non-string mapping key {type(key).__name__}"
+                    )
+                sanitized, item_errors = _sanitize_json_value(
+                    item,
+                    f"{path}.{sanitized_key}",
+                    active,
+                )
+                sanitized_map[sanitized_key] = sanitized
+                errors.extend(item_errors)
+            return sanitized_map, errors
+        finally:
+            active.remove(identity)
+    return (
+        {"__invalid_json_type__": type(value).__name__},
+        [f"{path} contains unsupported type {type(value).__name__}"],
+    )
 
 
 def _difference(
@@ -312,17 +408,19 @@ def _numbers_equal(expected: Any, actual: Any, tolerance: float) -> bool:
     if isinstance(expected, int) and isinstance(actual, int):
         return expected == actual
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        if (
+            isinstance(expected, float)
+            and not math.isfinite(expected)
+            or isinstance(actual, float)
+            and not math.isfinite(actual)
+        ):
+            return expected == actual
         try:
-            expected_number = float(expected)
-            actual_number = float(actual)
-        except (OverflowError, ValueError):
+            difference = abs(Fraction(expected) - Fraction(actual))
+            allowed = Fraction(str(tolerance))
+        except (OverflowError, ValueError, ZeroDivisionError):
             return False
-        return math.isclose(
-            expected_number,
-            actual_number,
-            abs_tol=tolerance,
-            rel_tol=0.0,
-        )
+        return difference <= allowed
     return expected == actual
 
 
@@ -693,26 +791,112 @@ def evaluate_bundle(
     golden_suite: Any,
     candidate_bundle: Any,
 ) -> EvaluationReport:
-    golden_suite = _normalize_temporal(golden_suite)
-    candidate_bundle = _normalize_temporal(candidate_bundle)
+    raw_candidate_errors: list[str] = []
+    if isinstance(candidate_bundle, dict):
+        raw_cases = candidate_bundle.get("cases", {})
+        if isinstance(raw_cases, list):
+            seen_raw_ids: set[str] = set()
+            for index, candidate in enumerate(raw_cases):
+                if not isinstance(candidate, dict):
+                    raw_candidate_errors.append(
+                        f"candidate cases[{index}] must be an object"
+                    )
+                    continue
+                candidate_id = candidate.get("id")
+                if not isinstance(candidate_id, str) or not candidate_id.strip():
+                    raw_candidate_errors.append(
+                        f"candidate cases[{index}] must have a non-empty string ID"
+                    )
+                    continue
+                if candidate_id in seen_raw_ids:
+                    raw_candidate_errors.append(
+                        f"candidate cases contains duplicate ID {candidate_id!r}"
+                    )
+                seen_raw_ids.add(candidate_id)
+        elif isinstance(raw_cases, dict):
+            if any(
+                not isinstance(candidate_id, str) or not candidate_id.strip()
+                for candidate_id in raw_cases
+            ):
+                raw_candidate_errors.append(
+                    "candidate case mapping contains an empty or non-string ID"
+                )
+
+    golden_suite, golden_value_errors = _sanitize_json_value(
+        golden_suite,
+        "golden",
+    )
+    if golden_value_errors:
+        raise ValueError(
+            "golden suite contains non-JSON-compatible values: "
+            + "; ".join(golden_value_errors)
+        )
     if not isinstance(golden_suite, dict):
         raise ValueError("golden suite must be an object")
+    golden_cases = golden_suite.get("cases", [])
+    if not isinstance(golden_cases, list) or any(
+        not isinstance(case, dict)
+        or not isinstance(case.get("id"), str)
+        or not case["id"].strip()
+        for case in golden_cases
+    ):
+        raise ValueError("golden suite cases must be objects with non-empty string IDs")
     weights = _resolve_weights(golden_suite)
+    candidate_bundle, value_errors = _sanitize_json_value(
+        candidate_bundle,
+        "candidate",
+    )
+    validation_errors = raw_candidate_errors + value_errors
     if not isinstance(candidate_bundle, dict):
-        candidate_bundle = {}
-    candidates = candidate_bundle.get("cases", {})
-    if isinstance(candidates, list):
-        candidates = {
-            candidate["id"]: candidate
-            for candidate in candidates
-            if isinstance(candidate, dict)
-            and isinstance(candidate.get("id"), str)
-        }
-    elif not isinstance(candidates, dict):
-        candidates = {}
+        validation_errors.append("candidate bundle must be an object")
+        raw_candidates: Any = {}
+    else:
+        raw_candidates = candidate_bundle.get("cases", {})
+
+    candidates: dict[str, Any] = {}
+    if isinstance(raw_candidates, list):
+        seen: set[str] = set()
+        valid_entries: list[tuple[str, dict[str, Any]]] = []
+        for index, candidate in enumerate(raw_candidates):
+            if not isinstance(candidate, dict):
+                validation_errors.append(
+                    f"candidate cases[{index}] must be an object"
+                )
+                continue
+            candidate_id = candidate.get("id")
+            if not isinstance(candidate_id, str) or not candidate_id.strip():
+                validation_errors.append(
+                    f"candidate cases[{index}] must have a non-empty string ID"
+                )
+                continue
+            if candidate_id in seen:
+                validation_errors.append(
+                    f"candidate cases contains duplicate ID {candidate_id!r}"
+                )
+                continue
+            seen.add(candidate_id)
+            valid_entries.append((candidate_id, candidate))
+        if not validation_errors:
+            candidates = dict(valid_entries)
+    elif isinstance(raw_candidates, dict):
+        invalid_ids = [
+            candidate_id
+            for candidate_id in raw_candidates
+            if not isinstance(candidate_id, str) or not candidate_id.strip()
+        ]
+        if invalid_ids:
+            validation_errors.append(
+                "candidate case mapping contains an empty or non-string ID"
+            )
+        elif not validation_errors:
+            candidates = raw_candidates
+    else:
+        validation_errors.append("candidate cases must be an object or list")
+
+    validation_errors = list(dict.fromkeys(validation_errors))
     reports = [
         evaluate_case(case, candidates.get(case["id"]), weights)
-        for case in golden_suite.get("cases", [])
+        for case in golden_cases
     ]
     dimension_scores = {
         dimension: round(
@@ -733,4 +917,5 @@ def evaluate_bundle(
         score=round(score, 2),
         dimension_scores=dimension_scores,
         cases=reports,
+        validation_errors=validation_errors,
     )
