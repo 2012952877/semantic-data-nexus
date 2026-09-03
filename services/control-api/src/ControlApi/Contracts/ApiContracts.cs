@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using ControlApi.Domain;
 
 namespace ControlApi.Contracts;
@@ -9,7 +10,7 @@ public sealed record CancelRunRequest(long? ExpectedVersion);
 public sealed record SubmitFeedbackRequest(
     string SubmissionId,
     int Rating,
-    FeedbackOutcome Outcome,
+    [property: Required] FeedbackOutcome Outcome,
     IReadOnlyList<string> ReasonCodes,
     long ExpectedRunVersion);
 

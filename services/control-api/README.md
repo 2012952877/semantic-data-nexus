@@ -60,9 +60,11 @@ safe `X-Correlation-ID` containing up to 64 letters, digits, `.`, `_`, or `-`.
 Create idempotency is scoped to principal plus `clientRequestId`. A run begins
 in `StartPending`; timeout, transport loss, invalid success payload, or caller
 cancellation moves it to retryable `DispatchUnknown`, never terminal `Failed`.
-A duplicate create first reconciles by `RunId`, then repeats the idempotent
-backend start with the same `RunId` only when the backend definitively reports
-it missing. Only a definitive backend rejection marks the run failed.
+A duplicate create re-reads state after acquiring the per-`RunId` dispatch
+lease. Only `StartPending` dispatches directly; `DispatchUnknown` first
+reconciles by `RunId`, then repeats the idempotent backend start with the same
+`RunId` only when the backend definitively reports it missing. Only a
+definitive backend rejection marks the run failed.
 
 Start, reconciliation, status refresh, cancellation, and feedback mutation hold
 a per-`RunId` dispatch lease in M0 so metadata writes cannot make a completed
@@ -80,7 +82,8 @@ projection details without replacing local `CancelRequested`; a terminal
 observation resolves it and also makes a racing delivery acknowledgment
 idempotent. Feedback uses `submissionId` for idempotency and
 `expectedRunVersion` for optimistic concurrency. Feedback is structured to
-avoid an unrestricted text/prompt field.
+avoid an unrestricted text/prompt field; `outcome` is required and must be
+`Helpful`, `PartiallyHelpful`, or `NotHelpful`.
 
 ## Configuration
 

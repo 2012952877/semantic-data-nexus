@@ -399,6 +399,52 @@ public sealed class ApiEndpointTests
     }
 
     [Fact]
+    public async Task MissingFeedbackOutcomeReturnsProblemDetails()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var createResponse = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("feedback-missing-outcome", "synthetic-workload"));
+        var created = await createResponse.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        var request = JsonContent.Create(new
+        {
+            submissionId = "feedback-missing-outcome",
+            rating = 5,
+            reasonCodes = Array.Empty<string>(),
+            expectedRunVersion = created!.Version
+        });
+
+        var response = await client.PostAsync(
+            $"/api/v1/runs/{created.Id}/feedback",
+            request);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_feedback", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task OpenApiRequiresFeedbackOutcome()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateClient();
+
+        using var document = JsonDocument.Parse(
+            await client.GetStringAsync("/swagger/v1/swagger.json"));
+        var required = document.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas")
+            .GetProperty(nameof(SubmitFeedbackRequest))
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+
+        Assert.Contains("outcome", required);
+    }
+
+    [Fact]
     public async Task StartCompletesBeforeConcurrentCancellationDispatch()
     {
         var backend = new StubSemanticBackendClient
@@ -747,6 +793,43 @@ public sealed class ApiEndpointTests
         Assert.Equal(CancellationDeliveryState.Delivered, locallyCancelled.CancellationDelivery);
         Assert.Equal(RunState.Cancelled, createReplay!.State);
         Assert.Equal(0, backend.StartCalls);
+    }
+
+    [Fact]
+    public async Task ConcurrentCreatedRequestReconcilesCurrentUnknownState()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout.")
+        };
+        var coordinator = new DelayedFirstRunDispatchCoordinator();
+        await using var factory = new ControlApiFactory(
+            backend,
+            dispatchCoordinator: coordinator);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("concurrent-create", "synthetic-workload");
+
+        var first = client.PostAsJsonAsync("/api/v1/runs", request);
+        await coordinator.FirstAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, second.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var unknown = Assert.Single(list!.Items);
+        Assert.Equal(RunState.DispatchUnknown, unknown.State);
+
+        backend.StartException = null;
+        backend.Runs[unknown.Id] =
+            StubSemanticBackendClient.Status(unknown.Id, RunState.Running);
+        coordinator.ReleaseFirst.TrySetResult(true);
+        var reconciled = await first;
+        var run = await reconciled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, reconciled.StatusCode);
+        Assert.Equal(RunState.Running, run!.State);
+        Assert.Equal(1, backend.StartCalls);
+        Assert.Equal(1, backend.StatusCalls);
         Assert.Equal(0, backend.CancelCalls);
     }
 

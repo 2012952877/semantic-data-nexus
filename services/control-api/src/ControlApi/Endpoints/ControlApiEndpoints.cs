@@ -96,19 +96,23 @@ public static class ControlApiEndpoints
 
         try
         {
-            var status = result.Created
-                ? await StartSemanticRun(
+            var status = current.State switch
+            {
+                RunState.StartPending => await StartSemanticRun(
                     current,
                     subject,
                     context,
                     semanticBackend,
-                    cancellationToken)
-                : await ReconcileOrStartSemanticRun(
+                    cancellationToken),
+                RunState.DispatchUnknown => await ReconcileOrStartSemanticRun(
                     current,
                     subject,
                     context,
                     semanticBackend,
-                    cancellationToken);
+                    cancellationToken),
+                _ => throw new InvalidOperationException(
+                    $"Run state '{current.State}' does not require start reconciliation.")
+            };
             var updated = await repository.ApplySemanticStatusAsync(
                 current.Id,
                 current.Version,
@@ -491,7 +495,7 @@ public static class ControlApiEndpoints
             return Invalid(
                 context,
                 "invalid_feedback",
-                "Feedback requires a submission ID, a 1-5 rating, and at most 10 structured reason codes.");
+                "Feedback requires a submission ID, a 1-5 rating, an outcome, and at most 10 structured reason codes.");
         }
 
         return null;

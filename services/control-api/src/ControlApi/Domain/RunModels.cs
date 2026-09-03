@@ -175,9 +175,9 @@ public sealed record RunMetadata(
 
 public enum FeedbackOutcome
 {
-    Helpful,
-    PartiallyHelpful,
-    NotHelpful
+    Helpful = 1,
+    PartiallyHelpful = 2,
+    NotHelpful = 3
 }
 
 public sealed record RunFeedback(
