@@ -39,7 +39,8 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                 request.ClientRequestId,
                 request.Workload,
                 subject,
-                RunState.Queued,
+                RunState.StartPending,
+                CancellationDeliveryState.NotRequested,
                 now,
                 now,
                 null,
@@ -87,6 +88,7 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
         lock (gate)
         {
             var current = GetRequired(id);
+            SemanticRunStatusValidator.Validate(status, id);
             if (current.Version != expectedVersion)
             {
                 throw new OptimisticConcurrencyException(
@@ -99,9 +101,16 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             }
 
             var now = timeProvider.GetUtcNow();
-            var startedAt = current.StartedAt ??
-                (status.State is RunState.Starting or RunState.Running ? now : null);
-            var completedAt = status.State.IsTerminal() ? status.FinalizedAt ?? now : current.CompletedAt;
+            var startedAt = current.StartedAt ?? status.StartedAt;
+            if (status.FinalizedAt is not null && status.FinalizedAt < startedAt)
+            {
+                throw new SemanticBackendException(
+                    "semantic_backend_invalid_response",
+                    "The semantic backend finalized the run before its persisted start timestamp.",
+                    failureKind: SemanticFailureKind.InvalidResponse);
+            }
+
+            var completedAt = status.State.IsTerminal() ? status.FinalizedAt : null;
             var updated = current with
             {
                 State = status.State,
@@ -139,12 +148,55 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             {
                 State = RunState.Failed,
                 UpdatedAt = now,
+                StartedAt = current.StartedAt ?? current.CreatedAt,
                 CompletedAt = now,
                 Version = current.Version + 1,
                 Diagnostics =
                 [
                     .. current.Diagnostics,
                     new DiagnosticSummary(code, message, null, now)
+                ]
+            };
+            runs[id] = updated;
+            return Task.FromResult(updated);
+        }
+    }
+
+    public Task<RunMetadata> MarkStartDispatchUnknownAsync(
+        RunId id,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            var current = GetRequired(id);
+            if (!current.State.RequiresStartReconciliation())
+            {
+                return Task.FromResult(current);
+            }
+
+            if (current.State == RunState.DispatchUnknown &&
+                current.Diagnostics.Count > 0 &&
+                current.Diagnostics[^1].Code == code)
+            {
+                return Task.FromResult(current);
+            }
+
+            var now = timeProvider.GetUtcNow();
+            var updated = current with
+            {
+                State = RunState.DispatchUnknown,
+                UpdatedAt = now,
+                Version = current.Version + 1,
+                Diagnostics =
+                [
+                    .. current.Diagnostics,
+                    new DiagnosticSummary(
+                        code,
+                        "Semantic start dispatch outcome is unknown and requires reconciliation.",
+                        null,
+                        now)
                 ]
             };
             runs[id] = updated;
@@ -161,9 +213,17 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
         lock (gate)
         {
             var current = GetRequired(id);
-            if (current.State is RunState.CancelRequested or RunState.Cancelled)
+            if (current.State == RunState.CancelRequested)
             {
-                return Task.FromResult(new MutationResult(current, false));
+                return Task.FromResult(new MutationResult(
+                    current,
+                    false,
+                    current.CancellationDelivery == CancellationDeliveryState.Pending));
+            }
+
+            if (current.State == RunState.Cancelled)
+            {
+                return Task.FromResult(new MutationResult(current, false, false));
             }
 
             if (current.State.IsTerminal())
@@ -180,11 +240,43 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             var updated = current with
             {
                 State = RunState.CancelRequested,
+                CancellationDelivery = CancellationDeliveryState.Pending,
                 UpdatedAt = timeProvider.GetUtcNow(),
                 Version = current.Version + 1
             };
             runs[id] = updated;
-            return Task.FromResult(new MutationResult(updated, true));
+            return Task.FromResult(new MutationResult(updated, true, true));
+        }
+    }
+
+    public Task<RunMetadata> MarkCancellationDeliveredAsync(
+        RunId id,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (gate)
+        {
+            var current = GetRequired(id);
+            if (current.CancellationDelivery == CancellationDeliveryState.Delivered)
+            {
+                return Task.FromResult(current);
+            }
+
+            if (current.State != RunState.CancelRequested ||
+                current.CancellationDelivery != CancellationDeliveryState.Pending)
+            {
+                throw new InvalidOperationException(
+                    "Cancellation delivery can only be acknowledged while pending.");
+            }
+
+            var updated = current with
+            {
+                CancellationDelivery = CancellationDeliveryState.Delivered,
+                UpdatedAt = timeProvider.GetUtcNow(),
+                Version = current.Version + 1
+            };
+            runs[id] = updated;
+            return Task.FromResult(updated);
         }
     }
 
@@ -265,6 +357,7 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
         lock (gate)
         {
             var completedDurations = runs.Values
+                .Where(run => run.State.IsTerminal())
                 .Select(run => run.Duration)
                 .Where(duration => duration is not null && duration >= TimeSpan.Zero)
                 .Select(duration => duration!.Value.TotalMilliseconds)

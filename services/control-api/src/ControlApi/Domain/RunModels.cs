@@ -66,6 +66,8 @@ public sealed class RunIdJsonConverter : JsonConverter<RunId>
 
 public enum RunState
 {
+    StartPending,
+    DispatchUnknown,
     Queued,
     Starting,
     Running,
@@ -80,6 +82,12 @@ public static class RunStateMachine
     private static readonly Dictionary<RunState, RunState[]> AllowedTransitions =
         new Dictionary<RunState, RunState[]>
         {
+            [RunState.StartPending] =
+                [RunState.DispatchUnknown, RunState.Queued, RunState.Starting, RunState.Running,
+                    RunState.CancelRequested, RunState.Succeeded, RunState.Failed],
+            [RunState.DispatchUnknown] =
+                [RunState.Queued, RunState.Starting, RunState.Running, RunState.CancelRequested,
+                    RunState.Succeeded, RunState.Failed],
             [RunState.Queued] =
                 [RunState.Starting, RunState.Running, RunState.CancelRequested, RunState.Succeeded, RunState.Failed],
             [RunState.Starting] =
@@ -94,8 +102,18 @@ public static class RunStateMachine
     public static bool IsTerminal(this RunState state) =>
         state is RunState.Cancelled or RunState.Succeeded or RunState.Failed;
 
+    public static bool RequiresStartReconciliation(this RunState state) =>
+        state is RunState.StartPending or RunState.DispatchUnknown;
+
     public static bool CanTransitionTo(this RunState current, RunState next) =>
         current == next || AllowedTransitions[current].Contains(next);
+}
+
+public enum CancellationDeliveryState
+{
+    NotRequested,
+    Pending,
+    Delivered
 }
 
 public sealed record TokenUsage(long InputTokens, long OutputTokens)
@@ -138,6 +156,7 @@ public sealed record RunMetadata(
     string Workload,
     string CreatedBy,
     RunState State,
+    CancellationDeliveryState CancellationDelivery,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? StartedAt,
@@ -148,7 +167,9 @@ public sealed record RunMetadata(
     IReadOnlyList<DiagnosticSummary> Diagnostics)
 {
     public TimeSpan? Duration =>
-        StartedAt is null ? null : (CompletedAt ?? UpdatedAt) - StartedAt;
+        State.IsTerminal() && StartedAt is not null && CompletedAt is not null
+            ? CompletedAt - StartedAt
+            : null;
 }
 
 public enum FeedbackOutcome

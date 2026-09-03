@@ -73,7 +73,7 @@ public sealed class ApiEndpointTests
             new CancelRunRequest(1),
             JsonOptions);
         Assert.Equal(HttpStatusCode.Accepted, repeatedCancel.StatusCode);
-        Assert.Equal(2, backend.CancelCalls);
+        Assert.Equal(1, backend.CancelCalls);
 
         var feedbackItems = await client.GetFromJsonAsync<RunFeedback[]>(
             $"/api/v1/runs/{created.Id}/feedback",
@@ -197,6 +197,24 @@ public sealed class ApiEndpointTests
     }
 
     [Fact]
+    public async Task AuthenticationFailuresAreRateLimitedByClientAddress()
+    {
+        await using var factory = new ControlApiFactory(
+            settings: new Dictionary<string, string?>
+            {
+                ["RateLimiting:PermitLimit"] = "1",
+                ["RateLimiting:WindowSeconds"] = "60"
+            });
+        using var client = factory.CreateClient();
+
+        var first = await client.GetAsync("/api/v1/me");
+        var rejected = await client.GetAsync("/api/v1/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, first.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
+    [Fact]
     public async Task FailedCancellationDispatchCanBeRetried()
     {
         var backend = new StubSemanticBackendClient();
@@ -221,6 +239,136 @@ public sealed class ApiEndpointTests
             new CancelRunRequest(created.Version));
         Assert.Equal(HttpStatusCode.Accepted, retried.StatusCode);
         Assert.Equal(2, backend.CancelCalls);
+
+        var delivered = await retried.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        Assert.Equal(CancellationDeliveryState.Delivered, delivered!.CancellationDelivery);
+        var repeated = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{created.Id}/cancel",
+            new CancelRunRequest(created.Version));
+        Assert.Equal(HttpStatusCode.Accepted, repeated.StatusCode);
+        Assert.Equal(2, backend.CancelCalls);
+    }
+
+    [Fact]
+    public async Task AmbiguousStartIsReconciledByRunIdOnDuplicate()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_timeout",
+                "Synthetic timeout.")
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("start-reconcile", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.GatewayTimeout, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var pending = Assert.Single(list!.Items);
+        Assert.Equal(RunState.DispatchUnknown, pending.State);
+
+        backend.Runs[pending.Id] = StubSemanticBackendClient.Status(pending.Id, RunState.Running);
+        backend.StartException = null;
+        var reconciled = await client.PostAsJsonAsync("/api/v1/runs", request);
+        var run = await reconciled.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
+        Assert.Equal(pending.Id, run!.Id);
+        Assert.Equal(RunState.Running, run.State);
+        Assert.Equal(1, backend.StartCalls);
+        Assert.Equal(1, backend.StatusCalls);
+    }
+
+    [Fact]
+    public async Task UnknownStartRetriesSameRunIdWhenReconciliationFindsNothing()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_unavailable",
+                "Synthetic connection failure.")
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = new CreateRunRequest("start-retry", "synthetic-workload");
+
+        var failed = await client.PostAsJsonAsync("/api/v1/runs", request);
+        Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+        var pending = Assert.Single(list!.Items);
+
+        backend.StartException = null;
+        var retried = await client.PostAsJsonAsync("/api/v1/runs", request);
+        var started = await retried.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        Assert.Equal(pending.Id, started!.Id);
+        Assert.Equal(2, backend.StartCalls);
+        Assert.Equal(1, backend.StatusCalls);
+    }
+
+    [Fact]
+    public async Task OnlyDefinitiveStartRejectionMarksRunFailed()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new SemanticBackendException(
+                "semantic_backend_start_failed",
+                "Synthetic rejection.",
+                HttpStatusCode.BadRequest,
+                SemanticFailureKind.Rejected)
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+
+        var response = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("start-rejected", "synthetic-workload"));
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal(RunState.Failed, Assert.Single(list!.Items).State);
+    }
+
+    [Fact]
+    public async Task InvalidStartResponseIsStableAndRemainsReconcileable()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartResult = StubSemanticBackendClient.Status(RunId.New(), RunState.Running)
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+
+        var response = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("start-invalid", "synthetic-workload"));
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("semantic_backend_invalid_response", Extension(problem!, "code"));
+        Assert.Equal(RunState.DispatchUnknown, Assert.Single(list!.Items).State);
+    }
+
+    [Fact]
+    public async Task InterruptedStartPersistsUnknownDispatchState()
+    {
+        var backend = new StubSemanticBackendClient
+        {
+            StartException = new OperationCanceledException("Synthetic client cancellation.")
+        };
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+
+        var response = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            new CreateRunRequest("start-cancelled", "synthetic-workload"));
+        var list = await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs", JsonOptions);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal(RunState.DispatchUnknown, Assert.Single(list!.Items).State);
     }
 
     [Fact]

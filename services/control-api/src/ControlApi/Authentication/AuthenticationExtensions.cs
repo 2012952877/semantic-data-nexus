@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Mvc;
@@ -42,10 +43,10 @@ public static class AuthenticationExtensions
             .GetSection(LocalDevelopmentAuthOptions.SectionName)
             .Get<LocalDevelopmentAuthOptions>() ?? new LocalDevelopmentAuthOptions();
 
-        if (environment.IsProduction() && localOptions.Enabled)
+        if (!environment.IsDevelopment() && localOptions.Enabled)
         {
             throw new InvalidOperationException(
-                "Local development authentication cannot be enabled in Production.");
+                "Local development authentication can only be enabled in Development.");
         }
 
         if (localOptions.Enabled)
@@ -72,8 +73,13 @@ public static class AuthenticationExtensions
             }
 
             services
-                .AddAuthentication()
-                .AddMicrosoftIdentityWebApi(configuration.GetSection("AzureAd"));
+                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                .AddMicrosoftIdentityWebApi(
+                    configuration.GetSection("AzureAd"),
+                    jwtBearerScheme: JwtBearerDefaults.AuthenticationScheme);
+            services.PostConfigure<JwtBearerOptions>(
+                JwtBearerDefaults.AuthenticationScheme,
+                options => options.MapInboundClaims = false);
         }
 
         services.AddAuthorization(options =>

@@ -24,10 +24,11 @@ public sealed record SemanticRunStart(
 public sealed record SemanticRunStatus(
     RunId RunId,
     RunState State,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? FinalizedAt,
     IReadOnlyList<StageSummary> Stages,
     TokenUsage TokenUsage,
-    IReadOnlyList<DiagnosticSummary> Diagnostics,
-    DateTimeOffset? FinalizedAt);
+    IReadOnlyList<DiagnosticSummary> Diagnostics);
 
 public interface ISemanticBackendClient
 {
@@ -40,15 +41,25 @@ public interface ISemanticBackendClient
     Task<bool> IsReadyAsync(CancellationToken cancellationToken);
 }
 
+public enum SemanticFailureKind
+{
+    UnknownOutcome,
+    Rejected,
+    NotFound,
+    InvalidResponse
+}
+
 public sealed class SemanticBackendException(
     string diagnosticCode,
     string message,
     HttpStatusCode? backendStatus = null,
+    SemanticFailureKind failureKind = SemanticFailureKind.UnknownOutcome,
     Exception? innerException = null)
     : Exception(message, innerException)
 {
     public string DiagnosticCode { get; } = diagnosticCode;
     public HttpStatusCode? BackendStatus { get; } = backendStatus;
+    public SemanticFailureKind FailureKind { get; } = failureKind;
 }
 
 public sealed class HttpSemanticBackendClient(
@@ -71,12 +82,16 @@ public sealed class HttpSemanticBackendClient(
                 Content = JsonContent.Create(request, options: SerializerOptions)
             },
             "semantic_backend_start_failed",
+            request.RunId,
+            true,
             cancellationToken);
 
     public Task<SemanticRunStatus> GetStatusAsync(RunId runId, CancellationToken cancellationToken) =>
         SendAsync(
             new HttpRequestMessage(HttpMethod.Get, $"v1/runs/{Uri.EscapeDataString(runId.Value)}"),
             "semantic_backend_status_failed",
+            runId,
+            false,
             cancellationToken);
 
     public async Task RequestCancellationAsync(RunId runId, CancellationToken cancellationToken)
@@ -109,6 +124,8 @@ public sealed class HttpSemanticBackendClient(
     private async Task<SemanticRunStatus> SendAsync(
         HttpRequestMessage request,
         string failureCode,
+        RunId expectedRunId,
+        bool isStart,
         CancellationToken cancellationToken)
     {
         try
@@ -118,16 +135,20 @@ public sealed class HttpSemanticBackendClient(
             {
                 if (!response.IsSuccessStatusCode)
                 {
-                    throw CreateFailure(failureCode, response.StatusCode);
+                    throw CreateFailure(failureCode, response.StatusCode, isStart);
                 }
 
                 var result = await response.Content.ReadFromJsonAsync<SemanticRunStatus>(
                         SerializerOptions,
                         cancellationToken)
                     .ConfigureAwait(false);
-                return result ?? throw new SemanticBackendException(
-                    "semantic_backend_invalid_response",
-                    "The semantic backend returned an empty response.");
+                if (result is null)
+                {
+                    throw InvalidResponse("The semantic backend returned an empty response.");
+                }
+
+                SemanticRunStatusValidator.Validate(result, expectedRunId);
+                return result;
             }
         }
         catch (JsonException exception)
@@ -135,6 +156,7 @@ public sealed class HttpSemanticBackendClient(
             throw new SemanticBackendException(
                 "semantic_backend_invalid_response",
                 "The semantic backend returned an invalid response.",
+                failureKind: SemanticFailureKind.InvalidResponse,
                 innerException: exception);
         }
         catch (NotSupportedException exception)
@@ -142,6 +164,7 @@ public sealed class HttpSemanticBackendClient(
             throw new SemanticBackendException(
                 "semantic_backend_invalid_response",
                 "The semantic backend returned an unsupported response.",
+                failureKind: SemanticFailureKind.InvalidResponse,
                 innerException: exception);
         }
     }
@@ -173,8 +196,33 @@ public sealed class HttpSemanticBackendClient(
         }
     }
 
-    private static SemanticBackendException CreateFailure(string code, HttpStatusCode status) =>
-        new(code, "The semantic backend rejected the control-plane request.", status);
+    private static SemanticBackendException CreateFailure(
+        string code,
+        HttpStatusCode status,
+        bool isStart = false)
+    {
+        var statusCode = (int)status;
+        var failureKind = !isStart && status == HttpStatusCode.NotFound
+            ? SemanticFailureKind.NotFound
+            : isStart &&
+              statusCode is >= 400 and < 500 &&
+              status is not HttpStatusCode.RequestTimeout and
+                  not HttpStatusCode.Conflict and
+                  not HttpStatusCode.TooManyRequests
+                ? SemanticFailureKind.Rejected
+                : SemanticFailureKind.UnknownOutcome;
+        return new SemanticBackendException(
+            code,
+            "The semantic backend rejected the control-plane request.",
+            status,
+            failureKind);
+    }
+
+    private static SemanticBackendException InvalidResponse(string message) =>
+        new(
+            "semantic_backend_invalid_response",
+            message,
+            failureKind: SemanticFailureKind.InvalidResponse);
 
     private static JsonSerializerOptions CreateSerializerOptions()
     {
@@ -199,10 +247,11 @@ public sealed class FakeSemanticBackendClient(TimeProvider timeProvider) : ISema
             var status = new SemanticRunStatus(
                 request.RunId,
                 RunState.Starting,
+                timeProvider.GetUtcNow(),
+                null,
                 [],
                 new TokenUsage(0, 0),
-                [],
-                null);
+                []);
             runs[request.RunId] = status;
             return Task.FromResult(status);
         }
@@ -220,7 +269,8 @@ public sealed class FakeSemanticBackendClient(TimeProvider timeProvider) : ISema
                 throw new SemanticBackendException(
                     "semantic_backend_run_not_found",
                     "The semantic backend does not recognize the run.",
-                    HttpStatusCode.NotFound));
+                    HttpStatusCode.NotFound,
+                    SemanticFailureKind.NotFound));
         }
     }
 
@@ -244,4 +294,150 @@ public sealed class FakeSemanticBackendClient(TimeProvider timeProvider) : ISema
 
     public Task<bool> IsReadyAsync(CancellationToken cancellationToken) =>
         Task.FromResult(true);
+}
+
+public static class SemanticRunStatusValidator
+{
+    private const int MaximumStages = 100;
+    private const int MaximumNodesPerStage = 1_000;
+    private const int MaximumDiagnostics = 100;
+
+    public static void Validate(SemanticRunStatus status, RunId expectedRunId)
+    {
+        if (status.RunId != expectedRunId)
+        {
+            throw Invalid("The semantic backend returned a different run ID.");
+        }
+
+        if (!IsBackendState(status.State))
+        {
+            throw Invalid("The semantic backend returned an unsupported run state.");
+        }
+
+        ValidateRunTimeline(status);
+
+        if (status.TokenUsage is null ||
+            status.TokenUsage.InputTokens < 0 ||
+            status.TokenUsage.OutputTokens < 0 ||
+            status.TokenUsage.InputTokens > long.MaxValue - status.TokenUsage.OutputTokens)
+        {
+            throw Invalid("The semantic backend returned invalid token usage.");
+        }
+
+        if (status.Stages is null || status.Stages.Count > MaximumStages)
+        {
+            throw Invalid("The semantic backend returned an invalid stage collection.");
+        }
+
+        foreach (var stage in status.Stages)
+        {
+            if (stage is null ||
+                !ValidLabel(stage.StageId) ||
+                !ValidLabel(stage.Name) ||
+                !IsBackendState(stage.State) ||
+                stage.Nodes is null ||
+                stage.Nodes.Count > MaximumNodesPerStage)
+            {
+                throw Invalid("The semantic backend returned an invalid stage.");
+            }
+
+            ValidateTimeline(stage.State, stage.StartedAt, stage.CompletedAt, "stage");
+            foreach (var node in stage.Nodes)
+            {
+                if (node is null ||
+                    !ValidLabel(node.NodeId) ||
+                    !ValidLabel(node.Kind) ||
+                    !IsBackendState(node.State))
+                {
+                    throw Invalid("The semantic backend returned an invalid node.");
+                }
+
+                ValidateTimeline(node.State, node.StartedAt, node.CompletedAt, "node");
+            }
+        }
+
+        if (status.Diagnostics is null || status.Diagnostics.Count > MaximumDiagnostics)
+        {
+            throw Invalid("The semantic backend returned an invalid diagnostic collection.");
+        }
+
+        foreach (var diagnostic in status.Diagnostics)
+        {
+            if (diagnostic is null ||
+                !ValidLabel(diagnostic.Code) ||
+                string.IsNullOrWhiteSpace(diagnostic.Message) ||
+                diagnostic.Message.Length > 512 ||
+                diagnostic.OccurredAt == default ||
+                diagnostic.Stage?.Length > 64)
+            {
+                throw Invalid("The semantic backend returned an invalid diagnostic.");
+            }
+        }
+    }
+
+    private static void ValidateRunTimeline(SemanticRunStatus status)
+    {
+        if (status.State == RunState.Queued)
+        {
+            if (status.StartedAt is not null || status.FinalizedAt is not null)
+            {
+                throw Invalid("A queued run cannot have execution timestamps.");
+            }
+
+            return;
+        }
+
+        ValidateTimeline(status.State, status.StartedAt, status.FinalizedAt, "run");
+    }
+
+    private static void ValidateTimeline(
+        RunState state,
+        DateTimeOffset? startedAt,
+        DateTimeOffset? completedAt,
+        string subject)
+    {
+        if (state == RunState.Queued)
+        {
+            if (startedAt is not null || completedAt is not null)
+            {
+                throw Invalid($"The queued backend {subject} cannot have timestamps.");
+            }
+
+            return;
+        }
+
+        if (startedAt is null)
+        {
+            throw Invalid($"The backend {subject} is missing its start timestamp.");
+        }
+
+        if (state.IsTerminal())
+        {
+            if (completedAt is null || completedAt < startedAt)
+            {
+                throw Invalid($"The backend {subject} has invalid completion timestamps.");
+            }
+        }
+        else if (completedAt is not null)
+        {
+            throw Invalid($"The backend {subject} is active but has a completion timestamp.");
+        }
+    }
+
+    private static bool IsBackendState(RunState state) =>
+        state is RunState.Queued or
+            RunState.Starting or
+            RunState.Running or
+            RunState.Cancelled or
+            RunState.Succeeded or
+            RunState.Failed;
+
+    private static bool ValidLabel(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 64;
+
+    private static SemanticBackendException Invalid(string message) =>
+        new(
+            "semantic_backend_invalid_response",
+            message,
+            failureKind: SemanticFailureKind.InvalidResponse);
 }

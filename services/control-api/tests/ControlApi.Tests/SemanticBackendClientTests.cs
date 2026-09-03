@@ -88,4 +88,45 @@ public sealed class SemanticBackendClientTests
 
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
     }
+
+    [Fact]
+    public void BackendValidatorRejectsIdentityUsageCollectionAndTimelineViolations()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Status(runId, RunState.Running);
+        SemanticRunStatus[] invalidStatuses =
+        [
+            valid with { RunId = RunId.New() },
+            valid with { TokenUsage = new TokenUsage(-1, 0) },
+            valid with { Stages = null! },
+            valid with { Diagnostics = null! },
+            valid with { StartedAt = null },
+            valid with
+            {
+                State = RunState.Succeeded,
+                FinalizedAt = null
+            },
+            valid with
+            {
+                Stages =
+                [
+                    new StageSummary(
+                        "stage",
+                        "Stage",
+                        RunState.Succeeded,
+                        DateTimeOffset.UtcNow,
+                        DateTimeOffset.UtcNow.AddSeconds(-1),
+                        [])
+                ]
+            }
+        ];
+
+        foreach (var status in invalidStatuses)
+        {
+            var exception = Assert.Throws<SemanticBackendException>(() =>
+                SemanticRunStatusValidator.Validate(status, runId));
+            Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+            Assert.Equal(SemanticFailureKind.InvalidResponse, exception.FailureKind);
+        }
+    }
 }

@@ -29,14 +29,19 @@ public sealed class RepositoryTests
             created.Run.Id,
             created.Run.Version,
             default);
+        var delivered = await repository.MarkCancellationDeliveredAsync(
+            created.Run.Id,
+            default);
         var second = await repository.RequestCancellationAsync(
             created.Run.Id,
             created.Run.Version,
             default);
 
         Assert.True(first.Changed);
+        Assert.True(first.RequiresDispatch);
         Assert.False(second.Changed);
-        Assert.Equal(first.Run.Version, second.Run.Version);
+        Assert.False(second.RequiresDispatch);
+        Assert.Equal(delivered.Version, second.Run.Version);
 
         var terminalRepository = new InMemoryRunRepository(TimeProvider.System);
         var terminalCreated = await terminalRepository.CreateAsync(
@@ -126,10 +131,11 @@ public sealed class RepositoryTests
             new SemanticRunStatus(
                 created.Run.Id,
                 RunState.Succeeded,
+                DateTimeOffset.UtcNow.AddSeconds(-1),
+                DateTimeOffset.UtcNow,
                 [],
                 new TokenUsage(8, 13),
-                [],
-                DateTimeOffset.UtcNow),
+                []),
             default);
 
         var statistics = await repository.GetStatisticsAsync(default);
@@ -162,5 +168,114 @@ public sealed class RepositoryTests
             default);
 
         Assert.Equal(RunState.Succeeded, succeeded.State);
+    }
+
+    [Fact]
+    public async Task InvalidBackendStatusIsRejectedBeforeMutation()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var created = await repository.CreateAsync(
+            new CreateRunRequest("invalid-backend", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        var invalid = StubSemanticBackendClient.Status(RunId.New(), RunState.Running);
+
+        var exception = await Assert.ThrowsAsync<SemanticBackendException>(() =>
+            repository.ApplySemanticStatusAsync(
+                created.Run.Id,
+                created.Run.Version,
+                invalid,
+                default));
+        var unchanged = await repository.GetAsync(created.Run.Id, default);
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+        Assert.Equal(RunState.StartPending, unchanged!.State);
+        Assert.Equal(created.Run.Version, unchanged.Version);
+    }
+
+    [Fact]
+    public async Task StatisticsAverageOnlyInvariantTerminalRuns()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var now = DateTimeOffset.UtcNow;
+        var active = await repository.CreateAsync(
+            new CreateRunRequest("active-duration", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        await repository.ApplySemanticStatusAsync(
+            active.Run.Id,
+            active.Run.Version,
+            new SemanticRunStatus(
+                active.Run.Id,
+                RunState.Running,
+                now.AddMinutes(-30),
+                null,
+                [],
+                new TokenUsage(0, 0),
+                []),
+            default);
+
+        var terminal = await repository.CreateAsync(
+            new CreateRunRequest("terminal-duration", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        await repository.ApplySemanticStatusAsync(
+            terminal.Run.Id,
+            terminal.Run.Version,
+            new SemanticRunStatus(
+                terminal.Run.Id,
+                RunState.Succeeded,
+                now.AddSeconds(-10),
+                now,
+                [],
+                new TokenUsage(0, 0),
+                []),
+            default);
+
+        var statistics = await repository.GetStatisticsAsync(default);
+
+        Assert.Equal(10_000, statistics.AverageDurationMilliseconds);
+    }
+
+    [Fact]
+    public async Task BackendCannotRegressPersistedStartTimestamp()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var created = await repository.CreateAsync(
+            new CreateRunRequest("timestamp-regression", "synthetic-workload"),
+            "synthetic-user",
+            default);
+        var firstStart = DateTimeOffset.UtcNow;
+        var running = await repository.ApplySemanticStatusAsync(
+            created.Run.Id,
+            created.Run.Version,
+            new SemanticRunStatus(
+                created.Run.Id,
+                RunState.Running,
+                firstStart,
+                null,
+                [],
+                new TokenUsage(0, 0),
+                []),
+            default);
+
+        var exception = await Assert.ThrowsAsync<SemanticBackendException>(() =>
+            repository.ApplySemanticStatusAsync(
+                created.Run.Id,
+                running.Version,
+                new SemanticRunStatus(
+                    created.Run.Id,
+                    RunState.Succeeded,
+                    firstStart.AddMinutes(-10),
+                    firstStart.AddMinutes(-5),
+                    [],
+                    new TokenUsage(0, 0),
+                    []),
+                default));
+        var unchanged = await repository.GetAsync(created.Run.Id, default);
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+        Assert.Equal(RunState.Running, unchanged!.State);
+        Assert.Null(unchanged.CompletedAt);
     }
 }

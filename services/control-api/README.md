@@ -22,10 +22,14 @@ X-Dev-Name: Local Developer
 X-Dev-Roles: reader,contributor,admin
 ```
 
-Local authentication and the fake backend both cause startup to fail in
-`Production`. Production also requires a configured Entra authority, tenant,
-client ID, and an HTTPS semantic-backend base URI. No client secret is accepted
-or modeled. Future service-to-service credentials should use managed identity.
+Local header authentication is accepted only when the host environment is
+exactly `Development`; enabling it in Staging, QA, Test, Production, or any
+custom environment fails startup. The fake backend also fails in `Production`.
+Production requires a configured Entra authority, tenant, client ID, and an
+HTTPS semantic-backend base URI. JWT inbound claim mapping is disabled so Entra
+`scp` and `roles` claims retain their protocol names. No client secret is
+accepted or modeled. Future service-to-service credentials should use managed
+identity.
 
 ## API contract
 
@@ -53,9 +57,16 @@ Enums are serialized as strings. Errors use RFC 7807 Problem Details with a
 stable `code`, distributed `traceId`, and `correlationId`. Callers may supply a
 safe `X-Correlation-ID` containing up to 64 letters, digits, `.`, `_`, or `-`.
 
-Create idempotency is scoped to principal plus `clientRequestId`. Cancellation
-does not increment the version after it has already been requested. Feedback
-uses `submissionId` for idempotency and `expectedRunVersion` for optimistic
+Create idempotency is scoped to principal plus `clientRequestId`. A run begins
+in `StartPending`; timeout, transport loss, invalid success payload, or caller
+cancellation moves it to retryable `DispatchUnknown`, never terminal `Failed`.
+A duplicate create first reconciles by `RunId`, then repeats the idempotent
+backend start with the same `RunId` only when the backend definitively reports
+it missing. Only a definitive backend rejection marks the run failed.
+
+Cancellation persists `Pending`/`Delivered` dispatch ownership. Failed delivery
+remains retryable, while a delivered request is not posted again. Feedback uses
+`submissionId` for idempotency and `expectedRunVersion` for optimistic
 concurrency. Feedback is structured to avoid an unrestricted text/prompt field.
 
 ## Configuration
@@ -66,8 +77,10 @@ identity. Do not place tokens, connection strings, or credentials in files.
 
 - `AzureAd`: Microsoft.Identity.Web JWT bearer settings.
 - `SemanticBackend`: base URI and a bounded 1-30 second timeout. Create calls
-  intentionally have no automatic retry because they are non-idempotent across
-  the backend boundary.
+  have no transport-level retry. Control-plane reconciliation uses the stable
+  `RunId` before an explicit repeat dispatch. Responses are rejected before
+  persistence when IDs, states, timestamps, usage, diagnostics, stages, or
+  nodes violate the bounded contract.
 - `ForwardedHeaders:KnownProxies`: explicit single-hop proxy IP allowlist.
   Unknown forwarders are ignored; header symmetry is required.
 - `OpenTelemetry:Otlp:Endpoint`: optional OTLP traces, metrics, and logs.
@@ -91,6 +104,8 @@ same aggregate semantics:
 - a monotonic `version` column checked in `UPDATE ... WHERE version = ...`;
 - one transaction for run mutation plus feedback insertion;
 - finite-state transition validation before update;
+- persisted start-dispatch and cancellation-delivery ownership suitable for an
+  outbox worker, with compare-and-swap claiming in a multi-replica adapter;
 - structured JSON only for bounded stages, nodes, usage, and diagnostics.
 
 The adapter belongs in a separate persistence project or folder and must not

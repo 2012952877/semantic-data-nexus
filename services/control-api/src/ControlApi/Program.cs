@@ -40,7 +40,7 @@ var localAuthOptions = builder.Configuration
 var semanticOptions = builder.Configuration
     .GetSection(SemanticBackendOptions.SectionName)
     .Get<SemanticBackendOptions>() ?? new SemanticBackendOptions();
-ProductionSafety.Validate(
+HostingSafety.Validate(
     builder.Environment.EnvironmentName,
     localAuthOptions.Enabled,
     semanticOptions.UseFake);
@@ -194,8 +194,8 @@ if (app.Environment.IsProduction())
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseExceptionHandler();
 app.UseAuthentication();
-app.UseAuthorization();
 app.UseRateLimiter();
+app.UseAuthorization();
 
 if (app.Environment.IsDevelopment() ||
     builder.Configuration.GetValue<bool>("OpenApi:Enabled"))

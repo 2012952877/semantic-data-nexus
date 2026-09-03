@@ -62,9 +62,11 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
 {
     public bool Ready { get; set; } = true;
     public Exception? StartException { get; set; }
+    public SemanticRunStatus? StartResult { get; set; }
     public Exception? StatusException { get; set; }
     public Exception? CancelException { get; set; }
     public int StartCalls { get; private set; }
+    public int StatusCalls { get; private set; }
     public int CancelCalls { get; private set; }
     public Dictionary<RunId, SemanticRunStatus> Runs { get; } = [];
 
@@ -78,7 +80,7 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
             throw StartException;
         }
 
-        var status = Status(request.RunId, RunState.Starting);
+        var status = StartResult ?? Status(request.RunId, RunState.Starting);
         Runs[request.RunId] = status;
         return Task.FromResult(status);
     }
@@ -87,12 +89,19 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
         RunId runId,
         CancellationToken cancellationToken)
     {
+        StatusCalls++;
         if (StatusException is not null)
         {
             throw StatusException;
         }
 
-        return Task.FromResult(Runs[runId]);
+        return Task.FromResult(
+            Runs.GetValueOrDefault(runId) ??
+            throw new SemanticBackendException(
+                "semantic_backend_status_failed",
+                "Synthetic run was not found.",
+                HttpStatusCode.NotFound,
+                SemanticFailureKind.NotFound));
     }
 
     public Task RequestCancellationAsync(RunId runId, CancellationToken cancellationToken)
@@ -110,8 +119,20 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
     public Task<bool> IsReadyAsync(CancellationToken cancellationToken) =>
         Task.FromResult(Ready);
 
-    public static SemanticRunStatus Status(RunId id, RunState state) =>
-        new(id, state, [], new TokenUsage(0, 0), [], state.IsTerminal() ? DateTimeOffset.UtcNow : null);
+    public static SemanticRunStatus Status(RunId id, RunState state)
+    {
+        var now = DateTimeOffset.UtcNow;
+        DateTimeOffset? startedAt = state == RunState.Queued ? null : now.AddSeconds(-1);
+        DateTimeOffset? finalizedAt = state.IsTerminal() ? now : null;
+        return new SemanticRunStatus(
+            id,
+            state,
+            startedAt,
+            finalizedAt,
+            [],
+            new TokenUsage(0, 0),
+            []);
+    }
 }
 
 public sealed class DelegateHandler(

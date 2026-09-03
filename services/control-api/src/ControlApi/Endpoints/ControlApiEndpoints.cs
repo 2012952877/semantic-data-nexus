@@ -80,35 +80,99 @@ public static class ControlApiEndpoints
 
         var subject = GetSubject(principal);
         var result = await repository.CreateAsync(request, subject, cancellationToken);
-        if (!result.Created)
+        if (!result.Created && !result.Run.State.RequiresStartReconciliation())
         {
             return TypedResults.Ok(result.Run);
         }
 
         try
         {
-            var status = await semanticBackend.StartAsync(
-                new SemanticRunStart(
-                    result.Run.Id,
-                    result.Run.Workload,
+            var status = result.Created
+                ? await StartSemanticRun(
+                    result.Run,
                     subject,
-                    Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier),
-                cancellationToken);
+                    context,
+                    semanticBackend,
+                    cancellationToken)
+                : await ReconcileOrStartSemanticRun(
+                    result.Run,
+                    subject,
+                    context,
+                    semanticBackend,
+                    cancellationToken);
             var updated = await repository.ApplySemanticStatusAsync(
                 result.Run.Id,
                 result.Run.Version,
                 status,
-                cancellationToken);
-            return TypedResults.Accepted($"/api/v1/runs/{updated.Id}", updated);
+                CancellationToken.None);
+            return result.Created
+                ? TypedResults.Accepted($"/api/v1/runs/{updated.Id}", updated)
+                : TypedResults.Ok(updated);
         }
         catch (SemanticBackendException exception)
         {
-            await repository.MarkFailedAsync(
-                result.Run.Id,
-                exception.DiagnosticCode,
-                "The semantic backend did not accept the run.",
-                cancellationToken);
+            if (exception.FailureKind == SemanticFailureKind.Rejected)
+            {
+                await repository.MarkFailedAsync(
+                    result.Run.Id,
+                    exception.DiagnosticCode,
+                    "The semantic backend definitively rejected the run.",
+                    CancellationToken.None);
+            }
+            else
+            {
+                await repository.MarkStartDispatchUnknownAsync(
+                    result.Run.Id,
+                    exception.DiagnosticCode,
+                    CancellationToken.None);
+            }
+
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            await repository.MarkStartDispatchUnknownAsync(
+                result.Run.Id,
+                "semantic_backend_start_cancelled",
+                CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static Task<SemanticRunStatus> StartSemanticRun(
+        RunMetadata run,
+        string subject,
+        HttpContext context,
+        ISemanticBackendClient semanticBackend,
+        CancellationToken cancellationToken) =>
+        semanticBackend.StartAsync(
+            new SemanticRunStart(
+                run.Id,
+                run.Workload,
+                subject,
+                Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier),
+            cancellationToken);
+
+    private static async Task<SemanticRunStatus> ReconcileOrStartSemanticRun(
+        RunMetadata run,
+        string subject,
+        HttpContext context,
+        ISemanticBackendClient semanticBackend,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await semanticBackend.GetStatusAsync(run.Id, cancellationToken);
+        }
+        catch (SemanticBackendException exception)
+            when (exception.FailureKind == SemanticFailureKind.NotFound)
+        {
+            return await StartSemanticRun(
+                run,
+                subject,
+                context,
+                semanticBackend,
+                cancellationToken);
         }
     }
 
@@ -165,12 +229,16 @@ public static class ControlApiEndpoints
             id,
             request?.ExpectedVersion,
             cancellationToken);
-        if (result.Run.State == RunState.CancelRequested)
+        var responseRun = result.Run;
+        if (result.RequiresDispatch)
         {
             await semanticBackend.RequestCancellationAsync(id, cancellationToken);
+            responseRun = await repository.MarkCancellationDeliveredAsync(
+                id,
+                CancellationToken.None);
         }
 
-        return TypedResults.Accepted($"/api/v1/runs/{id}", result.Run);
+        return TypedResults.Accepted($"/api/v1/runs/{id}", responseRun);
     }
 
     private static async Task<IResult> GetSemanticStatus(

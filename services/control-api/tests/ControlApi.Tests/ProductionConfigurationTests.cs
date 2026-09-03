@@ -6,10 +6,10 @@ public sealed class ProductionConfigurationTests
     public void ProductionRejectsDevelopmentAuthentication()
     {
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            ProductionSafety.Validate("Production", true, false));
+            HostingSafety.Validate("Production", true, false));
 
         Assert.Contains(
-            "Local development authentication cannot be enabled in Production",
+            "Local development authentication can only be enabled in Development",
             exception.ToString(),
             StringComparison.Ordinal);
     }
@@ -18,11 +18,26 @@ public sealed class ProductionConfigurationTests
     public void ProductionRejectsFakeSemanticBackend()
     {
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            ProductionSafety.Validate("Production", false, true));
+            HostingSafety.Validate("Production", false, true));
 
         Assert.Contains(
             "fake semantic backend cannot be enabled in Production",
             exception.ToString(),
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Staging")]
+    [InlineData("QA")]
+    [InlineData("Test")]
+    public void NonDevelopmentEnvironmentsRejectHeaderAuthentication(string environment)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            HostingSafety.Validate(environment, true, false));
+
+        Assert.Contains(
+            "only be enabled in Development",
+            exception.Message,
+            StringComparison.Ordinal);
     }
 }
