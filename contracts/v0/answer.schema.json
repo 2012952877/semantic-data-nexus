@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-data-nexus.dev/contracts/v0/answer.schema.json",
+  "title": "Answer Contract v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "run_id", "question", "summary", "columns", "preview", "warnings"],
+  "properties": {
+    "contract_version": { "const": "answer/v0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "question": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string" },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "data_type"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "data_type": {
+            "enum": ["string", "integer", "number", "decimal", "boolean", "date", "datetime"]
+          }
+        }
+      }
+    },
+    "preview": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "manifest_uri": { "type": ["string", "null"] }
+  }
+}
+

@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-data-nexus.dev/contracts/v0/sqg.schema.json",
+  "title": "Semantic Query Graph v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "query_id", "ontology_version", "nodes", "root"],
+  "properties": {
+    "contract_version": { "const": "sqg/v0" },
+    "query_id": { "$ref": "#/$defs/id" },
+    "ontology_version": { "$ref": "#/$defs/id" },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/select" },
+          { "$ref": "#/$defs/filter" },
+          { "$ref": "#/$defs/aggregate" },
+          { "$ref": "#/$defs/pivot" },
+          { "$ref": "#/$defs/derive" },
+          { "$ref": "#/$defs/project" },
+          { "$ref": "#/$defs/sort" },
+          { "$ref": "#/$defs/join" }
+        ]
+      }
+    },
+    "root": { "$ref": "#/$defs/id" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![\\s\\S]*[\\r\\n])[A-Za-z][A-Za-z0-9_.-]*$"
+    },
+    "dataType": {
+      "enum": ["string", "integer", "number", "decimal", "boolean", "date", "datetime"]
+    },
+    "decimalLiteral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "decimal" },
+        "value": {
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*[\\r\\n])-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?(0|[1-9][0-9]*))?$"
+        }
+      }
+    },
+    "integerLiteral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "integer" },
+        "value": {
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*[\\r\\n])-?(0|[1-9][0-9]*)$"
+        }
+      }
+    },
+    "scalarValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "$ref": "#/$defs/decimalLiteral" }
+      ]
+    },
+    "deriveLiteral": {
+      "oneOf": [
+        { "$ref": "#/$defs/integerLiteral" },
+        { "$ref": "#/$defs/decimalLiteral" }
+      ]
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "data_type"],
+      "properties": {
+        "name": { "$ref": "#/$defs/id" },
+        "data_type": { "$ref": "#/$defs/dataType" },
+        "nullable": { "type": "boolean", "default": true }
+      }
+    },
+    "baseProperties": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "inputs": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "select": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "SELECT" },
+        "inputs": { "type": "array", "maxItems": 0 },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entity", "fields"],
+          "properties": {
+            "entity": { "$ref": "#/$defs/id" },
+            "fields": {
+              "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "filter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "FILTER" },
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["predicate"],
+          "properties": {
+            "predicate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["field", "op", "value"],
+              "properties": {
+                "field": { "$ref": "#/$defs/id" },
+                "op": {
+                  "enum": ["EQ", "NEQ", "GT", "GTE", "LT", "LTE", "IN", "NOT_IN", "CONTAINS"]
+                },
+                "value": {}
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": { "op": { "enum": ["IN", "NOT_IN"] } },
+                    "required": ["op"]
+                  },
+                  "then": {
+                    "properties": {
+                      "value": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "$ref": "#/$defs/scalarValue" }
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "value": { "$ref": "#/$defs/scalarValue" }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "measureRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "source", "name"],
+      "properties": {
+        "metric": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/id" },
+        "name": { "$ref": "#/$defs/id" }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "AGGREGATE" },
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["measures"],
+          "properties": {
+            "group_by": {
+              "type": "array", "items": { "$ref": "#/$defs/id" }, "default": []
+            },
+            "measures": {
+              "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/measureRef" }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "pivot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "PIVOT" },
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["index", "column", "value", "aggregation", "expected_columns"],
+          "properties": {
+            "index": {
+              "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" }
+            },
+            "column": { "$ref": "#/$defs/id" },
+            "value": { "$ref": "#/$defs/id" },
+            "aggregation": {
+              "enum": ["SUM", "AVG", "MIN", "MAX", "COUNT", "COUNT_DISTINCT"]
+            },
+            "expected_columns": {
+              "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "operand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "field"],
+          "properties": {
+            "kind": { "const": "field" },
+            "field": { "$ref": "#/$defs/id" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "literal" },
+            "value": { "$ref": "#/$defs/deriveLiteral" }
+          }
+        }
+      ]
+    },
+    "derive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "DERIVE" },
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expressions"],
+          "properties": {
+            "expressions": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "op", "left", "right"],
+                "properties": {
+                  "name": { "$ref": "#/$defs/id" },
+                  "op": { "enum": ["ADD", "SUBTRACT", "MULTIPLY", "DIVIDE"] },
+                  "left": { "$ref": "#/$defs/operand" },
+                  "right": { "$ref": "#/$defs/operand" }
+                }
+              }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "PROJECT" },
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fields"],
+          "properties": {
+            "fields": {
+              "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "sort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "SORT" },
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keys"],
+          "properties": {
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["field"],
+                "properties": {
+                  "field": { "$ref": "#/$defs/id" },
+                  "direction": { "enum": ["ASC", "DESC"], "default": "ASC" }
+                }
+              }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    },
+    "join": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operator", "inputs", "params", "outputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "operator": { "const": "JOIN" },
+        "inputs": {
+          "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/id" }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relation", "left_key", "right_key", "kind", "fields"],
+          "properties": {
+            "relation": { "$ref": "#/$defs/id" },
+            "left_key": { "$ref": "#/$defs/id" },
+            "right_key": { "$ref": "#/$defs/id" },
+            "kind": { "enum": ["INNER", "LEFT", "RIGHT", "FULL"] },
+            "fields": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["source", "field", "name"],
+                "properties": {
+                  "source": { "enum": ["left", "right"] },
+                  "field": { "$ref": "#/$defs/id" },
+                  "name": { "$ref": "#/$defs/id" }
+                }
+              }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/output" }
+        }
+      }
+    }
+  }
+}

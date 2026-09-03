@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-data-nexus.dev/contracts/v0/run-state.schema.json",
+  "title": "Run State v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "run_id", "status", "created_at", "updated_at", "stages"],
+  "properties": {
+    "contract_version": { "const": "run-state/v0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["pending", "running", "succeeded", "failed", "cancelled"]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "error": { "type": ["string", "null"] },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage_id", "status", "nodes"],
+        "properties": {
+          "stage_id": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": ["pending", "running", "succeeded", "failed", "cancelled"]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["node_id", "status"],
+              "properties": {
+                "node_id": { "type": "string", "minLength": 1 },
+                "status": {
+                  "enum": ["pending", "running", "succeeded", "failed", "cancelled"]
+                },
+                "attempt": { "type": "integer", "minimum": 1, "default": 1 },
+                "error": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

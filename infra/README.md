@@ -2,6 +2,8 @@
 
 This directory defines a clean-room, resource group-scoped Azure baseline for a semantic natural-language analytics platform. The baseline creates no proprietary data, prompts, model deployments, tenant-specific identifiers, credentials, or application configuration.
 
+The baseline was delivered independently from the P0 semantic contract foundation. The semantic core does not depend on Azure, and the architecture remains locally runnable. See the [Azure reference architecture](../docs/architecture/azure-reference.md) for ownership boundaries and local equivalents.
+
 ## Topology
 
 The deployment creates:

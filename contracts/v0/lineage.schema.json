@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-data-nexus.dev/contracts/v0/lineage.schema.json",
+  "title": "Lineage Contract v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "run_id", "nodes", "edges"],
+  "properties": {
+    "contract_version": { "const": "lineage/v0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "name"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["entity", "field", "metric", "sqg_node", "result"] },
+          "name": { "type": "string", "minLength": 1 },
+          "attributes": { "type": "object" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "kind"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["reads", "derives", "produces"] }
+        }
+      }
+    }
+  }
+}
+
