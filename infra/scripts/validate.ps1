@@ -5,14 +5,17 @@ param(
     [string]$Environment = 'dev',
     [string]$PostgresEntraAdministratorObjectId,
     [string]$PostgresEntraAdministratorPrincipalName,
-    [string]$PostgresFirewallIpAddress
+    [string[]]$PostgresFirewallIpAddress,
+    [string]$StackName
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $templateFile = Join-Path $repoRoot 'infra\bicep\main.bicep'
 $parameterFile = Join-Path $repoRoot "infra\bicep\parameters\$Environment.bicepparam"
-$compiledParameters = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.json')
+$compiledParameters = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
+$runtimeParameters = Join-Path ([System.IO.Path]::GetTempPath()) "$([guid]::NewGuid()).json"
+$runtimeParameterScript = Join-Path $PSScriptRoot 'New-RuntimeParameters.ps1'
 
 try {
     az bicep version --only-show-errors | Out-Null
@@ -35,42 +38,56 @@ try {
         return
     }
 
+    if ([string]::IsNullOrWhiteSpace($StackName)) {
+        $StackName = "sdn-$Environment"
+    }
+
     if ([string]::IsNullOrWhiteSpace($PostgresEntraAdministratorObjectId) -or
         [string]::IsNullOrWhiteSpace($PostgresEntraAdministratorPrincipalName) -or
-        [string]::IsNullOrWhiteSpace($PostgresFirewallIpAddress)) {
-        throw 'PostgreSQL Entra administrator and exact firewall IP parameters are required for what-if.'
+        -not $PSBoundParameters.ContainsKey('PostgresFirewallIpAddress')) {
+        throw 'PostgreSQL Entra administrator and an explicit firewall selection are required for what-if. Use @() to preview removal of all managed rules.'
     }
 
-    $parsedIpAddress = $null
-    $isValidIpAddress = [System.Net.IPAddress]::TryParse($PostgresFirewallIpAddress, [ref]$parsedIpAddress)
-    if (-not $isValidIpAddress -or
-        $parsedIpAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
-        $PostgresFirewallIpAddress -in @('0.0.0.0', '255.255.255.255')) {
-        throw 'PostgresFirewallIpAddress must be one exact, routable IPv4 address.'
+    & $runtimeParameterScript `
+        -OutputPath $runtimeParameters `
+        -BaseParametersPath $compiledParameters `
+        -PostgresEntraAdministratorObjectId $PostgresEntraAdministratorObjectId `
+        -PostgresEntraAdministratorPrincipalName $PostgresEntraAdministratorPrincipalName `
+        -PostgresFirewallIpAddress $PostgresFirewallIpAddress
+
+    az stack-whatif group create --help 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Install an Azure CLI release that includes the GA az stack-whatif command before running an authenticated preview.'
     }
 
-    $allowedIpAddresses = ConvertTo-Json -Compress -InputObject @($PostgresFirewallIpAddress)
-
-    az account show --only-show-errors | Out-Null
+    $subscriptionId = az account show --query id --output tsv --only-show-errors
     if ($LASTEXITCODE -ne 0) {
         throw 'Azure authentication is required for what-if.'
     }
 
-    az deployment group what-if `
+    $stackId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Resources/deploymentStacks/$StackName"
+    $whatIfResultName = "$StackName-preview"
+
+    az stack-whatif group create `
+        --name $whatIfResultName `
         --resource-group $ResourceGroup `
+        --stack-id $stackId `
         --template-file $templateFile `
-        --parameters $parameterFile `
-        --parameters postgresEntraAdministratorObjectId=$PostgresEntraAdministratorObjectId `
-                     postgresEntraAdministratorPrincipalName=$PostgresEntraAdministratorPrincipalName `
-                     "postgresAllowedIpAddresses=$allowedIpAddresses" `
+        --parameters $runtimeParameters `
+        --action-on-unmanage deleteResources `
+        --deny-settings-mode none `
+        --retention-interval PT3H `
         --no-pretty-print `
         --only-show-errors
     if ($LASTEXITCODE -ne 0) {
-        throw 'Azure deployment what-if failed.'
+        throw 'Azure deployment stack what-if failed.'
     }
 }
 finally {
     if (Test-Path -LiteralPath $compiledParameters) {
         Remove-Item -LiteralPath $compiledParameters -Force
+    }
+    if (Test-Path -LiteralPath $runtimeParameters) {
+        Remove-Item -LiteralPath $runtimeParameters -Force
     }
 }

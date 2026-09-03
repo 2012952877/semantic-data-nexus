@@ -63,7 +63,9 @@ Do not emit secret URIs containing sensitive query strings or secret values. A K
 
 ## Networking hardening
 
-Development and the deployable production example use authenticated public endpoints because this baseline does not create private network paths. PostgreSQL still blocks every public client by default: `postgresAllowedIpAddresses` is empty. Supply only exact operator or stable workload egress IPv4 addresses required for M0. The module creates one exact-address firewall rule per value; never use `0.0.0.0`, and remove bootstrap rules after use.
+Development and the deployable production example use authenticated public endpoints because this baseline does not create private network paths. On a new deployment, PostgreSQL blocks every public client by default because `postgresAllowedIpAddresses` is empty. Supply only exact operator or stable workload egress IPv4 addresses required for M0. The module creates one exact-address firewall rule per value; never use `0.0.0.0`.
+
+Deploy and update through the same Azure deployment stack with `action-on-unmanage=deleteResources`. Deployment stacks delete managed firewall child resources removed from the array; incremental resource-group deployments leave them behind. Use `az stack-whatif group create` through `validate.ps1` to preview stack-managed deletions, then confirm the removed rule no longer appears after reconciliation. This preview requires an Azure CLI release where `az stack-whatif --help` succeeds.
 
 Container Apps consumption egress addresses are not a production stability boundary. If a development deployment temporarily allowlists its reported outbound addresses, revisit the rules after environment changes. Production should use VNet integration, controlled egress, or PostgreSQL private access.
 
@@ -82,6 +84,7 @@ Private endpoint support for ACR requires Premium. Validate regional feature ava
 - Development APIs scale to zero. Production keeps at least one replica; use two or more replicas across availability zones when the service and region support it.
 - Tune HTTP concurrency using measured latency and CPU/memory saturation, not request count alone.
 - Keep the worker idempotent. Use run identifiers, deterministic result paths, and conditional writes so retries cannot corrupt manifests.
+- Set `useWorkerPlaceholderCommand=false` for a real worker image so Container Apps uses the image's own `ENTRYPOINT` and `CMD`.
 - Set explicit job timeout, retry limits, and dead-letter behavior in the application workflow.
 - PostgreSQL production defaults to zone-redundant high availability. Confirm the selected region supports the requested zone topology.
 - Use immutable image tags or digests and retain the prior healthy Container Apps revision for rollback.
@@ -127,7 +130,7 @@ Create budgets and anomaly alerts per environment and require `environment`, `wo
 ## Change procedure
 
 1. Build the Bicep and parameter files locally.
-2. Run resource-group what-if and review deletes, replacements, RBAC changes, network exposure, and SKU changes.
+2. Run stack-aware what-if through `infra/scripts/validate.ps1` and review deletes, replacements, RBAC changes, network exposure, and SKU changes.
 3. Deploy development first and run identity, ingress, diagnostics, and restore smoke tests.
 4. Promote the same template with production parameters through an approved federated deployment identity.
 5. Store no Azure credentials in GitHub. Use OpenID Connect workload federation if deployment CI is added later.

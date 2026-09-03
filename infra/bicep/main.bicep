@@ -70,7 +70,7 @@ param postgresBackupRetentionDays int = environment == 'prod' ? 35 : 7
 @description('Enable zone-redundant PostgreSQL high availability.')
 param postgresZoneRedundant bool = environment == 'prod'
 
-@description('Exact PostgreSQL firewall IP addresses for operators or stable workload egress. Empty keeps all public clients blocked.')
+@description('Exact PostgreSQL firewall IP addresses for operators or stable workload egress. A new deployment creates no rules when empty; use a deployment stack to reconcile removals.')
 param postgresAllowedIpAddresses array = []
 
 @description('Object ID of the PostgreSQL Microsoft Entra administrator. Override the synthetic example value at deployment time.')
@@ -98,6 +98,9 @@ param semanticApiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
 @description('Container image used by the worker job placeholder.')
 param workerImage string = 'mcr.microsoft.com/azurelinux/base/core:3.0'
+
+@description('Run the explicit echo command for the base-image worker placeholder. Set false for a real worker image so its ENTRYPOINT and CMD are preserved.')
+param useWorkerPlaceholderCommand bool = true
 
 var uniqueSuffix = take(uniqueString(subscription().id, resourceGroup().id), 6)
 var namePrefix = toLower('${workloadName}-${environment}')
@@ -290,6 +293,7 @@ module containerApps 'modules/container-apps.bicep' = {
     controlApiImage: controlApiImage
     semanticApiImage: semanticApiImage
     workerImage: workerImage
+    useWorkerPlaceholderCommand: useWorkerPlaceholderCommand
     minReplicas: environment == 'prod' ? 1 : 0
     tags: commonTags
   }

@@ -14,8 +14,19 @@ param webImage string
 param controlApiImage string
 param semanticApiImage string
 param workerImage string
+param useWorkerPlaceholderCommand bool
 param minReplicas int
 param tags object
+
+var workerCommandOverride = useWorkerPlaceholderCommand ? {
+  command: [
+    '/bin/sh'
+    '-c'
+  ]
+  args: [
+    'echo "worker placeholder ready"'
+  ]
+} : {}
 
 resource webIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' existing = {
   name: webIdentityName
@@ -288,7 +299,7 @@ resource workerJob 'Microsoft.App/jobs@2025-01-01' = {
     }
     template: {
       containers: [
-        {
+        union({
           name: 'worker'
           image: workerImage
           env: [
@@ -297,18 +308,11 @@ resource workerJob 'Microsoft.App/jobs@2025-01-01' = {
               value: workerIdentity.properties.clientId
             }
           ]
-          command: [
-            '/bin/sh'
-            '-c'
-          ]
-          args: [
-            'echo "worker placeholder ready"'
-          ]
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
           }
-        }
+        }, workerCommandOverride)
       ]
     }
   }

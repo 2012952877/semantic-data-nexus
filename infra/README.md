@@ -21,7 +21,7 @@ APIM, Front Door, private endpoints, DNS zones, and hub networking are intention
 
 ## Prerequisites
 
-- Azure CLI and Bicep CLI.
+- Azure CLI and Bicep CLI. Authenticated previews require a current Azure CLI release where `az stack-whatif --help` succeeds.
 - Permission to create resources and role assignments in the target resource group. `Owner` or `User Access Administrator` plus `Contributor` is normally required for the initial deployment.
 - Registered resource providers for the services in `infra/bicep/main.bicep`.
 - A pre-created resource group in the selected Azure region.
@@ -53,7 +53,7 @@ Static validation requires no Azure subscription:
 .\infra\scripts\validate.ps1
 ```
 
-Run a non-mutating what-if after signing in:
+Run a non-mutating, stack-aware what-if after signing in. This previews resources that `deleteResources` will remove:
 
 ```powershell
 az login
@@ -65,6 +65,8 @@ az login
   -PostgresFirewallIpAddress <public-ip>
 ```
 
+To preview revoking every managed PostgreSQL firewall rule, pass `-PostgresFirewallIpAddress @()` explicitly.
+
 The CI workflow performs only Bicep build and parameter compilation, so pull requests do not require federated Azure credentials.
 
 ## Deploy
@@ -72,21 +74,40 @@ The CI workflow performs only Bicep build and parameter compilation, so pull req
 The committed parameter files contain an all-zero synthetic PostgreSQL administrator object ID and an empty allowed-IP list. They are safe examples, not unattended deployment inputs. Override the administrator and exact firewall IP values for every what-if and deployment:
 
 ```powershell
-$postgresAllowedIpAddresses = @('<operator-public-ip>', '<stable-workload-egress-ip>') | ConvertTo-Json -Compress
+$runtimeParametersFile = Join-Path $env:TEMP 'sdn.runtime.parameters.json'
+$baseParametersFile = Join-Path $env:TEMP 'sdn.base.parameters.json'
+az bicep build-params `
+  --file .\infra\bicep\parameters\dev.bicepparam `
+  --outfile $baseParametersFile `
+  --only-show-errors
 
-az deployment group create `
+.\infra\scripts\New-RuntimeParameters.ps1 `
+  -OutputPath $runtimeParametersFile `
+  -BaseParametersPath $baseParametersFile `
+  -PostgresEntraAdministratorObjectId <object-id> `
+  -PostgresEntraAdministratorPrincipalName <display-name> `
+  -PostgresFirewallIpAddress <operator-public-ip>,<stable-workload-egress-ip>
+
+az stack group create `
+  --name sdn-dev `
   --resource-group <resource-group> `
   --template-file .\infra\bicep\main.bicep `
   --parameters .\infra\bicep\parameters\dev.bicepparam `
-  --parameters postgresEntraAdministratorObjectId=<object-id> `
-               postgresEntraAdministratorPrincipalName=<display-name> `
-               postgresEntraAdministratorPrincipalType=Group `
-               "postgresAllowedIpAddresses=$postgresAllowedIpAddresses"
+               $runtimeParametersFile `
+  --action-on-unmanage 'deleteResources' `
+  --deny-settings-mode 'none'
+
+Remove-Item -LiteralPath $runtimeParametersFile
+Remove-Item -LiteralPath $baseParametersFile
 ```
 
-No password bootstrap path is provided. The empty firewall default blocks all public PostgreSQL clients. Use exact operator IPs for bootstrap and exact stable workload egress IPs for M0; never use an all-address range. For production, replace public firewall access with private connectivity.
+Use the same stack name for every update. `deleteResources` makes the stack authoritative: when an IP is removed from `postgresAllowedIpAddresses`, its managed firewall child resource is deleted. A plain incremental `az deployment group create` does not delete removed rules and must not be used for reconciliation. If the original deployment predates the stack, the first stack update adopts the existing resources; run the stack-aware what-if in `validate.ps1` before continuing.
+
+No password bootstrap path is provided. On a new deployment, the empty firewall default creates no public PostgreSQL rules. Use exact operator IPs for bootstrap and exact stable workload egress IPs for M0; never use an all-address range. To revoke an IP, remove it from the runtime parameter file and update the same deployment stack. For production, replace public firewall access with private connectivity.
 
 Each container receives its assigned identity's client ID through `AZURE_CLIENT_ID`. Application code should use `DefaultAzureCredential`, which selects that user-assigned identity in Azure, or construct `ManagedIdentityCredential` with the same client ID explicitly.
+
+The default worker image is a non-application placeholder, so `useWorkerPlaceholderCommand` defaults to `true` and runs a short echo command. When supplying a real worker image, set `useWorkerPlaceholderCommand=false`; the job then preserves the image's `ENTRYPOINT` and `CMD`.
 
 ## Cost-sensitive defaults
 
@@ -117,10 +138,13 @@ See [Azure deployment operations](../docs/operations/azure-deployment.md) for id
 
 ## Teardown
 
-For an isolated development resource group, preview and then delete the resource group:
+For stack-managed resources, remove the stack and its managed resources:
 
 ```powershell
-az group delete --name <resource-group> --no-wait
+az stack group delete `
+  --name sdn-dev `
+  --resource-group <resource-group> `
+  --action-on-unmanage 'deleteResources'
 ```
 
 Key Vault soft delete retains the vault after resource group deletion. Production purge protection is irreversible and prevents immediate purge. Retain or export required PostgreSQL and Blob data before teardown.
