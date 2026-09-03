@@ -48,6 +48,18 @@
         }
       }
     },
+    "integerLiteral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "integer" },
+        "value": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)$"
+        }
+      }
+    },
     "scalarValue": {
       "oneOf": [
         { "type": ["string", "number", "boolean", "null"] },
@@ -56,7 +68,7 @@
     },
     "deriveLiteral": {
       "oneOf": [
-        { "type": ["string", "integer", "boolean", "null"] },
+        { "$ref": "#/$defs/integerLiteral" },
         { "$ref": "#/$defs/decimalLiteral" }
       ]
     },

@@ -81,7 +81,10 @@ def test_valid_derive_expression() -> None:
                             "name": "double_profit",
                             "op": "MULTIPLY",
                             "left": {"kind": "field", "field": "profit"},
-                            "right": {"kind": "literal", "value": 2},
+                            "right": {
+                                "kind": "literal",
+                                "value": {"kind": "integer", "value": "2"},
+                            },
                         }
                     ]
                 },
@@ -170,7 +173,10 @@ def test_derived_lineage_is_not_a_direct_metric_binding() -> None:
                             "name": "derived_profit",
                             "op": "ADD",
                             "left": {"kind": "field", "field": "profit"},
-                            "right": {"kind": "literal", "value": 0},
+                            "right": {
+                                "kind": "literal",
+                                "value": {"kind": "integer", "value": "0"},
+                            },
                         }
                     ]
                 },
@@ -257,7 +263,10 @@ def test_derived_lineage_is_not_a_direct_join_key() -> None:
                             "name": "derived_customer_id",
                             "op": "ADD",
                             "left": {"kind": "field", "field": "customer_id"},
-                            "right": {"kind": "literal", "value": 0},
+                            "right": {
+                                "kind": "literal",
+                                "value": {"kind": "integer", "value": "0"},
+                            },
                         }
                     ]
                 },
@@ -311,7 +320,7 @@ def test_derived_lineage_is_not_a_direct_join_key() -> None:
         "root": "join_customer",
     }
     sqg = SemanticQueryGraph.model_validate(data)
-    with pytest.raises(SemanticValidationError, match="requires join keys"):
+    with pytest.raises(SemanticValidationError, match="requires one direct join-key"):
         validate_sqg(sqg, ontology)
 
 
@@ -332,7 +341,10 @@ def test_derive_output_type_is_inferred() -> None:
                             "name": "double_profit",
                             "op": "MULTIPLY",
                             "left": {"kind": "field", "field": "profit"},
-                            "right": {"kind": "literal", "value": 2},
+                            "right": {
+                                "kind": "literal",
+                                "value": {"kind": "integer", "value": "2"},
+                            },
                         }
                     ]
                 },
@@ -517,5 +529,110 @@ def test_valid_pivot_and_join() -> None:
         {"name": "manager", "data_type": "string"},
     ]
     sqg_without_key = SemanticQueryGraph.model_validate(missing_keys)
-    with pytest.raises(SemanticValidationError, match="requires join keys"):
+    with pytest.raises(SemanticValidationError, match="requires one direct join-key"):
         validate_sqg(sqg_without_key, _ontology())
+
+
+def test_reversed_join_orientation_uses_matching_direct_bindings() -> None:
+    ontology = Ontology.model_validate(
+        {
+            "contract_version": "ontology/v0",
+            "ontology_id": "orientation_demo",
+            "version": "orientation.v1",
+            "entities": [
+                {
+                    "id": "accounts",
+                    "fields": [{"id": "account_id", "data_type": "integer"}],
+                },
+                {
+                    "id": "orders",
+                    "fields": [{"id": "account_id", "data_type": "integer"}],
+                },
+            ],
+            "relations": [
+                {
+                    "id": "account_orders",
+                    "left_entity": "accounts",
+                    "right_entity": "orders",
+                    "left_field": "account_id",
+                    "right_field": "account_id",
+                    "cardinality": "one_to_many",
+                }
+            ],
+        }
+    )
+    data = {
+        "contract_version": "sqg/v0",
+        "query_id": "reversed_orientation",
+        "ontology_version": "orientation.v1",
+        "nodes": [
+            {
+                "id": "select_accounts",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {"entity": "accounts", "fields": ["account_id"]},
+                "outputs": [{"name": "account_id", "data_type": "integer"}],
+            },
+            {
+                "id": "select_orders",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {"entity": "orders", "fields": ["account_id"]},
+                "outputs": [{"name": "account_id", "data_type": "integer"}],
+            },
+            {
+                "id": "join_once",
+                "operator": "JOIN",
+                "inputs": ["select_accounts", "select_orders"],
+                "params": {
+                    "relation": "account_orders",
+                    "kind": "INNER",
+                    "fields": [
+                        {
+                            "source": "right",
+                            "field": "account_id",
+                            "name": "order_account_id",
+                        }
+                    ],
+                },
+                "outputs": [
+                    {"name": "order_account_id", "data_type": "integer"}
+                ],
+            },
+            {
+                "id": "select_accounts_again",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {"entity": "accounts", "fields": ["account_id"]},
+                "outputs": [{"name": "account_id", "data_type": "integer"}],
+            },
+            {
+                "id": "join_reversed",
+                "operator": "JOIN",
+                "inputs": ["join_once", "select_accounts_again"],
+                "params": {
+                    "relation": "account_orders",
+                    "kind": "INNER",
+                    "fields": [
+                        {
+                            "source": "left",
+                            "field": "order_account_id",
+                            "name": "order_account_id",
+                        },
+                        {
+                            "source": "right",
+                            "field": "account_id",
+                            "name": "account_id",
+                        },
+                    ],
+                },
+                "outputs": [
+                    {"name": "order_account_id", "data_type": "integer"},
+                    {"name": "account_id", "data_type": "integer"},
+                ],
+            },
+        ],
+        "root": "join_reversed",
+    }
+    sqg = SemanticQueryGraph.model_validate(data)
+    validate_sqg(sqg, ontology)

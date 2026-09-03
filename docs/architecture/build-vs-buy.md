@@ -119,7 +119,7 @@ flowchart LR
 - WrenAI：[README](https://github.com/Canner/WrenAI/blob/main/README.md)、[LICENSE](https://github.com/Canner/WrenAI/blob/main/LICENSE)、[Open Core](https://getwren.ai/open-core)
 - Vanna：[README](https://github.com/vanna-ai/vanna/blob/main/README.md)、[LICENSE](https://github.com/vanna-ai/vanna/blob/main/LICENSE.txt)、[Build vs Buy](https://vanna.ai/premium)
 - DB-GPT：[README](https://github.com/eosphoros-ai/DB-GPT/blob/main/README.md)、[LICENSE](https://github.com/eosphoros-ai/DB-GPT/blob/main/LICENSE)
-- Microsoft semantic models：[Analysis Services platforms](https://learn.microsoft.com/analysis-services/ssas-overview)、[Power BI semantic models](https://learn.microsoft.com/power-bi/connect-data/service-datasets-understand)
+- Microsoft semantic models：[Azure Analysis Services overview](https://learn.microsoft.com/azure/analysis-services/analysis-services-overview)、[Power BI semantic models](https://learn.microsoft.com/power-bi/connect-data/service-datasets-understand)
 - Azure Databricks：[Unity Catalog semantics](https://learn.microsoft.com/azure/databricks/uc-semantics/)、[Metric views](https://learn.microsoft.com/azure/databricks/uc-semantics/metric-views/)
 - MetricFlow：[README/Licensing history](https://github.com/dbt-labs/metricflow/blob/main/README.md)、[dbt docs](https://docs.getdbt.com/docs/build/metricflow-commands)
 - Cube：[Cube Core README](https://github.com/cube-js/cube/blob/master/README.md)、[Cube docs](https://docs.cube.dev/docs/introduction)

@@ -129,41 +129,54 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 )
             left_entities = node_entities[node.inputs[0]]
             right_entities = node_entities[node.inputs[1]]
+            orientations: list[
+                tuple[tuple[str, str], tuple[str, str]]
+            ] = []
             if (
                 relation.left_entity in left_entities
                 and relation.right_entity in right_entities
             ):
-                left_key, right_key = relation.left_field, relation.right_field
-            elif (
+                orientations.append(
+                    (
+                        (relation.left_entity, relation.left_field),
+                        (relation.right_entity, relation.right_field),
+                    )
+                )
+            if (
                 relation.right_entity in left_entities
                 and relation.left_entity in right_entities
             ):
-                left_key, right_key = relation.right_field, relation.left_field
-            else:
+                orientations.append(
+                    (
+                        (relation.right_entity, relation.right_field),
+                        (relation.left_entity, relation.left_field),
+                    )
+                )
+            if not orientations:
                 raise SemanticValidationError(
                     f"relation {relation.id!r} does not connect join inputs "
                     f"{sorted(left_entities)!r} and {sorted(right_entities)!r}"
                 )
-            left_source = next(
-                entity
-                for entity in (relation.left_entity, relation.right_entity)
-                if entity in left_entities
-            )
-            right_source = (
-                relation.right_entity
-                if left_source == relation.left_entity
-                else relation.left_entity
-            )
-            if not any(
-                (left_source, left_key) in bindings
-                for bindings in input_bindings[0].values()
-            ) or not any(
-                (right_source, right_key) in bindings
-                for bindings in input_bindings[1].values()
-            ):
+            matching_orientations = [
+                orientation
+                for orientation in orientations
+                if any(
+                    orientation[0] in bindings
+                    for bindings in input_bindings[0].values()
+                )
+                and any(
+                    orientation[1] in bindings
+                    for bindings in input_bindings[1].values()
+                )
+            ]
+            if not matching_orientations:
+                required = [
+                    f"{left[0]}.{left[1]} -> {right[0]}.{right[1]}"
+                    for left, right in orientations
+                ]
                 raise SemanticValidationError(
-                    f"relation {relation.id!r} requires join keys "
-                    f"{left_key!r} and {right_key!r} to remain available"
+                    f"relation {relation.id!r} requires one direct join-key "
+                    f"orientation to remain available: {required!r}"
                 )
         node_entities[node.id] = inherited_entities
         if isinstance(node, (FilterNode, SortNode, ProjectNode)):

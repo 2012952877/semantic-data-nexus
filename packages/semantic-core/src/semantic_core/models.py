@@ -29,6 +29,14 @@ class DecimalLiteral(ContractModel):
     ]
 
 
+class IntegerLiteral(ContractModel):
+    kind: Literal["integer"]
+    value: Annotated[str, Field(pattern=r"^-?(0|[1-9][0-9]*)$")]
+
+
+NumericLiteral = Annotated[
+    Union[IntegerLiteral, DecimalLiteral], Field(discriminator="kind")
+]
 JsonScalar = str | StrictInt | StrictFloat | StrictBool | None | DecimalLiteral
 
 
@@ -232,15 +240,7 @@ class FieldOperand(ContractModel):
 
 class LiteralOperand(ContractModel):
     kind: Literal["literal"]
-    value: JsonScalar
-
-    @model_validator(mode="after")
-    def floats_use_tagged_decimal(self) -> LiteralOperand:
-        if isinstance(self.value, float):
-            raise ValueError(
-                "DERIVE floating-point literals must use the tagged decimal form"
-            )
-        return self
+    value: NumericLiteral
 
 
 ScalarOperand = Annotated[Union[FieldOperand, LiteralOperand], Field(discriminator="kind")]
@@ -641,22 +641,12 @@ class SemanticQueryGraph(ContractModel):
         for operand in (expression.left, expression.right):
             if isinstance(operand, FieldOperand):
                 operand_types.append(available[operand.field].data_type)
-            elif isinstance(operand.value, bool) or operand.value is None:
-                raise ValueError(
-                    f"node {node_id!r} derive expression {expression.name!r} "
-                    "requires numeric operands"
-                )
-            elif isinstance(operand.value, int):
+            elif isinstance(operand.value, IntegerLiteral):
                 operand_types.append(DataType.INTEGER)
-            elif isinstance(operand.value, float):
-                operand_types.append(DataType.NUMBER)
             elif isinstance(operand.value, DecimalLiteral):
                 operand_types.append(DataType.DECIMAL)
             else:
-                raise ValueError(
-                    f"node {node_id!r} derive expression {expression.name!r} "
-                    "requires numeric operands"
-                )
+                raise AssertionError(f"unsupported literal: {type(operand.value).__name__}")
 
         numeric_types = {DataType.INTEGER, DataType.NUMBER, DataType.DECIMAL}
         if any(operand_type not in numeric_types for operand_type in operand_types):

@@ -92,7 +92,8 @@ def test_decimal_literal_matches_schema_and_model() -> None:
     assert sqg.nodes[1].params.predicate.value.value == exact
 
 
-def test_derive_rejects_bare_float_in_schema_and_model() -> None:
+@pytest.mark.parametrize("bare_float", [1.0, 1.1])
+def test_derive_rejects_bare_float_in_schema_and_model(bare_float: float) -> None:
     schema = json.loads((ROOT / "contracts" / "v0" / "sqg.schema.json").read_text())
     instance = json.loads(
         (ROOT / "examples" / "regional-quarter-profit.json").read_text()
@@ -107,7 +108,7 @@ def test_derive_rejects_bare_float_in_schema_and_model() -> None:
                     "name": "scaled_profit",
                     "op": "MULTIPLY",
                     "left": {"kind": "field", "field": "profit"},
-                    "right": {"kind": "literal", "value": 1.1},
+                    "right": {"kind": "literal", "value": bare_float},
                 }
             ]
         },
@@ -121,7 +122,7 @@ def test_derive_rejects_bare_float_in_schema_and_model() -> None:
     instance["nodes"] = instance["nodes"][:2] + [derive]
     instance["root"] = "derive_float"
     assert list(Draft202012Validator(schema).iter_errors(instance))
-    with pytest.raises(PydanticValidationError, match="tagged decimal"):
+    with pytest.raises(PydanticValidationError):
         SemanticQueryGraph.model_validate(instance)
 
 
