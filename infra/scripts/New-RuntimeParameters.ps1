@@ -22,10 +22,16 @@ $ErrorActionPreference = 'Stop'
 foreach ($ipAddress in $PostgresFirewallIpAddress) {
     $parsedIpAddress = $null
     $isValidIpAddress = [System.Net.IPAddress]::TryParse($ipAddress, [ref]$parsedIpAddress)
-    if (-not $isValidIpAddress -or
-        $parsedIpAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
-        $ipAddress -in @('0.0.0.0', '255.255.255.255')) {
-        throw 'PostgresFirewallIpAddress values must be exact IPv4 addresses and cannot be all-address sentinels.'
+    if (-not $isValidIpAddress -or $parsedIpAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        throw 'PostgresFirewallIpAddress values must be canonical dotted-decimal IPv4 addresses.'
+    }
+
+    $canonicalIpAddress = $parsedIpAddress.ToString()
+    if ($canonicalIpAddress -in @('0.0.0.0', '255.255.255.255')) {
+        throw 'PostgresFirewallIpAddress values cannot be all-address sentinels.'
+    }
+    if ($ipAddress -cne $canonicalIpAddress) {
+        throw "PostgresFirewallIpAddress '$ipAddress' must use canonical dotted-decimal form '$canonicalIpAddress'."
     }
 }
 

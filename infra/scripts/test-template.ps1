@@ -143,18 +143,27 @@ try {
         throw 'Runtime parameter generation must preserve an explicit empty array for full firewall revocation.'
     }
 
-    try {
-        & $runtimeParameterScript `
-            -OutputPath $runtimeParametersFile `
-            -BaseParametersPath $baseParametersFile `
-            -PostgresEntraAdministratorObjectId '00000000-0000-0000-0000-000000000000' `
-            -PostgresEntraAdministratorPrincipalName 'example-group' `
-            -PostgresFirewallIpAddress '0.0.0.0'
-        throw 'Runtime parameter generation accepted a broad PostgreSQL firewall sentinel.'
-    }
-    catch {
-        if ($_.Exception.Message -notmatch 'all-address sentinels') {
-            throw
+    $invalidIpAddresses = @(
+        @{ Value = '0.0.0.0'; ExpectedError = 'all-address sentinels' }
+        @{ Value = '255.255.255.255'; ExpectedError = 'all-address sentinels' }
+        @{ Value = '0.0.0.00'; ExpectedError = 'all-address sentinels' }
+        @{ Value = '255.255.255.0377'; ExpectedError = 'all-address sentinels' }
+        @{ Value = '010.000.000.001'; ExpectedError = 'canonical dotted-decimal form' }
+    )
+    foreach ($invalidIpAddress in $invalidIpAddresses) {
+        try {
+            & $runtimeParameterScript `
+                -OutputPath $runtimeParametersFile `
+                -BaseParametersPath $baseParametersFile `
+                -PostgresEntraAdministratorObjectId '00000000-0000-0000-0000-000000000000' `
+                -PostgresEntraAdministratorPrincipalName 'example-group' `
+                -PostgresFirewallIpAddress $invalidIpAddress.Value
+            throw "Runtime parameter generation accepted invalid PostgreSQL firewall address '$($invalidIpAddress.Value)'."
+        }
+        catch {
+            if ($_.Exception.Message -notmatch $invalidIpAddress.ExpectedError) {
+                throw
+            }
         }
     }
 }
