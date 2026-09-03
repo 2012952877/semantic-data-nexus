@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from semantic_core.models import (
     AggregateNode,
     DeriveNode,
@@ -20,6 +22,30 @@ class SemanticValidationError(ValueError):
     """Raised when a structurally valid SQG violates ontology semantics."""
 
 
+@dataclass(frozen=True)
+class DirectBinding:
+    entity: str
+    field: str
+    nullable: bool
+
+
+def _matches_source(binding: DirectBinding, source: tuple[str, str]) -> bool:
+    return (binding.entity, binding.field) == source
+
+
+def _with_effective_nullability(
+    bindings: set[DirectBinding], nullable: bool
+) -> set[DirectBinding]:
+    return {
+        DirectBinding(
+            entity=binding.entity,
+            field=binding.field,
+            nullable=binding.nullable or nullable,
+        )
+        for binding in bindings
+    }
+
+
 def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
     if sqg.ontology_version != ontology.version:
         raise SemanticValidationError(
@@ -35,7 +61,7 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
     relations = {relation.id: relation for relation in ontology.relations}
     node_entities: dict[str, set[str]] = {}
     node_lineage: dict[str, dict[str, set[tuple[str, str]]]] = {}
-    node_bindings: dict[str, dict[str, set[tuple[str, str]]]] = {}
+    node_bindings: dict[str, dict[str, set[DirectBinding]]] = {}
 
     for node in sqg.nodes:
         if isinstance(node, SelectNode):
@@ -65,10 +91,19 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                     )
             node_entities[node.id] = {node.params.entity}
             direct = {
+                output.name: {
+                    DirectBinding(
+                        entity=node.params.entity,
+                        field=output.name,
+                        nullable=output.nullable,
+                    )
+                }
+                for output in node.outputs
+            }
+            node_lineage[node.id] = {
                 output.name: {(node.params.entity, output.name)}
                 for output in node.outputs
             }
-            node_lineage[node.id] = direct
             node_bindings[node.id] = direct
             continue
 
@@ -90,9 +125,13 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                         f"not the node's input entities {sorted(inherited_entities)!r}"
                     )
                 source = (metric.entity, metric.field)
-                if not any(
-                    source in bindings for bindings in input_bindings[0].values()
-                ):
+                source_bindings = [
+                    binding
+                    for bindings in input_bindings[0].values()
+                    for binding in bindings
+                    if _matches_source(binding, source)
+                ]
+                if not source_bindings:
                     raise SemanticValidationError(
                         f"metric {metric.id!r} requires source field "
                         f"{metric.entity}.{metric.field}, "
@@ -110,7 +149,9 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                         f"metric {metric.id!r} output {output.name!r} has type "
                         f"{output.data_type.value!r}, expected {expected_type.value!r}"
                     )
-                source_nullable = entities[metric.entity][metric.field].nullable
+                source_nullable = any(
+                    binding.nullable for binding in source_bindings
+                )
                 expected_nullable = (
                     False
                     if metric.aggregation.value in {"COUNT", "COUNT_DISTINCT"}
@@ -161,12 +202,14 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 orientation
                 for orientation in orientations
                 if any(
-                    orientation[0] in bindings
+                    _matches_source(binding, orientation[0])
                     for bindings in input_bindings[0].values()
+                    for binding in bindings
                 )
                 and any(
-                    orientation[1] in bindings
+                    _matches_source(binding, orientation[1])
                     for bindings in input_bindings[1].values()
+                    for binding in bindings
                 )
             ]
             if not matching_orientations:
@@ -184,7 +227,10 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 output.name: input_lineage[0][output.name] for output in node.outputs
             }
             node_bindings[node.id] = {
-                output.name: input_bindings[0][output.name] for output in node.outputs
+                output.name: _with_effective_nullability(
+                    input_bindings[0][output.name], output.nullable
+                )
+                for output in node.outputs
             }
         elif isinstance(node, DeriveNode):
             lineage = {
@@ -193,7 +239,9 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 if output.name in input_lineage[0]
             }
             bindings = {
-                output.name: input_bindings[0][output.name]
+                output.name: _with_effective_nullability(
+                    input_bindings[0][output.name], output.nullable
+                )
                 for output in node.outputs
                 if output.name in input_bindings[0]
             }
@@ -213,7 +261,11 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 field: input_lineage[0][field] for field in node.params.group_by
             }
             bindings = {
-                field: input_bindings[0][field] for field in node.params.group_by
+                field: _with_effective_nullability(
+                    input_bindings[0][field],
+                    next(output.nullable for output in node.outputs if output.name == field),
+                )
+                for field in node.params.group_by
             }
             lineage.update(
                 {
@@ -251,10 +303,14 @@ def validate_sqg(sqg: SemanticQueryGraph, ontology: Ontology) -> None:
                 ][projection.field]
                 for projection in node.params.fields
             }
+            outputs = {output.name: output for output in node.outputs}
             node_bindings[node.id] = {
-                projection.name: input_bindings[
-                    0 if projection.source == "left" else 1
-                ][projection.field]
+                projection.name: _with_effective_nullability(
+                    input_bindings[0 if projection.source == "left" else 1][
+                        projection.field
+                    ],
+                    outputs[projection.name].nullable,
+                )
                 for projection in node.params.fields
             }
         else:

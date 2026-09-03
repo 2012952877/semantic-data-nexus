@@ -636,3 +636,187 @@ def test_reversed_join_orientation_uses_matching_direct_bindings() -> None:
     }
     sqg = SemanticQueryGraph.model_validate(data)
     validate_sqg(sqg, ontology)
+
+
+@pytest.mark.parametrize(
+    ("join_kind", "metric_id", "group_projection", "metric_projection"),
+    [
+        (
+            "LEFT",
+            "order_amount",
+            {"source": "left", "field": "account_id", "name": "group_key"},
+            {"source": "right", "field": "amount", "name": "metric_value"},
+        ),
+        (
+            "RIGHT",
+            "account_credit",
+            {"source": "right", "field": "account_id", "name": "group_key"},
+            {"source": "left", "field": "credit", "name": "metric_value"},
+        ),
+    ],
+)
+def test_outer_join_nullability_reaches_grouped_aggregate(
+    join_kind: str,
+    metric_id: str,
+    group_projection: dict,
+    metric_projection: dict,
+) -> None:
+    ontology = Ontology.model_validate(
+        {
+            "contract_version": "ontology/v0",
+            "ontology_id": "outer_join_demo",
+            "version": "outer.v1",
+            "entities": [
+                {
+                    "id": "accounts",
+                    "fields": [
+                        {
+                            "id": "account_id",
+                            "data_type": "integer",
+                            "nullable": False,
+                        },
+                        {
+                            "id": "credit",
+                            "data_type": "decimal",
+                            "nullable": False,
+                        },
+                    ],
+                },
+                {
+                    "id": "orders",
+                    "fields": [
+                        {
+                            "id": "account_id",
+                            "data_type": "integer",
+                            "nullable": False,
+                        },
+                        {
+                            "id": "amount",
+                            "data_type": "decimal",
+                            "nullable": False,
+                        },
+                    ],
+                },
+            ],
+            "metrics": [
+                {
+                    "id": "account_credit",
+                    "entity": "accounts",
+                    "field": "credit",
+                    "aggregation": "SUM",
+                },
+                {
+                    "id": "order_amount",
+                    "entity": "orders",
+                    "field": "amount",
+                    "aggregation": "SUM",
+                },
+            ],
+            "relations": [
+                {
+                    "id": "account_orders",
+                    "left_entity": "accounts",
+                    "right_entity": "orders",
+                    "left_field": "account_id",
+                    "right_field": "account_id",
+                    "cardinality": "one_to_many",
+                }
+            ],
+        }
+    )
+    data = {
+        "contract_version": "sqg/v0",
+        "query_id": f"{join_kind.lower()}_aggregate",
+        "ontology_version": "outer.v1",
+        "nodes": [
+            {
+                "id": "select_accounts",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {
+                    "entity": "accounts",
+                    "fields": ["account_id", "credit"],
+                },
+                "outputs": [
+                    {
+                        "name": "account_id",
+                        "data_type": "integer",
+                        "nullable": False,
+                    },
+                    {
+                        "name": "credit",
+                        "data_type": "decimal",
+                        "nullable": False,
+                    },
+                ],
+            },
+            {
+                "id": "select_orders",
+                "operator": "SELECT",
+                "inputs": [],
+                "params": {
+                    "entity": "orders",
+                    "fields": ["account_id", "amount"],
+                },
+                "outputs": [
+                    {
+                        "name": "account_id",
+                        "data_type": "integer",
+                        "nullable": False,
+                    },
+                    {
+                        "name": "amount",
+                        "data_type": "decimal",
+                        "nullable": False,
+                    },
+                ],
+            },
+            {
+                "id": "join_records",
+                "operator": "JOIN",
+                "inputs": ["select_accounts", "select_orders"],
+                "params": {
+                    "relation": "account_orders",
+                    "kind": join_kind,
+                    "fields": [group_projection, metric_projection],
+                },
+                "outputs": [
+                    {
+                        "name": "group_key",
+                        "data_type": "integer",
+                        "nullable": False,
+                    },
+                    {
+                        "name": "metric_value",
+                        "data_type": "decimal",
+                        "nullable": True,
+                    },
+                ],
+            },
+            {
+                "id": "aggregate_metric",
+                "operator": "AGGREGATE",
+                "inputs": ["join_records"],
+                "params": {
+                    "group_by": ["group_key"],
+                    "measures": [{"metric": metric_id, "name": "total"}],
+                },
+                "outputs": [
+                    {
+                        "name": "group_key",
+                        "data_type": "integer",
+                        "nullable": False,
+                    },
+                    {"name": "total", "data_type": "decimal", "nullable": True},
+                ],
+            },
+        ],
+        "root": "aggregate_metric",
+    }
+    sqg = SemanticQueryGraph.model_validate(data)
+    validate_sqg(sqg, ontology)
+
+    invalid = copy.deepcopy(data)
+    invalid["nodes"][-1]["outputs"][-1]["nullable"] = False
+    with pytest.raises(SemanticValidationError, match="expected nullable=True"):
+        validate_sqg(SemanticQueryGraph.model_validate(invalid), ontology)
