@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from typing import Literal as TypingLiteral
 
@@ -61,6 +61,7 @@ class _Flow:
     grain: set[str]
     entities: frozenset[str]
     used_concepts: frozenset[str] = frozenset()
+    enforcing_concepts: frozenset[str] = frozenset()
     member_constraints: tuple[_MemberConstraint, ...] = ()
     time_constraints: tuple[_TimeConstraint, ...] = ()
 
@@ -320,18 +321,23 @@ class SQGValidator:
             return self._project_flow(node.parameters, input_flows[0], path, diagnostics)
         if node.operator is Operator.SORT and isinstance(node.parameters, SortParameters):
             source = input_flows[0]
+            enforcing_concepts = set(source.enforcing_concepts)
             for key_index, key in enumerate(node.parameters.keys):
-                self._require_column(
+                column = self._require_column(
                     key.column,
                     source,
                     f"{path}.parameters.keys.{key_index}.column",
                     diagnostics,
                 )
+                if column is not None:
+                    enforcing_concepts.update(column.concept_lineage)
+                    enforcing_concepts.update(column.entities)
             return _Flow(
                 columns=dict(source.columns),
                 grain=set(source.grain),
                 entities=source.entities,
                 used_concepts=source.used_concepts,
+                enforcing_concepts=frozenset(enforcing_concepts),
                 member_constraints=source.member_constraints,
                 time_constraints=source.time_constraints,
             )
@@ -493,7 +499,18 @@ class SQGValidator:
                     path=path,
                 )
             )
-        elif start >= end:
+            return
+        start_utc = self._as_utc(start)
+        end_utc = self._as_utc(end)
+        if start_utc is None or end_utc is None:
+            diagnostics.append(
+                self._error(
+                    "DATETIME_INSTANT_OUT_OF_RANGE",
+                    "Datetime boundaries cannot be represented as UTC instants.",
+                    path=path,
+                )
+            )
+        elif start_utc >= end_utc:
             diagnostics.append(
                 self._error(
                     "TIME_RANGE_INVALID",
@@ -512,10 +529,12 @@ class SQGValidator:
                 grain=set(source.grain),
                 entities=source.entities,
                 used_concepts=source.used_concepts,
+                enforcing_concepts=source.enforcing_concepts,
                 member_constraints=member_constraints,
                 time_constraints=time_constraints,
             )
         raw_value = parameters.predicate.value
+        enforcing_concepts = source.enforcing_concepts | column.concept_lineage | column.entities
         if column.member_domain_field_id is not None and parameters.predicate.operator in (
             PredicateOperator.EQ,
             PredicateOperator.IN,
@@ -541,8 +560,10 @@ class SQGValidator:
             ):
                 start = self._parse_datetime(raw_value["start"])
                 end = self._parse_datetime(raw_value["end_exclusive"])
-                if start is not None and end is not None and start < end:
-                    parsed_window = (start, end)
+                start_utc = self._as_utc(start) if start is not None else None
+                end_utc = self._as_utc(end) if end is not None else None
+                if start_utc is not None and end_utc is not None and start_utc < end_utc:
+                    parsed_window = (start_utc, end_utc)
             time_constraints += (
                 _TimeConstraint(
                     field_id=column.time_domain_field_id,
@@ -555,6 +576,7 @@ class SQGValidator:
             grain=set(source.grain),
             entities=source.entities,
             used_concepts=source.used_concepts,
+            enforcing_concepts=enforcing_concepts,
             member_constraints=member_constraints,
             time_constraints=time_constraints,
         )
@@ -650,6 +672,7 @@ class SQGValidator:
         diagnostics: list[Diagnostic],
     ) -> _Flow:
         columns: dict[str, _Column] = {}
+        enforcing_concepts = set(source.enforcing_concepts)
         for group_index, group in enumerate(parameters.group_by):
             column_info = self._require_column(
                 group,
@@ -667,6 +690,8 @@ class SQGValidator:
                 )
             elif column_info is not None:
                 columns[group] = column_info
+                enforcing_concepts.update(column_info.concept_lineage)
+                enforcing_concepts.update(column_info.entities)
         for measure_index, measure in enumerate(parameters.measures):
             measure_path = f"{path}.parameters.measures.{measure_index}"
             source_info = self._require_column(
@@ -708,6 +733,7 @@ class SQGValidator:
             grain=set(parameters.group_by),
             entities=source.entities,
             used_concepts=source.used_concepts,
+            enforcing_concepts=frozenset(enforcing_concepts),
             member_constraints=source.member_constraints,
             time_constraints=source.time_constraints,
         )
@@ -720,16 +746,25 @@ class SQGValidator:
         diagnostics: list[Diagnostic],
     ) -> _Flow:
         columns: dict[str, _Column] = {}
+        enforcing_concepts = set(source.enforcing_concepts)
         for index_position, column in enumerate(parameters.index):
             column_info = self._require_column(
                 column, source, f"{path}.parameters.index.{index_position}", diagnostics
             )
             if column_info is not None:
                 columns[column] = column_info
-        self._require_column(parameters.column, source, f"{path}.parameters.column", diagnostics)
+                enforcing_concepts.update(column_info.concept_lineage)
+                enforcing_concepts.update(column_info.entities)
+        pivot_column = self._require_column(
+            parameters.column, source, f"{path}.parameters.column", diagnostics
+        )
         value_info = self._require_column(
             parameters.value, source, f"{path}.parameters.value", diagnostics
         )
+        for column_info in (pivot_column, value_info):
+            if column_info is not None:
+                enforcing_concepts.update(column_info.concept_lineage)
+                enforcing_concepts.update(column_info.entities)
         for value_index, value in enumerate(parameters.values):
             if value in columns:
                 diagnostics.append(
@@ -773,6 +808,7 @@ class SQGValidator:
             grain=set(parameters.index),
             entities=source.entities,
             used_concepts=source.used_concepts,
+            enforcing_concepts=frozenset(enforcing_concepts),
             member_constraints=source.member_constraints,
             time_constraints=source.time_constraints,
         )
@@ -834,6 +870,7 @@ class SQGValidator:
             grain=set(source.grain),
             entities=source.entities,
             used_concepts=source.used_concepts,
+            enforcing_concepts=source.enforcing_concepts,
             member_constraints=source.member_constraints,
             time_constraints=source.time_constraints,
         )
@@ -877,6 +914,7 @@ class SQGValidator:
             grain=grain,
             entities=source.entities,
             used_concepts=source.used_concepts,
+            enforcing_concepts=source.enforcing_concepts,
             member_constraints=source.member_constraints,
             time_constraints=source.time_constraints,
         )
@@ -952,6 +990,14 @@ class SQGValidator:
                 columns[column] = column_info
         member_constraints = inputs[0].member_constraints
         time_constraints = inputs[0].time_constraints
+        enforcing_concepts = set(inputs[0].enforcing_concepts | inputs[1].enforcing_concepts)
+        enforcing_concepts.add(parameters.relation_id)
+        for key in (left_key, right_key):
+            if key is not None:
+                enforcing_concepts.update(key.concept_lineage)
+                enforcing_concepts.update(key.entities)
+        enforcing_concepts.update(inputs[0].entities)
+        enforcing_concepts.update(inputs[1].entities)
         if parameters.join_type is JoinType.INNER:
             member_constraints += inputs[1].member_constraints
             time_constraints += inputs[1].time_constraints
@@ -981,6 +1027,7 @@ class SQGValidator:
                 | inputs[1].used_concepts
                 | frozenset({parameters.relation_id})
             ),
+            enforcing_concepts=frozenset(enforcing_concepts),
             member_constraints=member_constraints,
             time_constraints=time_constraints,
         )
@@ -1119,7 +1166,20 @@ class SQGValidator:
         expected_members = {
             term.machine_id for term in resolved_terms if term.kind is ResolvedTermKind.MEMBER
         }
-        expected_windows = {(window.start, window.end_exclusive) for window in time_windows}
+        expected_windows: set[tuple[datetime, datetime]] = set()
+        for index, window in enumerate(time_windows):
+            start_utc = self._as_utc(window.start)
+            end_utc = self._as_utc(window.end_exclusive)
+            if start_utc is None or end_utc is None:
+                diagnostics.append(
+                    self._error(
+                        "DATETIME_INSTANT_OUT_OF_RANGE",
+                        "Normalized time boundaries cannot be represented as UTC instants.",
+                        path=f"time_windows.{index}",
+                    )
+                )
+                continue
+            expected_windows.add((start_utc, end_utc))
         member_predicates: dict[str, list[set[str]]] = {}
         time_predicates: list[tuple[datetime, datetime] | None] = []
         enforced_members: set[str] = set()
@@ -1179,12 +1239,26 @@ class SQGValidator:
                 ResolvedTermKind.METRIC,
             )
         }
-        used_concepts = output_flow.used_concepts if output_flow is not None else frozenset()
-        for concept_id in sorted(expected_concepts - used_concepts):
+        output_lineage = (
+            frozenset().union(*(column.concept_lineage for column in output_flow.columns.values()))
+            if output_flow is not None
+            else frozenset()
+        )
+        output_entities = (
+            frozenset().union(*(column.entities for column in output_flow.columns.values()))
+            if output_flow is not None
+            else frozenset()
+        )
+        contributing_concepts = (
+            output_lineage | output_entities | output_flow.enforcing_concepts
+            if output_flow is not None
+            else frozenset()
+        )
+        for concept_id in sorted(expected_concepts - contributing_concepts):
             diagnostics.append(
                 self._error(
                     "MISSING_RESOLVED_CONCEPT",
-                    "A resolved semantic concept is not used by the candidate SQG.",
+                    "A resolved semantic concept does not contribute to the candidate output.",
                     path="nodes",
                     details={"concept_id": concept_id},
                 )
@@ -1357,6 +1431,52 @@ class SQGValidator:
                 )
 
         node_by_id = {node.id: node for node in sqg.nodes}
+        linear_path: list[SQGNode] = []
+        current = node_by_id.get(sqg.output_node_id)
+        while current is not None:
+            linear_path.append(current)
+            if not current.dependencies:
+                break
+            if len(current.dependencies) != 1:
+                linear_path = []
+                break
+            current = node_by_id.get(current.dependencies[0])
+        linear_path.reverse()
+        operators = [node.operator for node in linear_path]
+        filter_count = 0
+        if operators and operators[0] is Operator.SELECT:
+            filter_count = next(
+                (
+                    index - 1
+                    for index, operator in enumerate(operators[1:], start=1)
+                    if operator is not Operator.FILTER
+                ),
+                len(operators) - 1,
+            )
+        expected_tail = (
+            [Operator.AGGREGATE, Operator.SORT, Operator.PROJECT]
+            if mode is CompilationMode.REGIONAL_QUARTERLY_PROFIT
+            else [
+                Operator.AGGREGATE,
+                Operator.PIVOT,
+                Operator.DERIVE,
+                Operator.PROJECT,
+            ]
+        )
+        exact_topology = len(linear_path) == len(sqg.nodes) and operators == [
+            Operator.SELECT,
+            *([Operator.FILTER] * filter_count),
+            *expected_tail,
+        ]
+        if not exact_topology:
+            diagnostics.append(
+                self._error(
+                    "COMPILATION_MODE_TOPOLOGY_INVALID",
+                    "Candidate operator topology is not permitted by the trusted mode.",
+                    path="nodes",
+                    details={"mode": mode.value},
+                )
+            )
         aggregate_parameters = [
             node.parameters
             for node in sqg.nodes
@@ -1389,30 +1509,27 @@ class SQGValidator:
             )
         output = node_by_id.get(sqg.output_node_id)
         if mode is CompilationMode.MONTHLY_REGIONAL_COMPARISON:
-            required_chain = [
-                Operator.PROJECT,
-                Operator.DERIVE,
-                Operator.PIVOT,
-                Operator.AGGREGATE,
+            pivot_parameters = [
+                node.parameters
+                for node in linear_path
+                if isinstance(node.parameters, PivotParameters)
             ]
-            current = output
-            for chain_index, expected_operator in enumerate(required_chain):
-                if current is None or current.operator is not expected_operator:
-                    diagnostics.append(
-                        self._error(
-                            "COMPILATION_MODE_SHAPE_INVALID",
-                            "Monthly comparison requires AGGREGATE -> PIVOT -> DERIVE -> PROJECT.",
-                            path="nodes",
-                            details={"mode": mode.value},
-                        )
+            exact_pivot = (
+                len(pivot_parameters) == 1
+                and pivot_parameters[0].index == ["commerce.sales_record.region"]
+                and pivot_parameters[0].column == "commerce.sales_record.period"
+                and pivot_parameters[0].value == "profit"
+                and pivot_parameters[0].values == ["profit_current", "profit_previous"]
+            )
+            if not exact_pivot:
+                diagnostics.append(
+                    self._error(
+                        "COMPILATION_MODE_PIVOT_INVALID",
+                        "Monthly comparison requires the canonical governed period pivot.",
+                        path="nodes",
+                        details={"mode": mode.value},
                     )
-                    break
-                if chain_index < len(required_chain) - 1:
-                    current = (
-                        node_by_id.get(current.dependencies[0])
-                        if len(current.dependencies) == 1
-                        else None
-                    )
+                )
             project_mapping = (
                 {column.alias: column.source for column in output.parameters.columns}
                 if output is not None and isinstance(output.parameters, ProjectParameters)
@@ -1452,15 +1569,6 @@ class SQGValidator:
                         details={"mode": mode.value},
                     )
                 )
-        elif not any(node.operator is Operator.AGGREGATE for node in sqg.nodes):
-            diagnostics.append(
-                self._error(
-                    "COMPILATION_MODE_SHAPE_INVALID",
-                    "Quarterly profit requires a governed aggregate.",
-                    path="nodes",
-                    details={"mode": mode.value},
-                )
-            )
 
     @classmethod
     def _runtime_value_matches(cls, value: object, data_type: ScalarType) -> bool:
@@ -1475,6 +1583,13 @@ class SQGValidator:
         if data_type is ScalarType.BOOLEAN:
             return isinstance(value, bool)
         return cls._parse_datetime(value) is not None
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime | None:
+        try:
+            return value.astimezone(UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
 
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:

@@ -97,10 +97,11 @@ class DeterministicInitializer:
     ) -> tuple[list[ResolvedTerm], list[Diagnostic]]:
         question_folded = question.casefold()
         candidates: list[_ResolutionCandidate] = []
+        concept_matches: list[_MemberMatch] = []
 
         for entity in self.registry.document.entities:
-            candidates.extend(
-                self._concept_candidates(
+            concept_matches.extend(
+                self._concept_matches(
                     question_folded,
                     entity.id,
                     entity.label,
@@ -110,8 +111,8 @@ class DeterministicInitializer:
                 )
             )
         for field in self.registry.document.fields:
-            candidates.extend(
-                self._concept_candidates(
+            concept_matches.extend(
+                self._concept_matches(
                     question_folded,
                     field.id,
                     field.label,
@@ -121,8 +122,8 @@ class DeterministicInitializer:
                 )
             )
         for metric in self.registry.document.metrics:
-            candidates.extend(
-                self._concept_candidates(
+            concept_matches.extend(
+                self._concept_matches(
                     question_folded,
                     metric.id,
                     metric.label,
@@ -131,6 +132,33 @@ class DeterministicInitializer:
                     mode,
                 )
             )
+
+        diagnostics: list[Diagnostic] = []
+        reported_negated_concepts: set[tuple[ResolvedTermKind, str]] = set()
+        for match in concept_matches:
+            if self._is_negated(question_folded, match.start, match.end):
+                key = (match.candidate.kind, match.candidate.machine_id)
+                if key not in reported_negated_concepts:
+                    diagnostics.append(
+                        Diagnostic(
+                            code="NEGATED_CONCEPT_UNSUPPORTED",
+                            severity=DiagnosticSeverity.ERROR,
+                            stage=DiagnosticStage.INITIALIZE,
+                            message=(
+                                "Negative entity, field, and metric constraints are not "
+                                "supported in this version."
+                            ),
+                            path="question",
+                            details={
+                                "mention": match.candidate.source_text.casefold(),
+                                "kind": match.candidate.kind.value,
+                                "concept_id": match.candidate.machine_id,
+                            },
+                        )
+                    )
+                    reported_negated_concepts.add(key)
+                continue
+            candidates.append(match.candidate)
 
         member_matches: list[_MemberMatch] = []
         for field in self.registry.document.fields:
@@ -155,7 +183,6 @@ class DeterministicInitializer:
                         )
                     )
 
-        diagnostics: list[Diagnostic] = []
         for matches in self._preferred_member_matches(member_matches):
             if self._is_negated(question_folded, matches[0].start, matches[0].end):
                 diagnostics.append(
@@ -216,7 +243,7 @@ class DeterministicInitializer:
             ResolutionSource.RELATIVE_TIME: 3,
         }[source]
 
-    def _concept_candidates(
+    def _concept_matches(
         self,
         question: str,
         machine_id: str,
@@ -224,32 +251,16 @@ class DeterministicInitializer:
         synonyms: list[str],
         kind: ResolvedTermKind,
         mode: MemberResolutionMode,
-    ) -> list[_ResolutionCandidate]:
+    ) -> list[_MemberMatch]:
         return [
-            _ResolutionCandidate(source_text, kind, machine_id, source)
-            for source_text, source in self._match_forms(
+            _MemberMatch(
+                _ResolutionCandidate(source_text, kind, machine_id, source),
+                start,
+                end,
+            )
+            for source_text, source, start, end in self._match_form_spans(
                 question, machine_id, label, synonyms, mode
             )
-        ]
-
-    @staticmethod
-    def _match_forms(
-        question: str,
-        machine_id: str,
-        label: str,
-        synonyms: list[str],
-        mode: MemberResolutionMode,
-    ) -> list[tuple[str, ResolutionSource]]:
-        forms: list[tuple[str, ResolutionSource]] = [
-            (machine_id, ResolutionSource.MACHINE_ID),
-            (label, ResolutionSource.LABEL),
-        ]
-        if mode is MemberResolutionMode.EXACT_AND_SYNONYM:
-            forms.extend((item, ResolutionSource.SYNONYM) for item in synonyms)
-        return [
-            (text, source)
-            for text, source in forms
-            if text and DeterministicInitializer._contains_mention(question, text)
         ]
 
     @classmethod
@@ -312,14 +323,6 @@ class DeterministicInitializer:
         else:
             pattern = re.escape(folded)
         return [(match.start(), match.end()) for match in re.finditer(pattern, question)]
-
-    @staticmethod
-    def _contains_mention(question: str, candidate: str) -> bool:
-        folded = candidate.casefold()
-        if any(character.isascii() and character.isalnum() for character in folded):
-            pattern = rf"(?<!\w){re.escape(folded)}(?!\w)"
-            return re.search(pattern, question) is not None
-        return folded in question
 
     @staticmethod
     def _is_negated(question: str, mention_start: int, mention_end: int) -> bool:

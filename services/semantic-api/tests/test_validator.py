@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -260,6 +262,38 @@ def test_exact_member_and_time_constraint_coverage(
     assert {"UNRESOLVED_MEMBER_CONSTRAINT", "UNRESOLVED_TIME_CONSTRAINT"} <= {
         item.code for item in extra.diagnostics
     }
+
+
+def test_time_coverage_compares_dst_boundaries_as_utc_instants(
+    registry: OntologyRegistry, semantic_context: SemanticContext
+) -> None:
+    timezone = ZoneInfo("America/New_York")
+    window = TimeWindow(
+        source_text="DST fallback",
+        start=datetime(2026, 11, 1, 1, 15, tzinfo=timezone, fold=0),
+        end_exclusive=datetime(2026, 11, 1, 1, 45, tzinfo=timezone, fold=1),
+        timezone="America/New_York",
+        grain="month",
+    )
+    candidate = StaticFixtureProvider._quarterly_profit([window], [], semantic_context)
+
+    assert SQGValidator(registry).validate(candidate, semantic_context, [], [window]).valid
+
+
+def test_time_coverage_reports_unrepresentable_utc_boundary(
+    registry: OntologyRegistry, semantic_context: SemanticContext
+) -> None:
+    window = TimeWindow(
+        source_text="boundary",
+        start="0001-01-01T00:00:00+08:00",
+        end_exclusive="0001-02-01T00:00:00+08:00",
+        timezone="Asia/Shanghai",
+        grain="month",
+    )
+    candidate = StaticFixtureProvider._quarterly_profit([window], [], semantic_context)
+    result = SQGValidator(registry).validate(candidate, semantic_context, [], [window])
+
+    assert "DATETIME_INSTANT_OUT_OF_RANGE" in {item.code for item in result.diagnostics}
 
 
 def test_negative_member_predicate_does_not_satisfy_positive_coverage(
@@ -805,6 +839,133 @@ def test_trusted_modes_require_exact_profit_aggregate(
     )
 
     assert "COMPILATION_MODE_AGGREGATE_INVALID" in {item.code for item in result.diagnostics}
+
+
+def test_trusted_monthly_mode_requires_canonical_pivot_parameters(
+    registry: OntologyRegistry, semantic_context: SemanticContext
+) -> None:
+    candidate = StaticFixtureProvider._monthly_comparison()
+    candidate["nodes"][2]["parameters"]["column"] = "commerce.sales_record.region"
+    result = SQGValidator(registry).validate(
+        candidate,
+        semantic_context,
+        compilation_mode=CompilationMode.MONTHLY_REGIONAL_COMPARISON,
+    )
+
+    assert "COMPILATION_MODE_PIVOT_INVALID" in {item.code for item in result.diagnostics}
+
+
+def test_trusted_quarterly_mode_rejects_pivot_topology(
+    registry: OntologyRegistry, semantic_context: SemanticContext
+) -> None:
+    candidate = StaticFixtureProvider._quarterly_profit([])
+    candidate["nodes"].insert(
+        2,
+        {
+            "id": "pivot_profit",
+            "name": "Unexpected pivot",
+            "operator": "PIVOT",
+            "dependencies": ["aggregate_profit"],
+            "parameters": {
+                "kind": "PIVOT",
+                "index": [
+                    "commerce.sales_record.region",
+                    "commerce.sales_record.period",
+                ],
+                "column": "commerce.sales_record.period",
+                "value": "profit",
+                "values": ["pivoted_profit"],
+            },
+        },
+    )
+    candidate["nodes"][3]["dependencies"] = ["pivot_profit"]
+    candidate["nodes"][3]["parameters"]["keys"][0]["column"] = "pivoted_profit"
+    candidate["nodes"][4]["parameters"]["columns"][2]["source"] = "pivoted_profit"
+    result = SQGValidator(registry).validate(
+        candidate,
+        semantic_context,
+        compilation_mode=CompilationMode.REGIONAL_QUARTERLY_PROFIT,
+    )
+
+    assert "COMPILATION_MODE_TOPOLOGY_INVALID" in {item.code for item in result.diagnostics}
+
+
+@pytest.mark.parametrize(
+    ("resolved_term", "columns", "project_columns"),
+    [
+        (
+            ResolvedTerm(
+                source_text="sales",
+                kind=ResolvedTermKind.ENTITY,
+                machine_id="commerce.sales_record",
+                resolution_source=ResolutionSource.SYNONYM,
+            ),
+            [],
+            None,
+        ),
+        (
+            ResolvedTerm(
+                source_text="period",
+                kind=ResolvedTermKind.FIELD,
+                machine_id="commerce.sales_record.period",
+                resolution_source=ResolutionSource.LABEL,
+            ),
+            ["commerce.sales_record.region", "commerce.sales_record.period"],
+            [{"source": "commerce.sales_record.region", "alias": "region"}],
+        ),
+        (
+            ResolvedTerm(
+                source_text="revenue",
+                kind=ResolvedTermKind.METRIC,
+                machine_id="metric.revenue",
+                resolution_source=ResolutionSource.LABEL,
+            ),
+            ["commerce.sales_record.region", "metric.revenue"],
+            [{"source": "commerce.sales_record.region", "alias": "region"}],
+        ),
+    ],
+)
+def test_resolved_concept_must_reach_output_or_enforcing_operation(
+    registry: OntologyRegistry,
+    semantic_context: SemanticContext,
+    resolved_term: ResolvedTerm,
+    columns: list[str],
+    project_columns: list[dict[str, str]] | None,
+) -> None:
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "select",
+            "name": "Read concepts",
+            "operator": "SELECT",
+            "dependencies": [],
+            "parameters": {
+                "kind": "SELECT",
+                "entity_id": "commerce.sales_record",
+                "columns": columns,
+            },
+        }
+    ]
+    output_node_id = "select"
+    if project_columns is not None:
+        nodes.append(
+            {
+                "id": "project",
+                "name": "Discard resolved concept",
+                "operator": "PROJECT",
+                "dependencies": ["select"],
+                "parameters": {"kind": "PROJECT", "columns": project_columns},
+            }
+        )
+        output_node_id = "project"
+    candidate = {
+        "schema_version": "sqg.v0",
+        "nodes": nodes,
+        "output_node_id": output_node_id,
+        "result_schema": [],
+    }
+    result = SQGValidator(registry).validate(candidate, semantic_context, [resolved_term], [])
+
+    assert "MISSING_RESOLVED_CONCEPT" in {item.code for item in result.diagnostics}
 
 
 def test_transformed_member_filter_is_still_an_introduced_constraint(

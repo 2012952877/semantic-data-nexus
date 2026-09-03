@@ -156,6 +156,26 @@ def test_negated_constraints_are_explicitly_rejected(
     assert any(item.code == code for item in result.diagnostics)
 
 
+@pytest.mark.parametrize(
+    ("question", "kind"),
+    [
+        ("do not use sales", ResolvedTermKind.ENTITY),
+        ("exclude region", ResolvedTermKind.FIELD),
+        ("without profit", ResolvedTermKind.METRIC),
+    ],
+)
+def test_negated_semantic_concepts_are_explicitly_rejected(
+    registry: OntologyRegistry,
+    question: str,
+    kind: ResolvedTermKind,
+) -> None:
+    result = DeterministicInitializer(registry).initialize(request(question), "correlation")
+
+    assert result.status is CompileStatus.FAILED
+    assert any(item.code == "NEGATED_CONCEPT_UNSUPPORTED" for item in result.diagnostics)
+    assert not any(term.kind is kind for term in result.resolved_terms)
+
+
 def test_clock_requires_explicit_offset() -> None:
     with pytest.raises(ValueError, match="explicit UTC offset"):
         request(
