@@ -92,6 +92,39 @@ function Assert-CompiledPrincipalOutputWiring {
     }
 }
 
+function Assert-CompiledContainerAppPorts {
+    param([object]$Template)
+
+    $deployment = @($Template.resources | Where-Object {
+        $_.type -eq 'Microsoft.Resources/deployments' -and $_.name -eq 'container-apps'
+    })
+    if ($deployment.Count -ne 1) {
+        throw "Expected one compiled 'container-apps' deployment, found $($deployment.Count)."
+    }
+
+    $containerApps = @($deployment[0].properties.template.resources | Where-Object {
+        $_.type -eq 'Microsoft.App/containerApps'
+    })
+    $expectedPorts = @{
+        'web' = 80
+        'control-api' = 8080
+        'semantic-api' = 80
+    }
+    foreach ($containerName in $expectedPorts.Keys) {
+        $app = @($containerApps | Where-Object {
+            $_.properties.template.containers[0].name -eq $containerName
+        })
+        if ($app.Count -ne 1) {
+            throw "Expected one compiled Container App for '$containerName', found $($app.Count)."
+        }
+
+        $actualPort = [int]$app[0].properties.configuration.ingress.targetPort
+        if ($actualPort -ne $expectedPorts[$containerName]) {
+            throw "Compiled '$containerName' targetPort must be $($expectedPorts[$containerName]), found $actualPort."
+        }
+    }
+}
+
 $main = Read-RepoFile 'infra\bicep\main.bicep'
 $containerApps = Read-RepoFile 'infra\bicep\modules\container-apps.bicep'
 $acrPull = Read-RepoFile 'infra\bicep\modules\acr-pull.bicep'
@@ -185,6 +218,7 @@ try {
     $compiledAcrPull = Get-Content -LiteralPath $compiledAcrPullFile -Raw | ConvertFrom-Json
     $compiledRbac = Get-Content -LiteralPath $compiledRbacFile -Raw | ConvertFrom-Json
     Assert-CompiledPrincipalOutputWiring $compiledMain
+    Assert-CompiledContainerAppPorts $compiledMain
     Assert-CompiledRoleAssignmentSeeds $compiledAcrPull 4 'ACR pull'
     Assert-CompiledRoleAssignmentSeeds $compiledRbac 8 'workload RBAC'
 

@@ -151,7 +151,7 @@ resource controlApiApp 'Microsoft.App/containerApps@2025-01-01' = {
       ingress: {
         allowInsecure: false
         external: false
-        targetPort: 80
+        targetPort: 8080
         traffic: [
           {
             latestRevision: true

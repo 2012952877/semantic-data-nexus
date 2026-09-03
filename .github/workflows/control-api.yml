@@ -1,0 +1,33 @@
+name: Control API
+
+on:
+  pull_request:
+    paths:
+      - "services/control-api/**"
+      - ".github/workflows/control-api.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "services/control-api/**"
+      - ".github/workflows/control-api.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/control-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet restore SemanticDataNexus.ControlApi.sln
+      - run: dotnet format SemanticDataNexus.ControlApi.sln --verify-no-changes --no-restore
+      - run: dotnet test SemanticDataNexus.ControlApi.sln --configuration Release --no-restore
+      - run: dotnet publish src/ControlApi/ControlApi.csproj --configuration Release --no-restore
+      - run: docker build --file Dockerfile .
