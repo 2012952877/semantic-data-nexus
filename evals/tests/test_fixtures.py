@@ -55,6 +55,10 @@ def test_suite_has_required_coverage_and_fixed_clock() -> None:
     ]
     pivot = operators.index("PIVOT")
     assert operators[pivot : pivot + 3] == ["PIVOT", "DERIVE", "PROJECT"]
+    monthly_fields = cases["monthly-regional-sales-comparison"]["expected"][
+        "semantic"
+    ]["fields"]
+    assert "order.order_date" in monthly_fields
 
 
 def test_reference_profit_answer_matches_duckdb() -> None:

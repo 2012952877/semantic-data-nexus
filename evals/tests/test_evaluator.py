@@ -58,6 +58,25 @@ def test_numeric_tolerance_is_absolute() -> None:
     matched, message = compare_rows(expected, [{"gross_margin": 0.401}], 0.0001)
     assert not matched
     assert "gross_margin differs" in str(message)
+    assert compare_rows([{"value": 0.1}], [{"value": 0.2}], 0.1)[0]
+    assert compare_rows([{"value": 0.2}], [{"value": 0.1}], 0.1)[0]
+
+
+def test_evaluator_preserves_large_integer_tolerance() -> None:
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    case_id = golden_case["id"]
+    candidate_case = copy.deepcopy(passing()["cases"][case_id])
+    golden_case["expected"]["result"]["rows"] = [{"value": 0}]
+    golden_case["expected"]["result"]["tolerance"] = 9007199254740995
+    candidate_case["result"]["rows"] = [{"value": 9007199254740996}]
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        {"cases": {case_id: candidate_case}},
+    )
+    case = report.cases[0]
+    assert any(
+        difference.path == "result.rows" for difference in case.differences
+    )
 
 
 def test_large_integer_pairs_compare_exactly() -> None:
@@ -252,6 +271,51 @@ def test_yaml_native_values_are_rejected_with_serializable_diagnostics(
             {"suite_version": "test", "cases": [], "invalid": {1, 2}},
             {"cases": {}},
         )
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "message"),
+    [
+        (
+            "duplicate.json",
+            '{"cases": {}, "cases": []}',
+            "duplicate JSON mapping key",
+        ),
+        (
+            "duplicate.yaml",
+            "cases: {}\ncases: []\n",
+            "duplicate YAML mapping key",
+        ),
+    ],
+)
+def test_duplicate_parser_keys_are_rejected(
+    tmp_path: Path,
+    filename: str,
+    content: str,
+    message: str,
+) -> None:
+    path = tmp_path / filename
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_document(path)
+
+
+def test_mapping_key_collision_after_canonicalization_is_rejected() -> None:
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    candidate = copy.deepcopy(passing())
+    candidate["metadata"] = {
+        date(2024, 1, 1): "temporal",
+        "2024-01-01": "string",
+    }
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        candidate,
+    )
+    assert any(
+        "collision after canonicalization" in error
+        for error in report.validation_errors
+    )
+    json.dumps(report.to_dict(), ensure_ascii=False)
 
 
 def test_suite_declared_weights_control_case_and_bundle_scores() -> None:

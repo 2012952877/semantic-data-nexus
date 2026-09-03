@@ -391,7 +391,8 @@
         ],
         "fields": [
           "date.month",
-          "region.region_code"
+          "region.region_code",
+          "order.order_date"
         ],
         "metrics": [
           "sales"
@@ -609,7 +610,8 @@
         ],
         "fields": [
           "date.month",
-          "region.region_code"
+          "region.region_code",
+          "order.order_date"
         ],
         "artifact": "reference:monthly-regional-sales-comparison"
       }

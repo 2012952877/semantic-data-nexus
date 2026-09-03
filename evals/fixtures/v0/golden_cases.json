@@ -393,7 +393,8 @@
           ],
           "fields": [
             "date.month",
-            "region.region_code"
+            "region.region_code",
+            "order.order_date"
           ],
           "metrics": [
             "sales"

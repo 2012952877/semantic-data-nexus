@@ -84,3 +84,25 @@ def test_junit_filters_xml_illegal_validation_characters(tmp_path: Path) -> None
     junit_path = tmp_path / "control-character.xml"
     write_junit(report, junit_path)
     ET.parse(junit_path)
+
+
+def test_unpaired_surrogate_is_rejected_and_reports_as_utf8(tmp_path: Path) -> None:
+    candidate_path = tmp_path / "surrogate.json"
+    candidate_path.write_text(
+        '{"artifact_version":"candidate-v0","bad":"\\ud800","cases":{}}',
+        encoding="utf-8",
+    )
+    golden_case = copy.deepcopy(load_document(FIXTURES / "golden_cases.json")["cases"][0])
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        load_document(candidate_path),
+    )
+    assert any("Unicode surrogate" in error for error in report.validation_errors)
+    assert "\ud800" not in console_summary(report)
+
+    json_path = tmp_path / "surrogate-report.json"
+    junit_path = tmp_path / "surrogate-report.xml"
+    write_json(report, json_path)
+    write_junit(report, junit_path)
+    json_path.read_text(encoding="utf-8")
+    ET.parse(junit_path)

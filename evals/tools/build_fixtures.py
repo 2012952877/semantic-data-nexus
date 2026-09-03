@@ -246,7 +246,7 @@ def main() -> None:
                 from base group by month order by month
             """,
             entities=["date", "order", "order_item", "region"],
-            fields=["date.month", "region.region_code"],
+            fields=["date.month", "region.region_code", "order.order_date"],
             metrics=["sales"],
             relations=["item_order", "order_region", "order_date"],
             operators=[

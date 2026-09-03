@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from fractions import Fraction
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -19,6 +19,44 @@ DEFAULT_WEIGHTS = {
     "governance": 10.0,
     "observability": 10.0,
 }
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as error:
+            raise ValueError("YAML mapping keys must be hashable") from error
+        if duplicate:
+            raise ValueError(f"duplicate YAML mapping key: {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON mapping key: {key!r}")
+        result[key] = value
+    return result
 
 
 @dataclass
@@ -66,9 +104,9 @@ def load_document(path: str | Path) -> dict[str, Any]:
     source = Path(path)
     with source.open(encoding="utf-8") as handle:
         if source.suffix.lower() in {".yaml", ".yml"}:
-            document = yaml.safe_load(handle)
+            document = yaml.load(handle, Loader=_UniqueKeyLoader)
         else:
-            document = json.load(handle)
+            document = json.load(handle, object_pairs_hook=_unique_json_object)
     if not isinstance(document, dict):
         raise ValueError(f"{source} must contain an object at its root")
     return document
@@ -102,7 +140,18 @@ def _sanitize_json_value(
         return value.isoformat(), []
     if isinstance(value, date):
         return value.isoformat(), []
-    if value is None or isinstance(value, (str, int, bool)):
+    if isinstance(value, str):
+        sanitized = "".join(
+            character if not "\ud800" <= character <= "\udfff" else "\ufffd"
+            for character in value
+        )
+        errors = (
+            [f"{path} contains an unpaired Unicode surrogate"]
+            if sanitized != value
+            else []
+        )
+        return sanitized, errors
+    if value is None or isinstance(value, (int, bool)):
         return value, []
     if isinstance(value, float):
         if math.isfinite(value):
@@ -162,7 +211,12 @@ def _sanitize_json_value(
             errors = []
             for index, (key, item) in enumerate(value.items()):
                 if isinstance(key, str):
-                    sanitized_key = key
+                    sanitized_key, key_errors = _sanitize_json_value(
+                        key,
+                        f"{path}.<key>",
+                        active,
+                    )
+                    errors.extend(key_errors)
                 elif isinstance(key, (date, datetime)):
                     sanitized_key = key.isoformat()
                 else:
@@ -170,6 +224,12 @@ def _sanitize_json_value(
                     errors.append(
                         f"{path} contains non-string mapping key {type(key).__name__}"
                     )
+                if sanitized_key in sanitized_map:
+                    errors.append(
+                        f"{path} has mapping key collision after canonicalization: "
+                        f"{sanitized_key!r}"
+                    )
+                    sanitized_key = f"__colliding_key_{index}__"
                 sanitized, item_errors = _sanitize_json_value(
                     item,
                     f"{path}.{sanitized_key}",
@@ -396,7 +456,7 @@ def _compare_exact(
     return False
 
 
-def _numbers_equal(expected: Any, actual: Any, tolerance: float) -> bool:
+def _numbers_equal(expected: Any, actual: Any, tolerance: Any) -> bool:
     if expected is None or actual is None:
         return expected is actual
     if isinstance(expected, bool) or isinstance(actual, bool):
@@ -416,9 +476,15 @@ def _numbers_equal(expected: Any, actual: Any, tolerance: float) -> bool:
         ):
             return expected == actual
         try:
-            difference = abs(Fraction(expected) - Fraction(actual))
-            allowed = Fraction(str(tolerance))
-        except (OverflowError, ValueError, ZeroDivisionError):
+            expected_number = (
+                Decimal(expected) if isinstance(expected, int) else Decimal(str(expected))
+            )
+            actual_number = (
+                Decimal(actual) if isinstance(actual, int) else Decimal(str(actual))
+            )
+            allowed = Decimal(str(tolerance))
+            difference = abs(expected_number - actual_number)
+        except (InvalidOperation, OverflowError, ValueError):
             return False
         return difference <= allowed
     return expected == actual
@@ -427,7 +493,7 @@ def _numbers_equal(expected: Any, actual: Any, tolerance: float) -> bool:
 def compare_rows(
     expected: Any,
     actual: Any,
-    tolerance: float,
+    tolerance: Any,
 ) -> tuple[bool, str | None]:
     if not isinstance(expected, list) or not isinstance(actual, list):
         return False, "rows must be lists"
@@ -704,7 +770,7 @@ def evaluate_case(
                 differences,
             )
         )
-    tolerance = float(expected_result.get("tolerance", 0.0))
+    tolerance = expected_result.get("tolerance", 0)
     rows_match, rows_message = compare_rows(
         expected_result.get("rows", []),
         actual_result.get("rows", []),
