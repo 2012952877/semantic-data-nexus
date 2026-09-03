@@ -34,6 +34,7 @@ jobs:
           python data/synthetic/generate.py
           python evals/tools/build_fixtures.py
           git diff --exit-code -- data/synthetic/generated evals/fixtures
+          test -z "$(git status --porcelain --untracked-files=all -- data/synthetic/generated evals/fixtures)"
       - name: Run tests and reference gate
         run: |
           pytest evals

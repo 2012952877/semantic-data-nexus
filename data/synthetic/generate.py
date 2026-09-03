@@ -121,13 +121,20 @@ def generate(output: Path = DEFAULT_OUTPUT) -> None:
             continue
         for region_index, (region_id, _, _) in enumerate(REGIONS):
             order_count = 3 + ((month + region_index) % 3)
-            region_customers = [
-                customer for customer in CUSTOMERS if customer[2] == region_id
-            ]
             for local_index in range(order_count):
                 order_id = f"O{order_number:04d}"
                 order_day = 2 + ((local_index * 7 + region_index * 3) % 25)
                 order_date = date(year, month, order_day)
+                customer_region_id = (
+                    REGIONS[(region_index + 1) % len(REGIONS)][0]
+                    if order_number % 5 == 0
+                    else region_id
+                )
+                region_customers = [
+                    customer
+                    for customer in CUSTOMERS
+                    if customer[2] == customer_region_id
+                ]
                 customer = region_customers[(month + local_index) % len(region_customers)]
                 is_return = (order_number % 11) == 0
                 promotion = (

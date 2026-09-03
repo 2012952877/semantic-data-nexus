@@ -55,7 +55,9 @@ meets `--minimum-score` and every repeatable `--minimum-dimension` gate passes.
 Each golden case has a stable ID, Chinese question, optional clarification
 context, and an `expected` object. Expected logical operators are generic
 (`SCAN`, `JOIN`, `FILTER`, `AGGREGATE`, `PIVOT`, `DERIVE`, `PROJECT`, and so on)
-rather than SQL- or vendor-specific nodes.
+rather than SQL- or vendor-specific nodes. Generic node fixtures carry stable
+IDs, dependencies, inputs, and outputs so the evaluator can reject empty,
+cyclic, disconnected, or column-inconsistent graphs.
 
 ## Add a case
 

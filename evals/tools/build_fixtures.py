@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "evals" / "fixtures" / "v0"
 DATA = ROOT / "data" / "synthetic" / "generated"
 EVAL_CLOCK = "2025-04-15T09:00:00+08:00"
+TABLES = ("dates", "regions", "products", "customers", "orders", "order_items")
 
 
 def serializable(value: Any) -> Any:
@@ -39,6 +40,33 @@ def edges(operators: list[str]) -> list[list[str]]:
         [f"{index}:{operators[index]}", f"{index + 1}:{operators[index + 1]}"]
         for index in range(len(operators) - 1)
     ]
+
+
+def plan_shape(operators: list[str]) -> dict[str, Any]:
+    node_ids = [f"{index}:{operator}" for index, operator in enumerate(operators)]
+    nodes = []
+    for index, (node_id, operator) in enumerate(zip(node_ids, operators, strict=True)):
+        dependencies = [] if index == 0 else [node_ids[index - 1]]
+        nodes.append(
+            {
+                "id": node_id,
+                "operator": operator,
+                "depends_on": dependencies,
+                "inputs": [] if index == 0 else ["rows"],
+                "outputs": ["rows"],
+            }
+        )
+    return {"operators": operators, "edges": edges(operators), "nodes": nodes}
+
+
+def register_data_views(
+    connection: duckdb.DuckDBPyConnection,
+    data_directory: Path = DATA,
+) -> None:
+    for table in TABLES:
+        connection.read_csv(str(data_directory / f"{table}.csv"), header=True).create_view(
+            table
+        )
 
 
 def success_case(
@@ -74,7 +102,7 @@ def success_case(
             },
             "time_range": time_range,
             "member_normalization": member_normalization or {},
-            "plan": {"operators": operators, "edges": edges(operators)},
+            "plan": plan_shape(operators),
             "result": {
                 "schema": schema,
                 "grain": grain,
@@ -117,7 +145,7 @@ def diagnostic_case(
             },
             "time_range": {},
             "member_normalization": member_normalization or {},
-            "plan": {"operators": [], "edges": []},
+            "plan": plan_shape([]),
             "result": {
                 "schema": [],
                 "grain": [],
@@ -140,11 +168,7 @@ def diagnostic_case(
 
 def main() -> None:
     connection = duckdb.connect()
-    for table in ("dates", "regions", "products", "customers", "orders", "order_items"):
-        path = (DATA / f"{table}.csv").as_posix()
-        connection.execute(
-            f"create view {table} as select * from read_csv_auto('{path}', header=true)"
-        )
+    register_data_views(connection)
 
     region_profit_sql = """
         select r.region_name, round(sum(i.net_revenue - i.total_cost), 2) as gross_profit
@@ -339,6 +363,40 @@ def main() -> None:
                 "source": "explicit_year",
             },
             member_normalization={"企业客户": "enterprise"},
+            governance={"decision": "allow", "applied_policy": "customer_aggregate_only"},
+        ),
+        success_case(
+            connection,
+            case_id="customer-home-region-sales",
+            question="2024年按客户归属区域统计销售额。",
+            sql="""
+                select r.region_name, round(sum(i.net_revenue),2) sales
+                from orders o join order_items i using(order_id)
+                join customers c using(customer_id)
+                join regions r on c.home_region_id=r.region_id
+                where year(o.order_date)=2024
+                group by r.region_name order by r.region_name
+            """,
+            entities=["customer", "order", "order_item", "region"],
+            fields=[
+                "customer.home_region_id",
+                "region.region_name",
+                "order.order_date",
+            ],
+            metrics=["sales"],
+            relations=["item_order", "order_customer", "customer_home_region"],
+            operators=["SCAN", "JOIN", "FILTER", "AGGREGATE", "SORT", "PROJECT"],
+            schema=[
+                {"name": "region_name", "type": "string"},
+                {"name": "sales", "type": "decimal"},
+            ],
+            grain=["region.region_name"],
+            order_by=["region_name asc"],
+            time_range={
+                "start": "2024-01-01",
+                "end_exclusive": "2025-01-01",
+                "source": "explicit_year",
+            },
             governance={"decision": "allow", "applied_policy": "customer_aggregate_only"},
         ),
         success_case(
@@ -835,9 +893,23 @@ def main() -> None:
                 "id": "duplicate-node",
                 "expected_diagnostic": "DUPLICATE_NODE_ID",
                 "plan": {
+                    "operators": ["SCAN", "PROJECT"],
+                    "edges": [["n1", "n1"]],
                     "nodes": [
-                        {"id": "n1", "outputs": ["sales"]},
-                        {"id": "n1", "outputs": ["profit"]},
+                        {
+                            "id": "n1",
+                            "operator": "SCAN",
+                            "depends_on": [],
+                            "inputs": [],
+                            "outputs": ["sales"],
+                        },
+                        {
+                            "id": "n1",
+                            "operator": "PROJECT",
+                            "depends_on": ["n1"],
+                            "inputs": ["sales"],
+                            "outputs": ["sales"],
+                        },
                     ]
                 },
             },
@@ -845,11 +917,14 @@ def main() -> None:
                 "id": "missing-dependency",
                 "expected_diagnostic": "MISSING_DEPENDENCY",
                 "plan": {
+                    "operators": ["AGGREGATE"],
+                    "edges": [["missing_scan", "aggregate"]],
                     "nodes": [
                         {
                             "id": "aggregate",
+                            "operator": "AGGREGATE",
                             "depends_on": ["missing_scan"],
-                            "inputs": [],
+                            "inputs": ["rows"],
                             "outputs": ["sales"],
                         }
                     ]
@@ -859,15 +934,118 @@ def main() -> None:
                 "id": "invalid-column-flow",
                 "expected_diagnostic": "INVALID_COLUMN_FLOW",
                 "plan": {
+                    "operators": ["SCAN", "DERIVE"],
+                    "edges": [["scan", "derive"]],
                     "nodes": [
-                        {"id": "scan", "outputs": ["sales"]},
+                        {
+                            "id": "scan",
+                            "operator": "SCAN",
+                            "depends_on": [],
+                            "inputs": [],
+                            "outputs": ["sales"],
+                        },
                         {
                             "id": "derive",
+                            "operator": "DERIVE",
                             "depends_on": ["scan"],
                             "inputs": ["gross_profit"],
                             "outputs": ["gross_margin"],
                         },
                     ]
+                },
+            },
+            {
+                "id": "dependency-cycle",
+                "expected_diagnostic": "DEPENDENCY_CYCLE",
+                "plan": {
+                    "operators": ["DERIVE", "PROJECT"],
+                    "edges": [["derive", "project"], ["project", "derive"]],
+                    "nodes": [
+                        {
+                            "id": "derive",
+                            "operator": "DERIVE",
+                            "depends_on": ["project"],
+                            "inputs": ["rows"],
+                            "outputs": ["rows"],
+                        },
+                        {
+                            "id": "project",
+                            "operator": "PROJECT",
+                            "depends_on": ["derive"],
+                            "inputs": ["rows"],
+                            "outputs": ["rows"],
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "empty-node-graph",
+                "expected_diagnostic": "EMPTY_NODE_GRAPH",
+                "plan": {"operators": ["SCAN"], "edges": [], "nodes": []},
+            },
+            {
+                "id": "missing-node-id",
+                "expected_diagnostic": "MISSING_NODE_ID",
+                "plan": {
+                    "operators": ["SCAN"],
+                    "edges": [],
+                    "nodes": [
+                        {
+                            "id": "",
+                            "operator": "SCAN",
+                            "depends_on": [],
+                            "inputs": [],
+                            "outputs": ["rows"],
+                        }
+                    ],
+                },
+            },
+            {
+                "id": "disconnected-nodes",
+                "expected_diagnostic": "DISCONNECTED_GRAPH",
+                "plan": {
+                    "operators": ["SCAN", "SCAN"],
+                    "edges": [],
+                    "nodes": [
+                        {
+                            "id": "left",
+                            "operator": "SCAN",
+                            "depends_on": [],
+                            "inputs": [],
+                            "outputs": ["left_id"],
+                        },
+                        {
+                            "id": "right",
+                            "operator": "SCAN",
+                            "depends_on": [],
+                            "inputs": [],
+                            "outputs": ["right_id"],
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "malformed-node-fields",
+                "expected_diagnostic": "MALFORMED_NODE_FIELDS",
+                "plan": {
+                    "operators": ["SCAN", "PROJECT"],
+                    "edges": [["scan", "project"]],
+                    "nodes": [
+                        {
+                            "id": "scan",
+                            "operator": "SCAN",
+                            "depends_on": [],
+                            "inputs": [],
+                            "outputs": None,
+                        },
+                        {
+                            "id": "project",
+                            "operator": "PROJECT",
+                            "depends_on": ["scan"],
+                            "inputs": [[]],
+                            "outputs": ["rows"],
+                        },
+                    ],
                 },
             },
         ],

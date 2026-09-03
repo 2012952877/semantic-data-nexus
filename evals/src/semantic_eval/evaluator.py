@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -52,7 +53,7 @@ class EvaluationReport:
         return all(case.passed for case in self.cases)
 
     def to_dict(self) -> dict[str, Any]:
-        result = asdict(self)
+        result = _normalize_temporal(asdict(self))
         result["passed"] = self.passed
         for case, encoded in zip(self.cases, result["cases"], strict=True):
             encoded["passed"] = case.passed
@@ -66,9 +67,27 @@ def load_document(path: str | Path) -> dict[str, Any]:
             document = yaml.safe_load(handle)
         else:
             document = json.load(handle)
+    document = _normalize_temporal(document)
     if not isinstance(document, dict):
         raise ValueError(f"{source} must contain an object at its root")
     return document
+
+
+def _normalize_temporal(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            _normalize_temporal(key): _normalize_temporal(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_temporal(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_temporal(item) for item in value)
+    return value
 
 
 def _difference(
@@ -92,29 +111,141 @@ def _difference(
 
 def validate_plan(plan: dict[str, Any]) -> list[str]:
     """Return generic graph integrity errors without assuming a compiler contract."""
-    nodes = plan.get("nodes")
-    if not nodes:
-        return []
-    node_ids = [node.get("id") for node in nodes]
     errors: list[str] = []
-    duplicates = sorted({node_id for node_id in node_ids if node_ids.count(node_id) > 1})
+    operators = plan.get("operators", [])
+    edges = plan.get("edges", [])
+    nodes = plan.get("nodes", [])
+    if not isinstance(operators, list):
+        return ["operators must be a list"]
+    if not isinstance(edges, list):
+        return ["edges must be a list"]
+    if not isinstance(nodes, list):
+        return ["nodes must be a list"]
+    if operators and not nodes:
+        return ["plan has operators but no executable nodes"]
+    if nodes and not operators:
+        errors.append("plan has nodes but no operators")
+    if edges and not nodes:
+        errors.append("plan has edges but no executable nodes")
+    if any(not isinstance(operator, str) or not operator for operator in operators):
+        errors.append("every operator must be a non-empty string")
+
+    valid_nodes = [node for node in nodes if isinstance(node, dict)]
+    if len(valid_nodes) != len(nodes):
+        errors.append("every node must be an object")
+    node_ids = [node.get("id") for node in valid_nodes]
+    invalid_ids = [node_id for node_id in node_ids if not isinstance(node_id, str) or not node_id]
+    if invalid_ids:
+        errors.append("every node must have a non-empty string ID")
+    string_ids = [node_id for node_id in node_ids if isinstance(node_id, str) and node_id]
+    duplicates = sorted(
+        {node_id for node_id in string_ids if string_ids.count(node_id) > 1}
+    )
     if duplicates:
         errors.append(f"duplicate node IDs: {', '.join(duplicates)}")
-    known = set(node_ids)
-    for node in nodes:
+    known = set(string_ids)
+
+    node_operators = [node.get("operator") for node in valid_nodes]
+    if node_operators != operators:
+        errors.append("node operator sequence does not match plan operators")
+
+    declared_edges: set[tuple[str, str]] = set()
+    valid_edge_count = 0
+    for edge in edges:
+        if (
+            not isinstance(edge, list)
+            or len(edge) != 2
+            or not all(isinstance(endpoint, str) and endpoint for endpoint in edge)
+        ):
+            errors.append("every edge must contain two non-empty string node IDs")
+            continue
+        source, target = edge
+        valid_edge_count += 1
+        declared_edges.add((source, target))
+        missing_endpoints = sorted({source, target} - known)
+        if missing_endpoints:
+            errors.append(
+                f"edge {source}->{target} has missing nodes: {', '.join(missing_endpoints)}"
+            )
+    if len(declared_edges) != valid_edge_count:
+        errors.append("plan contains duplicate edges")
+
+    dependency_edges: set[tuple[str, str]] = set()
+    adjacency = {node_id: set() for node_id in known}
+    undirected = {node_id: set() for node_id in known}
+    indegree = {node_id: 0 for node_id in known}
+    node_data: dict[str, dict[str, set[str]]] = {}
+    for node in valid_nodes:
         node_id = node.get("id", "<missing>")
-        missing = sorted(set(node.get("depends_on", [])) - known)
+        sanitized: dict[str, set[str]] = {}
+        for field_name in ("depends_on", "inputs", "outputs"):
+            raw_values = node.get(field_name, [])
+            if not isinstance(raw_values, list):
+                errors.append(f"{node_id} {field_name} must be a list")
+                raw_values = []
+            values = [
+                value
+                for value in raw_values
+                if isinstance(value, str) and value
+            ]
+            if len(values) != len(raw_values):
+                errors.append(f"{node_id} has invalid {field_name}")
+            if len(set(values)) != len(values):
+                errors.append(f"{node_id} has duplicate {field_name}")
+            sanitized[field_name] = set(values)
+        if not sanitized["outputs"]:
+            errors.append(f"{node_id} must declare at least one output")
+        if isinstance(node_id, str) and node_id:
+            node_data[node_id] = sanitized
+
+    for node_id, data in node_data.items():
+        string_dependencies = data["depends_on"]
+        missing = sorted(string_dependencies - known)
         if missing:
             errors.append(f"{node_id} has missing dependencies: {', '.join(missing)}")
+        for dependency in string_dependencies & known:
+            dependency_edges.add((dependency, node_id))
+            undirected[dependency].add(node_id)
+            undirected[node_id].add(dependency)
+            if node_id not in adjacency[dependency]:
+                adjacency[dependency].add(node_id)
+                indegree[node_id] += 1
         upstream_outputs = {
             output
-            for upstream in nodes
-            if upstream.get("id") in node.get("depends_on", [])
-            for output in upstream.get("outputs", [])
+            for dependency in string_dependencies
+            for output in node_data.get(dependency, {}).get("outputs", set())
         }
-        missing_inputs = sorted(set(node.get("inputs", [])) - upstream_outputs)
-        if node.get("depends_on") and missing_inputs:
+        missing_inputs = sorted(data["inputs"] - upstream_outputs)
+        if string_dependencies and not data["inputs"]:
+            errors.append(f"{node_id} must declare inputs from its dependencies")
+        elif string_dependencies and missing_inputs:
             errors.append(f"{node_id} has unavailable inputs: {', '.join(missing_inputs)}")
+
+    if declared_edges != dependency_edges:
+        errors.append("plan edges do not match node dependencies")
+
+    ready = [node_id for node_id, degree in indegree.items() if degree == 0]
+    visited = 0
+    while ready:
+        node_id = ready.pop()
+        visited += 1
+        for downstream in adjacency[node_id]:
+            indegree[downstream] -= 1
+            if indegree[downstream] == 0:
+                ready.append(downstream)
+    if visited != len(known):
+        errors.append("plan graph contains a dependency cycle")
+    if known:
+        connected = set()
+        pending = [next(iter(known))]
+        while pending:
+            node_id = pending.pop()
+            if node_id in connected:
+                continue
+            connected.add(node_id)
+            pending.extend(undirected[node_id] - connected)
+        if connected != known:
+            errors.append("plan graph contains disconnected nodes")
     return errors
 
 
@@ -238,6 +369,13 @@ def evaluate_case(golden: dict[str, Any], actual: dict[str, Any] | None) -> Case
             actual_plan.get("edges", []),
             differences,
         ),
+        _compare_exact(
+            "plan",
+            "plan.nodes",
+            expected_plan.get("nodes", []),
+            actual_plan.get("nodes", []),
+            differences,
+        ),
     ]
     plan_errors = validate_plan(actual_plan)
     plan_checks.append(not plan_errors)
@@ -346,6 +484,8 @@ def evaluate_bundle(
     golden_suite: dict[str, Any],
     candidate_bundle: dict[str, Any],
 ) -> EvaluationReport:
+    golden_suite = _normalize_temporal(golden_suite)
+    candidate_bundle = _normalize_temporal(candidate_bundle)
     candidates = candidate_bundle.get("cases", {})
     if isinstance(candidates, list):
         candidates = {candidate["id"]: candidate for candidate in candidates}

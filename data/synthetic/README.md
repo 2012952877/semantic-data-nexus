@@ -29,6 +29,8 @@ files use UTF-8 and explicit newline handling.
 `net_revenue - total_cost`. The corpus intentionally includes:
 
 - four regions and multiple product categories;
+- deterministic cross-region purchases where selling region differs from the
+  fictional customer's home region;
 - nullable promotion codes and discounted lines;
 - returned orders represented by signed amounts;
 - two products with the duplicate-looking name `晨星标准版` but distinct IDs;

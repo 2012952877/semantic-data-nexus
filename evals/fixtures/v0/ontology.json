@@ -83,6 +83,7 @@
     {"id": "order_date", "from": "order.order_date", "to": "date.date_id", "cardinality": "many_to_one"},
     {"id": "order_region", "from": "order.region_id", "to": "region.region_id", "cardinality": "many_to_one"},
     {"id": "order_customer", "from": "order.customer_id", "to": "customer.customer_id", "cardinality": "many_to_one"},
+    {"id": "customer_home_region", "from": "customer.home_region_id", "to": "region.region_id", "cardinality": "many_to_one"},
     {"id": "item_order", "from": "order_item.order_id", "to": "order.order_id", "cardinality": "many_to_one"},
     {"id": "item_product", "from": "order_item.product_id", "to": "product.product_id", "cardinality": "many_to_one"}
   ],

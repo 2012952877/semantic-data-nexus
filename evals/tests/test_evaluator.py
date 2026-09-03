@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from datetime import date
 from pathlib import Path
 
 from semantic_eval.evaluator import (
@@ -88,9 +90,116 @@ def test_generic_plan_validation() -> None:
         "fixtures"
     ]
     messages = {
-        fixture["expected_diagnostic"]: validate_plan(fixture["plan"])[0]
+        fixture["expected_diagnostic"]: "; ".join(validate_plan(fixture["plan"]))
         for fixture in fixtures
     }
     assert "duplicate node IDs" in messages["DUPLICATE_NODE_ID"]
     assert "missing dependencies" in messages["MISSING_DEPENDENCY"]
     assert "unavailable inputs" in messages["INVALID_COLUMN_FLOW"]
+    assert "dependency cycle" in messages["DEPENDENCY_CYCLE"]
+    assert "no executable nodes" in messages["EMPTY_NODE_GRAPH"]
+    assert "non-empty string ID" in messages["MISSING_NODE_ID"]
+    assert "disconnected nodes" in messages["DISCONNECTED_GRAPH"]
+    assert "outputs must be a list" in messages["MALFORMED_NODE_FIELDS"]
+
+
+def test_plan_nodes_are_required_and_structurally_consistent() -> None:
+    golden_suite = suite()
+    candidate = passing()
+    case_id = "regional-quarterly-gross-profit"
+
+    missing_nodes = copy.deepcopy(candidate)
+    missing_nodes["cases"][case_id]["plan"]["nodes"] = []
+    missing_report = evaluate_bundle(golden_suite, missing_nodes)
+    missing_case = next(case for case in missing_report.cases if case.case_id == case_id)
+    assert missing_case.dimension_scores["plan"] < 100
+    assert "no executable nodes" in missing_case.differences[-1].message
+
+    inconsistent = copy.deepcopy(candidate)
+    inconsistent["cases"][case_id]["plan"]["nodes"][0]["operator"] = "PROJECT"
+    inconsistent_report = evaluate_bundle(golden_suite, inconsistent)
+    inconsistent_case = next(
+        case for case in inconsistent_report.cases if case.case_id == case_id
+    )
+    assert inconsistent_case.dimension_scores["plan"] < 100
+    assert "operator sequence" in inconsistent_case.differences[-1].message
+
+
+def test_disconnected_and_malformed_node_fields_return_diagnostics() -> None:
+    disconnected = {
+        "operators": ["SCAN", "SCAN"],
+        "edges": [],
+        "nodes": [
+            {
+                "id": "left",
+                "operator": "SCAN",
+                "depends_on": [],
+                "inputs": [],
+                "outputs": ["left_id"],
+            },
+            {
+                "id": "right",
+                "operator": "SCAN",
+                "depends_on": [],
+                "inputs": [],
+                "outputs": ["right_id"],
+            },
+        ],
+    }
+    assert "disconnected nodes" in "; ".join(validate_plan(disconnected))
+
+    malformed = {
+        "operators": ["SCAN", "PROJECT"],
+        "edges": [["scan", "project"]],
+        "nodes": [
+            {
+                "id": "scan",
+                "operator": "SCAN",
+                "depends_on": [],
+                "inputs": [],
+                "outputs": None,
+            },
+            {
+                "id": "project",
+                "operator": "PROJECT",
+                "depends_on": ["scan"],
+                "inputs": [[]],
+                "outputs": ["rows"],
+            },
+        ],
+    }
+    diagnostics = "; ".join(validate_plan(malformed))
+    assert "outputs must be a list" in diagnostics
+    assert "invalid inputs" in diagnostics
+
+
+def test_yaml_temporal_scalars_are_canonical_strings(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "candidate.yaml"
+    yaml_path.write_text(
+        "start: 2024-01-01\n"
+        "clock: 2025-04-15T09:00:00+08:00\n"
+        "dates:\n"
+        "  - 2024-03-01\n"
+        "2024-01-02: keyed-date\n",
+        encoding="utf-8",
+    )
+    document = load_document(yaml_path)
+    assert document == {
+        "start": "2024-01-01",
+        "clock": "2025-04-15T09:00:00+08:00",
+        "dates": ["2024-03-01"],
+        "2024-01-02": "keyed-date",
+    }
+    json.dumps(document)
+
+
+def test_in_memory_temporal_values_compare_and_serialize() -> None:
+    golden_case = copy.deepcopy(suite()["cases"][0])
+    candidate_case = copy.deepcopy(passing()["cases"][golden_case["id"]])
+    candidate_case["time_range"]["start"] = date(2024, 1, 1)
+    report = evaluate_bundle(
+        {"suite_version": "test", "cases": [golden_case]},
+        {"cases": {golden_case["id"]: candidate_case}},
+    )
+    assert report.passed
+    json.dumps(report.to_dict())

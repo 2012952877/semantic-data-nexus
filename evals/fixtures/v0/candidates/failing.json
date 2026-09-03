@@ -56,6 +56,82 @@
             "4:SORT",
             "5:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:SORT",
+            "operator": "SORT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "4:SORT"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -170,6 +246,82 @@
             "4:SORT",
             "5:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:SORT",
+            "operator": "SORT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "4:SORT"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -290,6 +442,95 @@
             "5:DERIVE",
             "6:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PIVOT",
+            "operator": "PIVOT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:DERIVE",
+            "operator": "DERIVE",
+            "depends_on": [
+              "4:PIVOT"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "6:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "5:DERIVE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -429,6 +670,82 @@
             "4:TOP_N",
             "5:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:TOP_N",
+            "operator": "TOP_N",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "4:TOP_N"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -544,6 +861,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -663,6 +1043,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -723,6 +1166,201 @@
         "artifact": "reference:enterprise-segment-order-count"
       }
     },
+    "customer-home-region-sales": {
+      "semantic": {
+        "entities": [
+          "customer",
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "customer.home_region_id",
+          "region.region_name",
+          "order.order_date"
+        ],
+        "metrics": [
+          "sales"
+        ],
+        "relations": [
+          "item_order",
+          "order_customer",
+          "customer_home_region"
+        ]
+      },
+      "time_range": {
+        "start": "2024-01-01",
+        "end_exclusive": "2025-01-01",
+        "source": "explicit_year"
+      },
+      "member_normalization": {},
+      "plan": {
+        "operators": [
+          "SCAN",
+          "JOIN",
+          "FILTER",
+          "AGGREGATE",
+          "SORT",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "0:SCAN",
+            "1:JOIN"
+          ],
+          [
+            "1:JOIN",
+            "2:FILTER"
+          ],
+          [
+            "2:FILTER",
+            "3:AGGREGATE"
+          ],
+          [
+            "3:AGGREGATE",
+            "4:SORT"
+          ],
+          [
+            "4:SORT",
+            "5:PROJECT"
+          ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:SORT",
+            "operator": "SORT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "4:SORT"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
+        ]
+      },
+      "result": {
+        "schema": [
+          {
+            "name": "region_name",
+            "type": "string"
+          },
+          {
+            "name": "sales",
+            "type": "decimal"
+          }
+        ],
+        "grain": [
+          "region.region_name"
+        ],
+        "order_by": [
+          "region_name asc"
+        ],
+        "rows": [
+          {
+            "region_name": "东湖区",
+            "sales": 13624.5
+          },
+          {
+            "region_name": "北辰区",
+            "sales": 18015.0
+          },
+          {
+            "region_name": "南港区",
+            "sales": 20281.5
+          },
+          {
+            "region_name": "西岭区",
+            "sales": 17643.0
+          }
+        ],
+        "tolerance": 0.01
+      },
+      "behavior": {
+        "class": "success"
+      },
+      "governance": {
+        "decision": "allow",
+        "applied_policy": "customer_aggregate_only"
+      },
+      "lineage": {
+        "entities": [
+          "customer",
+          "order",
+          "order_item",
+          "region"
+        ],
+        "fields": [
+          "customer.home_region_id",
+          "region.region_name",
+          "order.order_date"
+        ],
+        "artifact": "reference:customer-home-region-sales"
+      }
+    },
     "explicit-date-north-sales": {
       "semantic": {
         "entities": [
@@ -775,6 +1413,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -863,6 +1564,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -939,7 +1703,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -1013,6 +1778,82 @@
             "4:DERIVE",
             "5:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:DERIVE",
+            "operator": "DERIVE",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "4:DERIVE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1107,6 +1948,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1165,7 +2069,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -1198,7 +2103,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -1228,7 +2134,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -1256,7 +2163,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -1284,7 +2192,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -1349,6 +2258,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1489,6 +2461,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1595,6 +2630,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1686,6 +2784,82 @@
             "4:DERIVE",
             "5:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:DERIVE",
+            "operator": "DERIVE",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "5:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "4:DERIVE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1791,6 +2965,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -1898,6 +3135,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -2023,6 +3323,56 @@
             "2:AGGREGATE",
             "3:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "1:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "2:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -2113,6 +3463,69 @@
             "3:AGGREGATE",
             "4:PROJECT"
           ]
+        ],
+        "nodes": [
+          {
+            "id": "0:SCAN",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "1:JOIN",
+            "operator": "JOIN",
+            "depends_on": [
+              "0:SCAN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "2:FILTER",
+            "operator": "FILTER",
+            "depends_on": [
+              "1:JOIN"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "3:AGGREGATE",
+            "operator": "AGGREGATE",
+            "depends_on": [
+              "2:FILTER"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "4:PROJECT",
+            "operator": "PROJECT",
+            "depends_on": [
+              "3:AGGREGATE"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
         ]
       },
       "result": {
@@ -2258,7 +3671,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],
@@ -2286,7 +3700,8 @@
       "member_normalization": {},
       "plan": {
         "operators": [],
-        "edges": []
+        "edges": [],
+        "nodes": []
       },
       "result": {
         "schema": [],

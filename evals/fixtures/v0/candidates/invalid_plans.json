@@ -5,17 +5,37 @@
       "id": "duplicate-node",
       "expected_diagnostic": "DUPLICATE_NODE_ID",
       "plan": {
+        "operators": [
+          "SCAN",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "n1",
+            "n1"
+          ]
+        ],
         "nodes": [
           {
             "id": "n1",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
             "outputs": [
               "sales"
             ]
           },
           {
             "id": "n1",
+            "operator": "PROJECT",
+            "depends_on": [
+              "n1"
+            ],
+            "inputs": [
+              "sales"
+            ],
             "outputs": [
-              "profit"
+              "sales"
             ]
           }
         ]
@@ -25,13 +45,25 @@
       "id": "missing-dependency",
       "expected_diagnostic": "MISSING_DEPENDENCY",
       "plan": {
+        "operators": [
+          "AGGREGATE"
+        ],
+        "edges": [
+          [
+            "missing_scan",
+            "aggregate"
+          ]
+        ],
         "nodes": [
           {
             "id": "aggregate",
+            "operator": "AGGREGATE",
             "depends_on": [
               "missing_scan"
             ],
-            "inputs": [],
+            "inputs": [
+              "rows"
+            ],
             "outputs": [
               "sales"
             ]
@@ -43,15 +75,29 @@
       "id": "invalid-column-flow",
       "expected_diagnostic": "INVALID_COLUMN_FLOW",
       "plan": {
+        "operators": [
+          "SCAN",
+          "DERIVE"
+        ],
+        "edges": [
+          [
+            "scan",
+            "derive"
+          ]
+        ],
         "nodes": [
           {
             "id": "scan",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
             "outputs": [
               "sales"
             ]
           },
           {
             "id": "derive",
+            "operator": "DERIVE",
             "depends_on": [
               "scan"
             ],
@@ -60,6 +106,155 @@
             ],
             "outputs": [
               "gross_margin"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dependency-cycle",
+      "expected_diagnostic": "DEPENDENCY_CYCLE",
+      "plan": {
+        "operators": [
+          "DERIVE",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "derive",
+            "project"
+          ],
+          [
+            "project",
+            "derive"
+          ]
+        ],
+        "nodes": [
+          {
+            "id": "derive",
+            "operator": "DERIVE",
+            "depends_on": [
+              "project"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          },
+          {
+            "id": "project",
+            "operator": "PROJECT",
+            "depends_on": [
+              "derive"
+            ],
+            "inputs": [
+              "rows"
+            ],
+            "outputs": [
+              "rows"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty-node-graph",
+      "expected_diagnostic": "EMPTY_NODE_GRAPH",
+      "plan": {
+        "operators": [
+          "SCAN"
+        ],
+        "edges": [],
+        "nodes": []
+      }
+    },
+    {
+      "id": "missing-node-id",
+      "expected_diagnostic": "MISSING_NODE_ID",
+      "plan": {
+        "operators": [
+          "SCAN"
+        ],
+        "edges": [],
+        "nodes": [
+          {
+            "id": "",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "rows"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "disconnected-nodes",
+      "expected_diagnostic": "DISCONNECTED_GRAPH",
+      "plan": {
+        "operators": [
+          "SCAN",
+          "SCAN"
+        ],
+        "edges": [],
+        "nodes": [
+          {
+            "id": "left",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "left_id"
+            ]
+          },
+          {
+            "id": "right",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": [
+              "right_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "malformed-node-fields",
+      "expected_diagnostic": "MALFORMED_NODE_FIELDS",
+      "plan": {
+        "operators": [
+          "SCAN",
+          "PROJECT"
+        ],
+        "edges": [
+          [
+            "scan",
+            "project"
+          ]
+        ],
+        "nodes": [
+          {
+            "id": "scan",
+            "operator": "SCAN",
+            "depends_on": [],
+            "inputs": [],
+            "outputs": null
+          },
+          {
+            "id": "project",
+            "operator": "PROJECT",
+            "depends_on": [
+              "scan"
+            ],
+            "inputs": [
+              []
+            ],
+            "outputs": [
+              "rows"
             ]
           }
         ]
