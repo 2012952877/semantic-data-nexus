@@ -25,6 +25,14 @@ import type { AskRequest, Run, StageKey } from '@/domain'
 const INTERRUPTED_HEARTBEAT_MS = 30_000
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+type ExecutionLease = NonNullable<Run['executionLease']>
+
+const isActive = (run: Run) => run.state === 'running' || run.state === 'queued'
+
+const sameLease = (left: ExecutionLease | undefined, right: ExecutionLease) =>
+  left?.ownerId === right.ownerId
+  && left.generation === right.generation
+  && left.heartbeatAt === right.heartbeatAt
 
 const createUuid = () => {
   const bytes = window.crypto.getRandomValues(new Uint8Array(16))
@@ -50,9 +58,17 @@ export class RunHistoryStorageError extends Error {
   }
 }
 
+class RunLeaseLostError extends Error {
+  constructor(readonly currentRun: Run | undefined) {
+    super('运行租约已由另一个页面终止或接管。')
+    this.name = 'RunLeaseLostError'
+  }
+}
+
 export class MockSemanticNexusClient implements SemanticNexusClient {
   private runs = new Map<string, Run>()
   private canceled = new Set<string>()
+  private leaseExpiryTimers = new Map<string, number>()
 
   constructor(
     private readonly stageDelayMs = 360,
@@ -88,6 +104,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
 
   async startRun(request: AskRequest, onProgress?: (run: Run) => void): Promise<Run> {
     const id = `run-syn-${createUuid()}`
+    const leaseGeneration = createUuid()
     const run: Run = {
       id,
       question: request.question,
@@ -104,7 +121,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       lineage,
       diagnostics: [],
       scenario: request.scenario,
-      executionLease: this.currentLease(),
+      executionLease: this.currentLease(leaseGeneration),
     }
     this.runs.set(id, run)
     try {
@@ -116,22 +133,30 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
 
     let committingResult = false
     let persistenceStage: StageKey | undefined
+    let persistenceLease: ExecutionLease | undefined
     try {
       for (let index = 0; index < run.stages.length; index += 1) {
         if (this.canceled.has(id)) {
           persistenceStage = run.stages.find((stage) => stage.state === 'pending')?.key
-          return this.finishCanceled(run, onProgress)
+          const persistedLease = this.readOwnedActiveLease(id, leaseGeneration)
+          if (!persistedLease) return this.reconcileLeaseLoss(run, onProgress)
+          persistenceLease = persistedLease
+          return this.finishCanceled(run, persistedLease, onProgress)
         }
         const stage = run.stages[index]
         if (!stage) continue
         stage.state = 'running'
-        run.executionLease = this.currentLease()
+        run.executionLease = this.currentLease(leaseGeneration)
         onProgress?.(clone(run))
         await this.delay(this.stageDelayMs)
 
+        const persistedLease = this.readOwnedActiveLease(id, leaseGeneration)
+        if (!persistedLease) return this.reconcileLeaseLoss(run, onProgress)
+        persistenceLease = persistedLease
+
         if (this.canceled.has(id)) {
           persistenceStage = stage.key
-          return this.finishCanceled(run, onProgress)
+          return this.finishCanceled(run, persistedLease, onProgress)
         }
 
         if (request.scenario === 'failure' && stage.key === 'execute') {
@@ -150,24 +175,27 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
             severity: 'error',
           }]
           persistenceStage = stage.key
-          this.saveAndNotify(run, onProgress)
+          this.saveAndNotify(run, persistedLease, onProgress)
           return clone(run)
         }
 
         stage.state = 'succeeded'
         stage.durationMs = this.stageDelayMs
         run.elapsedMs = this.stageDelayMs * (index + 1)
-        run.executionLease = this.currentLease()
+        run.executionLease = this.currentLease(leaseGeneration)
         run.tokens = {
           input: 320 + index * 18,
           output: index < 1 ? 0 : 74 + index * 29,
         }
         persistenceStage = stage.key
-        this.saveAndNotify(run, onProgress)
+        this.saveAndNotify(run, persistedLease, onProgress)
       }
 
       committingResult = true
       persistenceStage = 'generate'
+      const finalLease = run.executionLease
+      if (!finalLease) return this.reconcileLeaseLoss(run, onProgress)
+      persistenceLease = finalLease
       run.result = request.scenario === 'empty' ? emptyResult : successResult
       run.state = request.scenario === 'empty' ? 'empty' : 'succeeded'
       run.completedAt = new Date().toISOString()
@@ -187,11 +215,20 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
           severity: 'info',
         }]
       }
-      this.saveAndNotify(run, onProgress)
+      this.saveAndNotify(run, finalLease, onProgress)
       return clone(run)
     } catch (error) {
+      if (error instanceof RunLeaseLostError) {
+        return this.reconcileLeaseLoss(run, onProgress, error.currentRun)
+      }
       if (error instanceof RunHistoryStorageError) {
-        this.abortAfterPersistenceFailure(run, persistenceStage, committingResult, error)
+        this.abortAfterPersistenceFailure(
+          run,
+          persistenceStage,
+          persistenceLease,
+          committingResult,
+          error,
+        )
       }
       throw error
     }
@@ -212,7 +249,11 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     return clone(componentStatus)
   }
 
-  private finishCanceled(run: Run, onProgress?: (run: Run) => void): Run {
+  private finishCanceled(
+    run: Run,
+    expectedLease: ExecutionLease,
+    onProgress?: (run: Run) => void,
+  ): Run {
     run.state = 'canceled'
     run.completedAt = new Date().toISOString()
     run.executionLease = undefined
@@ -221,19 +262,36 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
         stage.state = 'canceled'
       }
     })
-    this.saveAndNotify(run, onProgress)
+    this.saveAndNotify(run, expectedLease, onProgress)
     return clone(run)
   }
 
-  private saveAndNotify(run: Run, onProgress?: (run: Run) => void) {
+  private saveAndNotify(
+    run: Run,
+    expectedLease: ExecutionLease,
+    onProgress?: (run: Run) => void,
+  ) {
     this.runs.set(run.id, run)
-    this.persistRun(run)
+    this.persistRun(run, expectedLease)
     onProgress?.(clone(run))
+  }
+
+  private reconcileLeaseLoss(
+    staleRun: Run,
+    onProgress?: (run: Run) => void,
+    currentRun = this.readRunRecord(staleRun.id),
+  ) {
+    const reconciled = currentRun ?? this.interruptedClone(staleRun)
+    this.runs.set(reconciled.id, reconciled)
+    this.scheduleLeaseExpiry(reconciled)
+    onProgress?.(clone(reconciled))
+    return clone(reconciled)
   }
 
   private abortAfterPersistenceFailure(
     run: Run,
     persistenceStage: StageKey | undefined,
+    expectedLease: ExecutionLease | undefined,
     finalCommit: boolean,
     error: RunHistoryStorageError,
   ) {
@@ -261,10 +319,21 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       },
     ]
     this.runs.set(run.id, clone(run))
+    this.clearLeaseExpiry(run.id)
     try {
+      const current = this.readRunRecord(run.id)
+      if (!expectedLease || !current || !isActive(current)
+        || !sameLease(current.executionLease, expectedLease)) {
+        if (current) {
+          this.runs.set(current.id, current)
+          this.scheduleLeaseExpiry(current)
+        }
+        return
+      }
       window.localStorage.removeItem(runStorageKey(run.id))
       this.dispatchRunStorageChange(run.id, null)
     } catch (removeError) {
+      if (expectedLease) this.scheduleLeaseRetry(run, expectedLease)
       console.warn('Unable to remove aborted mock run record.', removeError)
     }
   }
@@ -348,20 +417,44 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     this.terminalizeInterruptedRuns()
   }
 
-  private persistRun(run: Run) {
+  private persistRun(run: Run, expectedLease?: ExecutionLease) {
     try {
+      if (expectedLease) {
+        const current = this.readRunRecord(run.id)
+        if (!current || !isActive(current) || !sameLease(current.executionLease, expectedLease)) {
+          throw new RunLeaseLostError(current)
+        }
+      }
       const serialized = serializeStoredRun(run)
       window.localStorage.setItem(runStorageKey(run.id), serialized)
       this.dispatchRunStorageChange(run.id, serialized)
+      this.scheduleLeaseExpiry(run)
     } catch (error) {
+      if (error instanceof RunLeaseLostError) throw error
+      if (error instanceof RunHistoryStorageError) throw error
       throw new RunHistoryStorageError(error)
     }
   }
 
-  private persistRunBestEffort(run: Run) {
+  private persistRunBestEffort(run: Run, expectedLease?: ExecutionLease) {
     try {
-      this.persistRun(run)
+      this.persistRun(run, expectedLease)
     } catch (error) {
+      if (error instanceof RunLeaseLostError) {
+        this.reconcileLeaseLoss(run, undefined, error.currentRun)
+        return
+      }
+      if (error instanceof RunHistoryStorageError && expectedLease) {
+        try {
+          const current = this.readRunRecord(run.id)
+          if (current && isActive(current) && sameLease(current.executionLease, expectedLease)) {
+            this.runs.set(current.id, current)
+            this.scheduleLeaseRetry(current, expectedLease)
+          }
+        } catch {
+          this.scheduleLeaseRetry(run, expectedLease)
+        }
+      }
       console.warn('Unable to persist hydrated mock run history.', error)
     }
   }
@@ -380,45 +473,152 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
 
   private terminalizeInterruptedRuns() {
     this.runs.forEach((run) => {
-      if (run.state !== 'running' && run.state !== 'queued') return
+      if (!isActive(run)) {
+        this.clearLeaseExpiry(run.id)
+        return
+      }
       const heartbeat = run.executionLease
         ? Date.parse(run.executionLease.heartbeatAt)
         : Number.NEGATIVE_INFINITY
       const heartbeatIsStale = heartbeat < Date.now() - INTERRUPTED_HEARTBEAT_MS
-      if (!heartbeatIsStale) return
+      if (!heartbeatIsStale) {
+        this.scheduleLeaseExpiry(run)
+        return
+      }
+      this.terminalizeInterruptedRun(run)
+    })
+  }
 
-      run.state = 'failed'
-      run.completedAt = new Date().toISOString()
-      run.executionLease = undefined
-      const interruptedStage = run.stages.find((stage) => stage.state === 'running')
-        ?? run.stages.find((stage) => stage.state === 'pending')
-      run.stages.forEach((stage) => {
-        if (stage === interruptedStage) stage.state = 'failed'
-        else if (stage.state === 'running' || stage.state === 'pending') stage.state = 'canceled'
-      })
-      run.diagnostics.push({
+  private terminalizeInterruptedRun(run: Run) {
+    const expiredLease = run.executionLease ? clone(run.executionLease) : undefined
+    const terminal = this.interruptedClone(run)
+    this.runs.set(terminal.id, terminal)
+    this.persistRunBestEffort(terminal, expiredLease)
+  }
+
+  private interruptedClone(run: Run): Run {
+    const terminal = clone(run)
+    terminal.state = 'failed'
+    terminal.completedAt = new Date().toISOString()
+    terminal.executionLease = undefined
+    terminal.result = undefined
+    terminal.manifest = undefined
+    const interruptedStage = terminal.stages.find((stage) => stage.state === 'running')
+      ?? terminal.stages.find((stage) => stage.state === 'pending')
+    terminal.stages.forEach((stage) => {
+      if (stage === interruptedStage) stage.state = 'failed'
+      else if (stage.state === 'running' || stage.state === 'pending') stage.state = 'canceled'
+    })
+    if (!terminal.diagnostics.some((diagnostic) => diagnostic.code === 'MOCK_RUN_INTERRUPTED')) {
+      terminal.diagnostics.push({
         code: 'MOCK_RUN_INTERRUPTED',
         title: '运行因页面关闭而中断',
         message: '执行租约已失效，受控运行没有继续提交。',
         recovery: '从原问题重新发起一次运行。',
         severity: 'warning',
       })
-      this.persistRunBestEffort(run)
-    })
+    }
+    return terminal
   }
 
-  private currentLease() {
+  private currentLease(generation: string): ExecutionLease {
     return {
       ownerId: this.clientId,
+      generation,
       heartbeatAt: new Date().toISOString(),
     }
+  }
+
+  private readRunRecord(id: string): Run | undefined {
+    try {
+      const raw = window.localStorage.getItem(runStorageKey(id))
+      return raw ? parseStoredRun(raw) : undefined
+    } catch (error) {
+      throw new RunHistoryStorageError(error)
+    }
+  }
+
+  private readOwnedActiveLease(id: string, generation: string): ExecutionLease | undefined {
+    const current = this.readRunRecord(id)
+    if (!current || !isActive(current)) return undefined
+    const lease = current.executionLease
+    if (lease?.ownerId !== this.clientId || lease.generation !== generation) return undefined
+    if (Date.parse(lease.heartbeatAt) < Date.now() - INTERRUPTED_HEARTBEAT_MS) return undefined
+    return clone(lease)
+  }
+
+  private scheduleLeaseExpiry(run: Run) {
+    this.clearLeaseExpiry(run.id)
+    if (!isActive(run)) return
+    const expiresAt = run.executionLease
+      ? Date.parse(run.executionLease.heartbeatAt) + INTERRUPTED_HEARTBEAT_MS
+      : Date.now()
+    const delay = Math.max(0, expiresAt - Date.now() + 1)
+    const expectedLease = run.executionLease ? clone(run.executionLease) : undefined
+    const timer = window.setTimeout(
+      () => this.expireObservedLease(run.id, expectedLease),
+      delay,
+    )
+    this.leaseExpiryTimers.set(run.id, timer)
+  }
+
+  private clearLeaseExpiry(id: string) {
+    const timer = this.leaseExpiryTimers.get(id)
+    if (timer !== undefined) window.clearTimeout(timer)
+    this.leaseExpiryTimers.delete(id)
+  }
+
+  private scheduleLeaseRetry(run: Run, expectedLease: ExecutionLease) {
+    this.clearLeaseExpiry(run.id)
+    const timer = window.setTimeout(
+      () => this.expireObservedLease(run.id, expectedLease),
+      1_000,
+    )
+    this.leaseExpiryTimers.set(run.id, timer)
+  }
+
+  private expireObservedLease(id: string, expectedLease: ExecutionLease | undefined) {
+    this.leaseExpiryTimers.delete(id)
+    let current: Run | undefined
+    try {
+      current = this.readRunRecord(id)
+    } catch {
+      if (expectedLease) {
+        const fallback = this.runs.get(id)
+        if (fallback) this.scheduleLeaseRetry(fallback, expectedLease)
+      }
+      return
+    }
+    if (!current) {
+      this.runs.delete(id)
+      return
+    }
+    this.runs.set(id, current)
+    if (!isActive(current)) {
+      this.clearLeaseExpiry(id)
+      return
+    }
+    if (expectedLease && !sameLease(current.executionLease, expectedLease)) {
+      this.scheduleLeaseExpiry(current)
+      return
+    }
+    const heartbeat = current.executionLease
+      ? Date.parse(current.executionLease.heartbeatAt)
+      : Number.NEGATIVE_INFINITY
+    if (heartbeat >= Date.now() - INTERRUPTED_HEARTBEAT_MS) {
+      this.scheduleLeaseExpiry(current)
+      return
+    }
+    this.terminalizeInterruptedRun(current)
   }
 
   private handleStorageEvent = (event: StorageEvent) => {
     if (!event.key?.startsWith(RUN_STORAGE_RECORD_PREFIX)) return
     if (!event.newValue) {
       const encodedId = event.key.slice(RUN_STORAGE_RECORD_PREFIX.length)
-      this.runs.delete(decodeURIComponent(encodedId))
+      const id = decodeURIComponent(encodedId)
+      this.runs.delete(id)
+      this.clearLeaseExpiry(id)
       return
     }
     const run = parseStoredRun(event.newValue)
@@ -437,6 +637,7 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
     if (!detail || detail.sourceId === this.clientId) return
     if (!detail.newValue) {
       this.runs.delete(detail.id)
+      this.clearLeaseExpiry(detail.id)
       return
     }
     const run = parseStoredRun(detail.newValue)

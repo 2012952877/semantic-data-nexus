@@ -172,6 +172,7 @@ export const isRun = (value: unknown): value is Run =>
   && (value.executionLease === undefined
     || (isRecord(value.executionLease)
       && isString(value.executionLease.ownerId)
+      && isString(value.executionLease.generation)
       && isDateString(value.executionLease.heartbeatAt)))
 
 export const parseStoredRuns = (raw: string): ParsedStoredRuns => {

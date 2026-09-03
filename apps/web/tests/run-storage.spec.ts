@@ -9,6 +9,7 @@ import {
   RUN_STORAGE_QUARANTINE_KEY,
   RUN_STORAGE_RECORD_PREFIX,
   RUN_STORAGE_VERSION,
+  parseStoredRun,
   runStorageKey,
   serializeStoredRun,
 } from '@/api/runStorage'
@@ -124,6 +125,7 @@ describe('run history storage', () => {
     active.stages[0]!.state = 'running'
     active.executionLease = {
       ownerId: 'client-a',
+      generation: 'lease-active-tab',
       heartbeatAt: new Date().toISOString(),
     }
     store([active])
@@ -145,6 +147,7 @@ describe('run history storage', () => {
     active.stages[0]!.state = 'running'
     active.executionLease = {
       ownerId: 'client-a',
+      generation: 'lease-current-tab',
       heartbeatAt: new Date().toISOString(),
     }
     store([active])
@@ -185,18 +188,121 @@ describe('run history storage', () => {
     active.stages[0]!.state = 'running'
     active.executionLease = {
       ownerId: 'client-a',
+      generation: 'lease-stale-later',
       heartbeatAt: new Date().toISOString(),
     }
     store([active])
     const observer = new MockSemanticNexusClient(0, false, 'client-b')
 
     vi.advanceTimersByTime(30_001)
+    const persisted = parseStoredRun(
+      window.localStorage.getItem(runStorageKey(active.id)) ?? '',
+    )
+
+    expect(persisted?.state).toBe('failed')
     const expired = await observer.getRun(active.id)
 
     expect(expired?.state).toBe('failed')
     expect(expired?.diagnostics).toContainEqual(expect.objectContaining({
       code: 'MOCK_RUN_INTERRUPTED',
     }))
+    vi.useRealTimers()
+  })
+
+  it('fences a stale owner after an observer terminalizes its persisted lease', async () => {
+    vi.useFakeTimers()
+    const owner = new MockSemanticNexusClient(100, false, 'client-a')
+    const runPromise = owner.startRun(request)
+    const [active] = await owner.listRuns()
+    if (!active) throw new Error('Active run fixture is missing')
+    const terminal = createSeedRun(active.id, active.question, 'failed', 1)
+    terminal.createdAt = active.createdAt
+    terminal.stages = createStages()
+    terminal.stages[0]!.state = 'failed'
+    terminal.stages.slice(1).forEach((stage) => {
+      stage.state = 'canceled'
+    })
+    terminal.diagnostics = [{
+      code: 'MOCK_RUN_INTERRUPTED',
+      title: '观察者已终止过期运行',
+      message: '执行租约已失效。',
+      recovery: '重新发起运行。',
+      severity: 'warning',
+    }]
+    window.localStorage.setItem(runStorageKey(active.id), serializeStoredRun(terminal))
+
+    await vi.advanceTimersByTimeAsync(500)
+    const result = await runPromise
+    const persisted = parseStoredRun(
+      window.localStorage.getItem(runStorageKey(active.id)) ?? '',
+    )
+
+    expect(result.state).toBe('failed')
+    expect(persisted?.state).toBe('failed')
+    expect(persisted?.executionLease).toBeUndefined()
+    vi.useRealTimers()
+  })
+
+  it('fences a stale owner when the same owner id has a newer lease generation', async () => {
+    vi.useFakeTimers()
+    const owner = new MockSemanticNexusClient(100, false, 'client-a')
+    const runPromise = owner.startRun(request)
+    const [active] = await owner.listRuns()
+    if (!active?.executionLease) throw new Error('Active lease fixture is missing')
+    const replacement = JSON.parse(JSON.stringify(active)) as Run
+    replacement.executionLease = {
+      ...active.executionLease,
+      generation: 'replacement-generation',
+    }
+    window.localStorage.setItem(runStorageKey(active.id), serializeStoredRun(replacement))
+
+    await vi.advanceTimersByTimeAsync(500)
+    const result = await runPromise
+    const persisted = parseStoredRun(
+      window.localStorage.getItem(runStorageKey(active.id)) ?? '',
+    )
+
+    expect(result.executionLease?.generation).toBe('replacement-generation')
+    expect(persisted?.executionLease?.generation).toBe('replacement-generation')
+    expect(persisted?.elapsedMs).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('reschedules observer expiry when the owner renews its heartbeat', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T12:00:00Z'))
+    const active = createSeedRun('run-syn-renewed', '续期运行', 'succeeded', 1)
+    active.state = 'running'
+    active.completedAt = undefined
+    active.result = undefined
+    active.manifest = undefined
+    active.stages = createStages()
+    active.stages[0]!.state = 'running'
+    active.executionLease = {
+      ownerId: 'client-a',
+      generation: 'lease-renewed',
+      heartbeatAt: new Date().toISOString(),
+    }
+    store([active])
+    new MockSemanticNexusClient(0, false, 'client-b')
+
+    vi.advanceTimersByTime(20_000)
+    active.executionLease.heartbeatAt = new Date().toISOString()
+    const serialized = serializeStoredRun(active)
+    window.localStorage.setItem(runStorageKey(active.id), serialized)
+    window.dispatchEvent(new CustomEvent(RUN_STORAGE_CHANGE_EVENT, {
+      detail: { id: active.id, newValue: serialized, sourceId: 'client-a' },
+    }))
+    vi.advanceTimersByTime(10_001)
+
+    expect(parseStoredRun(
+      window.localStorage.getItem(runStorageKey(active.id)) ?? '',
+    )?.state).toBe('running')
+
+    vi.advanceTimersByTime(20_000)
+    expect(parseStoredRun(
+      window.localStorage.getItem(runStorageKey(active.id)) ?? '',
+    )?.state).toBe('failed')
     vi.useRealTimers()
   })
 
@@ -354,6 +460,12 @@ describe('run history storage', () => {
       { lineage: { ...valid.lineage, sources: [null] } as unknown as Run['lineage'] },
       { diagnostics: [null] as unknown as Run['diagnostics'] },
       { manifest: { ...valid.manifest!, committedAt: 'not-a-date' } },
+      {
+        executionLease: {
+          ownerId: 'client-a',
+          heartbeatAt: new Date().toISOString(),
+        } as unknown as Run['executionLease'],
+      },
     ]
     store(mutations.map((mutation, index) => ({
       ...valid,

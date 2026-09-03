@@ -101,6 +101,7 @@ export interface Run {
   scenario: MockScenario
   executionLease?: {
     ownerId: string
+    generation: string
     heartbeatAt: string
   }
 }
