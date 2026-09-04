@@ -58,10 +58,10 @@ export const nodes: PlanNode[] = [
 
 export const successResult: ResultSet = {
   columns: [
-    { key: 'region', label: '区域', format: 'text' },
-    { key: 'revenue', label: '净销售额', format: 'currency' },
-    { key: 'attainment', label: '目标达成率', format: 'percent' },
-    { key: 'year_over_year', label: '同比', format: 'percent' },
+    { key: 'region', label: '区域', dataType: 'string', format: 'text' },
+    { key: 'revenue', label: '净销售额', dataType: 'integer', format: 'currency' },
+    { key: 'attainment', label: '目标达成率', dataType: 'float', format: 'percent' },
+    { key: 'year_over_year', label: '同比', dataType: 'float', format: 'percent' },
   ],
   rows: [
     { region: '华东', revenue: 4286000, attainment: 1.08, year_over_year: 0.124 },
@@ -143,6 +143,9 @@ export const createSeedRun = (
     createdAt: createdAt.toISOString(),
     completedAt: new Date(createdAt.getTime() + 1840).toISOString(),
     elapsedMs: 1840,
+    workload: 'regional-sales',
+    ontology: 'regional-sales@1.4',
+    compilationMode: 'mock-controlled',
     model: request.model,
     executionMode: request.executionMode,
     outputMode: request.outputMode,

@@ -4,7 +4,7 @@ import StageProgress from './StageProgress.vue'
 import StatusBadge from './StatusBadge.vue'
 import type { Run } from '@/domain'
 
-defineProps<{ run: Run }>()
+defineProps<{ run: Run; synthetic?: boolean }>()
 
 const formatDuration = (milliseconds: number) =>
   milliseconds < 1000 ? `${milliseconds}ms` : `${(milliseconds / 1000).toFixed(2)}s`
@@ -19,11 +19,16 @@ const formatDuration = (milliseconds: number) =>
           <h1>{{ run.question }}</h1>
           <StatusBadge :state="run.state" />
         </div>
-        <p class="run-id">{{ run.id }} · 合成数据</p>
+        <p class="run-id">
+          {{ run.id }}<template v-if="synthetic"> · 合成数据</template>
+        </p>
       </div>
       <dl class="run-facts">
         <div><dt>耗时</dt><dd>{{ formatDuration(run.elapsedMs) }}</dd></div>
         <div><dt>Token</dt><dd>{{ run.tokens.input + run.tokens.output }}</dd></div>
+        <div><dt>工作负载</dt><dd>{{ run.workload ?? 'unknown' }}</dd></div>
+        <div><dt>语义本体</dt><dd>{{ run.ontology ?? 'unknown' }}</dd></div>
+        <div><dt>编译模式</dt><dd>{{ run.compilationMode ?? 'unknown' }}</dd></div>
         <div><dt>模型</dt><dd>{{ run.model }}</dd></div>
       </dl>
     </header>
@@ -52,9 +57,9 @@ const formatDuration = (milliseconds: number) =>
     <section v-else-if="run.state === 'empty'" class="empty-ledger" role="status">
       <span class="empty-symbol" aria-hidden="true">0</span>
       <div>
-        <h2>查询正确完成，但没有匹配行</h2>
-        <p>{{ run.result?.coverage }}</p>
-        <p>合成销售数据从 2024 年开始。请换一个较新的期间，例如 2025 年第二季度。</p>
+        <h2>{{ run.diagnostics[0]?.title ?? '查询正确完成，但没有匹配行' }}</h2>
+        <p>{{ run.diagnostics[0]?.message ?? run.result?.coverage }}</p>
+        <p>{{ run.diagnostics[0]?.recovery ?? '请检查筛选条件或选择其他期间。' }}</p>
       </div>
     </section>
 

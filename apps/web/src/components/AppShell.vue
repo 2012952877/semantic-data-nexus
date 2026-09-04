@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import { useRoute } from 'vue-router'
+
+import { nexusClientKey } from '@/api/clientContext'
+
+const client = inject(nexusClientKey)
+if (!client) throw new Error('SemanticNexusClient is not provided')
 
 const route = useRoute()
 const title = computed(() => String(route.meta.title ?? 'Semantic Nexus'))
+const isMock = client.mode === 'mock'
 
 const navItems = [
   { to: '/ask', label: '提问', icon: 'ask' },
@@ -49,9 +55,9 @@ const navItems = [
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
-      <div class="rail-mode" title="当前为严格 Mock 模式">
+      <div class="rail-mode" :title="isMock ? '当前为严格 Mock 模式' : '当前连接控制面 BFF'">
         <span class="mode-light" />
-        MOCK
+        {{ isMock ? 'MOCK' : 'HTTP' }}
       </div>
     </aside>
 
@@ -64,7 +70,7 @@ const navItems = [
         </div>
         <div class="topbar-status">
           <span class="status-dot" aria-hidden="true" />
-          本地治理模式
+          {{ isMock ? '本地治理模式' : 'BFF 治理模式' }}
         </div>
       </header>
       <main id="main-content" tabindex="-1">

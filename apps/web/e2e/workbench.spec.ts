@@ -4,8 +4,8 @@ test('stable routes render their primary surfaces', async ({ page }) => {
   const routes = [
     ['/ask', '把业务问题编排为可信结果'],
     ['/runs', '运行记录'],
-    ['/runs/run-syn-1001', '比较各区域第二季度净销售额、目标达成率和同比'],
-    ['/ontology', '区域销售语义模型'],
+    ['/runs/run_00000000000000000000000000000001', '比较各区域第二季度净销售额、目标达成率和同比'],
+    ['/ontology', '语义目录不可用'],
     ['/settings', '组件状态'],
   ] as const
 
@@ -13,6 +13,15 @@ test('stable routes render their primary surfaces', async ({ page }) => {
     await page.goto(path)
     await expect(page.getByRole('main').getByText(heading, { exact: false }).first()).toBeVisible()
   }
+
+  await page.goto('/settings')
+  await expect(page.getByText('未知', { exact: true })).toBeVisible()
+  await expect(page.getByText('未探测或推断后端健康度', { exact: false })).toBeVisible()
+  await page.goto('/runs/run_00000000000000000000000000000001')
+  await expect(page.locator('.run-id')).not.toContainText('合成数据')
+  await expect(page.getByText('unknown', { exact: true })).toBeVisible()
+  await expect(page.getByText('regional_quarterly_profit', { exact: true })).toBeVisible()
+  await expect(page.getByText('Nexus Planner Small', { exact: true })).toHaveCount(0)
 
   await page.goto('/runs')
   await expect(page.getByRole('table', { name: '运行列表' })).toBeVisible()
@@ -35,18 +44,20 @@ test('submits a governed question and renders the committed result', async ({ pa
   await expect(page.getByText('结果已提交')).toBeVisible()
   await expect(page.getByRole('table')).toContainText('华东')
   await expect(page.getByRole('table')).toContainText('目标达成率')
+  await expect(page.getByRole('table')).toContainText('¥4,286,000.00')
+  await expect(page.getByRole('table')).toContainText('12.3400%')
 })
 
-test('keeps another tab active and cancels without committing a result', async ({ page, context }) => {
+test('shares BFF history across tabs and cancels without committing a result', async ({ page, context }) => {
   await page.goto('/ask')
-  const question = '按区域汇总 2025 年上半年的净销售额'
+  const question = '按区域汇总 2025 年上半年的净销售额 [held-running-until-cancel]'
   await page.getByLabel('你想了解什么？').fill(question)
   await page.getByRole('button', { name: '开始受控运行' }).click()
 
   const observer = await context.newPage()
   await observer.goto('/runs')
   const activeRow = observer.getByRole('row').filter({ hasText: question })
-  await expect(activeRow).toContainText('运行中')
+  await expect(activeRow).toContainText(/排队中|运行中/)
   await expect(activeRow).not.toContainText('失败')
   await activeRow.getByRole('link').click()
 
@@ -55,106 +66,23 @@ test('keeps another tab active and cancels without committing a result', async (
   await expect(page.getByText('运行已停止')).toBeVisible()
   await expect(page.getByText('没有执行或提交剩余阶段')).toBeVisible()
   await expect(page.getByText('结果已提交')).toHaveCount(0)
-  await expect(
-    observer.locator('.run-title-line').getByText('已取消', { exact: true }),
-  ).toBeVisible()
+  await observer.reload()
+  await expect(observer.locator('.run-title-line').getByText('已取消', { exact: true }))
+    .toBeVisible()
+  expect(await observer.evaluate(() => localStorage.length)).toBe(0)
   await observer.close()
 })
 
-test('prevents a stale owner loop from resurrecting a terminalized run', async ({ page, context }) => {
-  const question = '验证过期执行租约不会复活'
-  await page.addInitScript(() => {
-    const nativeSetTimeout = window.setTimeout.bind(window)
-    window.setTimeout = ((handler, timeout, ...args) =>
-      nativeSetTimeout(handler, timeout === 360 ? 2_000 : timeout, ...args)
-    ) as typeof window.setTimeout
-  })
-  const observer = await context.newPage()
-  await observer.goto('/runs')
+test('renders BFF text as text instead of unsafe HTML', async ({ page }) => {
+  const question = '<img src=x onerror="window.__unsafe = true"> 安全显示'
   await page.goto('/ask')
   await page.getByLabel('你想了解什么？').fill(question)
   await page.getByRole('button', { name: '开始受控运行' }).click()
+  await expect(page.getByText('结果已提交')).toBeVisible()
+  await page.getByRole('link', { name: '检查运行 →' }).click()
 
-  await expect.poll(() => observer.evaluate((targetQuestion) =>
-    Object.keys(localStorage).some((candidate) => {
-      if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
-      return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
-    }), question)).toBe(true)
-  await observer.evaluate(async (targetQuestion) => {
-    const key = Object.keys(localStorage).find((candidate) => {
-      if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
-      return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
-    })
-    if (!key) throw new Error('Active run record not found')
-    const id = JSON.parse(localStorage.getItem(key) ?? '{}').run.id
-    await navigator.locks.request(`semantic-nexus:run:${id}`, { mode: 'exclusive' }, async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2_200))
-      const record = JSON.parse(localStorage.getItem(key) ?? '{}')
-      const run = record.run
-      run.state = 'failed'
-      run.completedAt = new Date().toISOString()
-      delete run.executionLease
-      const failedIndex = Math.max(0, run.stages.findIndex(
-        (stage: { state: string }) => stage.state === 'pending' || stage.state === 'running',
-      ))
-      run.stages.forEach((stage: { state: string }, index: number) => {
-        if (index === failedIndex) stage.state = 'failed'
-        else if (index > failedIndex || stage.state !== 'succeeded') stage.state = 'canceled'
-      })
-      run.diagnostics = [{
-        code: 'MOCK_RUN_INTERRUPTED',
-        title: '观察者已终止过期运行',
-        message: '执行租约已失效。',
-        recovery: '重新发起运行。',
-        severity: 'warning',
-      }]
-      localStorage.setItem(key, JSON.stringify(record))
-    })
-  }, question)
-
-  await expect(page.getByText('观察者已终止过期运行')).toBeVisible()
-  const persistedState = await observer.evaluate((targetQuestion) => {
-    const key = Object.keys(localStorage).find((candidate) => {
-      if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
-      return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
-    })
-    return key ? JSON.parse(localStorage.getItem(key) ?? '{}').run?.state : undefined
-  }, question)
-  expect(persistedState).toBe('failed')
-})
-
-test('observer expires a closed owner lease without reloading', async ({ page, context }) => {
-  const question = '验证关闭页面后的租约到期'
-  await page.addInitScript(() => {
-    const nativeSetTimeout = window.setTimeout.bind(window)
-    window.setTimeout = ((handler, timeout, ...args) =>
-      nativeSetTimeout(handler, timeout === 360 ? 2_000 : timeout, ...args)
-    ) as typeof window.setTimeout
-  })
-  const observer = await context.newPage()
-  await observer.goto('/runs')
-  await page.goto('/ask')
-  await page.getByLabel('你想了解什么？').fill(question)
-  await page.getByRole('button', { name: '开始受控运行' }).click()
-
-  const activeRow = observer.getByRole('row').filter({ hasText: question })
-  await expect(activeRow).toContainText('运行中')
-
-  await page.evaluate(async (targetQuestion) => {
-    const key = Object.keys(localStorage).find((candidate) => {
-      if (!candidate.startsWith('semantic-nexus:run:v1:')) return false
-      return JSON.parse(localStorage.getItem(candidate) ?? '{}').run?.question === targetQuestion
-    })
-    if (!key) throw new Error('Active run record not found')
-    const id = JSON.parse(localStorage.getItem(key) ?? '{}').run.id
-    await navigator.locks.request(`semantic-nexus:run:${id}`, { mode: 'exclusive' }, () => {
-      const record = JSON.parse(localStorage.getItem(key) ?? '{}')
-      record.run.executionLease.heartbeatAt = new Date(Date.now() - 29_500).toISOString()
-      localStorage.setItem(key, JSON.stringify(record))
-    })
-  }, question)
-  await page.close()
-
-  await expect(activeRow).toContainText('失败', { timeout: 5_000 })
-  await expect(activeRow).not.toContainText('运行中')
+  await expect(page.getByRole('main')).toContainText(question)
+  await expect(page.locator('main img')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as typeof window & { __unsafe?: boolean }).__unsafe))
+    .toBeUndefined()
 })

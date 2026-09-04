@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, nextTick, ref } from 'vue'
+import { computed, inject, nextTick, ref } from 'vue'
 
 import { nexusClientKey } from '@/api/clientContext'
 import ResultTable from '@/components/ResultTable.vue'
@@ -22,23 +22,52 @@ const currentRun = ref<Run>()
 const submitting = ref(false)
 const alertPanel = ref<HTMLElement>()
 const formError = ref('')
+const cancelError = ref('')
+const isMock = client.mode === 'mock'
+const currentRunActive = computed(() =>
+  currentRun.value?.state === 'queued' || currentRun.value?.state === 'running')
+const hasResumableRun = computed(() => Boolean(!isMock && formError.value && currentRun.value))
+const provenance = computed(() => isMock
+  ? {
+      workload: 'regional-sales',
+      ontology: '区域销售 · v1.4',
+      compilationMode: 'Mock 受控编译',
+      model: 'Nexus Planner Small',
+    }
+  : {
+      workload: currentRun.value?.workload ?? 'unknown',
+      ontology: currentRun.value?.ontology ?? 'unknown',
+      compilationMode: currentRun.value?.compilationMode ?? 'unknown',
+      model: currentRun.value?.model ?? 'unknown',
+    })
+const cancellationTargetEnded = computed(() => Boolean(
+  cancelError.value
+  && currentRun.value
+  && ['succeeded', 'empty', 'failed', 'canceled'].includes(currentRun.value.state),
+))
 
 const requestForCurrentInput = (): AskRequest => ({
   question: question.value.trim(),
   scenario: scenario.value,
-  model: 'Nexus Planner Small',
+  model: isMock ? 'Nexus Planner Small' : 'unknown',
   executionMode: '受控执行',
   outputMode: '表格',
 })
 
 const submit = async () => {
   if (!question.value.trim() || submitting.value) return
+  const runRequest = requestForCurrentInput()
+  const resumingKnownRun = Boolean(
+    formError.value && currentRun.value?.question === runRequest.question,
+  )
   submitting.value = true
-  currentRun.value = undefined
+  if (!resumingKnownRun) currentRun.value = undefined
   formError.value = ''
+  cancelError.value = ''
   try {
-    const result = await client.startRun(requestForCurrentInput(), (run) => {
+    const result = await client.startRun(runRequest, (run) => {
       currentRun.value = run
+      if (run.state === 'canceled') cancelError.value = ''
     })
     currentRun.value = result
     if (result.state === 'failed' || result.state === 'empty') {
@@ -46,10 +75,13 @@ const submit = async () => {
       alertPanel.value?.focus()
     }
   } catch (error) {
-    currentRun.value = undefined
-    formError.value = error instanceof Error
+    const message = error instanceof Error
       ? error.message
-      : '运行未能启动。请检查浏览器本地存储设置后重试。'
+      : '运行未能启动。请检查客户端配置和服务连接后重试。'
+    if (isMock) currentRun.value = undefined
+    formError.value = !isMock && currentRun.value
+      ? `状态暂不可用，运行可能继续。${message}`
+      : message
     await nextTick()
     alertPanel.value?.focus()
   } finally {
@@ -58,8 +90,24 @@ const submit = async () => {
 }
 
 const cancel = async () => {
-  if (!currentRun.value) return
-  await client.cancelRun(currentRun.value.id)
+  const targetRunId = currentRun.value?.id
+  if (!targetRunId) return
+  try {
+    const cancelled = await client.cancelRun(targetRunId)
+    if (currentRun.value?.id !== targetRunId) return
+    currentRun.value = cancelled
+    if (!currentRunActive.value) {
+      formError.value = ''
+      cancelError.value = ''
+    }
+  } catch (error) {
+    if (currentRun.value?.id !== targetRunId) return
+    if (currentRunActive.value) {
+      cancelError.value = error instanceof Error
+        ? error.message
+        : '取消请求未能送达。请稍后重试。'
+    }
+  }
 }
 
 const retry = () => submit()
@@ -102,15 +150,16 @@ const useExample = (example: string) => {
 
         <div class="scope-ledger">
           <dl>
-            <div><dt>语义范围</dt><dd>区域销售 · v1.4</dd></div>
-            <div><dt>成员解析</dt><dd>已发布成员优先</dd></div>
-            <div><dt>模型</dt><dd>Nexus Planner Small</dd></div>
+            <div><dt>工作负载</dt><dd>{{ provenance.workload }}</dd></div>
+            <div><dt>语义本体</dt><dd>{{ provenance.ontology }}</dd></div>
+            <div><dt>编译模式</dt><dd>{{ provenance.compilationMode }}</dd></div>
+            <div><dt>模型</dt><dd>{{ provenance.model }}</dd></div>
             <div><dt>执行方式</dt><dd>受控执行</dd></div>
             <div><dt>输出</dt><dd>表格</dd></div>
           </dl>
         </div>
 
-        <details class="scenario-settings">
+        <details v-if="isMock" class="scenario-settings">
           <summary>Mock 场景与执行设置</summary>
           <fieldset>
             <legend>模拟场景</legend>
@@ -127,7 +176,7 @@ const useExample = (example: string) => {
           </p>
           <div>
             <button
-              v-if="submitting"
+              v-if="currentRunActive && (submitting || hasResumableRun)"
               class="secondary-button"
               type="button"
               @click="cancel"
@@ -156,6 +205,14 @@ const useExample = (example: string) => {
 
       <StageProgress :stages="currentRun?.stages ?? createStages()" />
 
+      <div v-if="cancelError" class="inline-outcome outcome-error" role="alert">
+        <span>取消未送达</span>
+        <h3>{{ cancellationTargetEnded ? '运行已自行结束' : '原运行仍在继续' }}</h3>
+        <p>{{ cancelError }}</p>
+        <strong v-if="cancellationTargetEnded">取消错误已保留供排查；无需再次取消。</strong>
+        <strong v-else>可以再次取消，或等待当前运行完成。</strong>
+      </div>
+
       <div
         v-if="formError"
         ref="alertPanel"
@@ -163,11 +220,16 @@ const useExample = (example: string) => {
         role="alert"
         tabindex="-1"
       >
-        <span>运行未启动</span>
-        <h3>无法保存本地运行记录</h3>
+        <span>{{ hasResumableRun ? '状态暂不可用' : '运行未启动' }}</span>
+        <h3 v-if="hasResumableRun">运行可能继续</h3>
+        <h3 v-else>{{ isMock ? '无法保存本地运行记录' : '无法连接运行服务' }}</h3>
         <p>{{ formError }}</p>
-        <strong>释放浏览器存储空间或允许本地存储，然后重试。</strong>
-        <button class="secondary-button" type="button" @click="retry">重试当前问题</button>
+        <strong v-if="hasResumableRun">保留此运行 ID；可重试状态同步，活动运行也可取消。</strong>
+        <strong v-else-if="isMock">释放浏览器存储空间或允许本地存储，然后重试。</strong>
+        <strong v-else>检查客户端模式、BFF 地址和网络连接，然后重试。</strong>
+        <button class="secondary-button" type="button" @click="retry">
+          {{ hasResumableRun ? '恢复运行状态' : '重试当前问题' }}
+        </button>
       </div>
 
       <div v-else-if="!currentRun" class="run-placeholder">
@@ -212,9 +274,9 @@ const useExample = (example: string) => {
         tabindex="-1"
       >
         <span>结果 · 0 行</span>
-        <h3>该期间超出合成数据覆盖范围</h3>
-        <p>{{ currentRun.result?.coverage }}</p>
-        <strong>建议改查 2024 年之后的期间。</strong>
+        <h3>{{ currentRun.diagnostics[0]?.title ?? '查询完成，但没有匹配行' }}</h3>
+        <p>{{ currentRun.diagnostics[0]?.message ?? currentRun.result?.coverage }}</p>
+        <strong>{{ currentRun.diagnostics[0]?.recovery ?? '请检查筛选条件或选择其他期间。' }}</strong>
         <RouterLink :to="`/runs/${currentRun.id}`">查看完整运行记录 →</RouterLink>
       </div>
 

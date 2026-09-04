@@ -8,6 +8,12 @@ const client = inject(nexusClientKey)
 if (!client) throw new Error('SemanticNexusClient is not provided')
 
 const statuses = ref<ComponentStatus[]>([])
+const isMock = client.mode === 'mock'
+const statusLabel = (status: ComponentStatus['status']) => {
+  if (status === 'healthy') return '正常'
+  if (status === 'degraded') return '隔离模拟'
+  return '未知'
+}
 
 onMounted(async () => {
   statuses.value = await client.getComponentStatus()
@@ -32,7 +38,7 @@ onMounted(async () => {
           <h2>{{ item.name }}</h2>
           <p>{{ item.provider }}</p>
         </div>
-        <strong>{{ item.status === 'healthy' ? '正常' : '隔离模拟' }}</strong>
+        <strong>{{ statusLabel(item.status) }}</strong>
         <small>{{ item.detail }}</small>
       </article>
     </section>
@@ -43,8 +49,9 @@ onMounted(async () => {
         <path d="m9 12 2 2 4-4" />
       </svg>
       <div>
-        <h2>严格 Mock 边界</h2>
-        <p>所有状态均为确定性本地夹具；不会调用 Azure、DuckDB 服务或任何外部模型端点。</p>
+        <h2>{{ isMock ? '严格 Mock 边界' : 'BFF 网络边界' }}</h2>
+        <p v-if="isMock">所有状态均为确定性本地夹具；不会调用 Azure、DuckDB 服务或任何外部模型端点。</p>
+        <p v-else>浏览器只调用已配置的控制面 BFF；响应在进入界面前会经过完整运行时校验。</p>
       </div>
     </aside>
   </div>

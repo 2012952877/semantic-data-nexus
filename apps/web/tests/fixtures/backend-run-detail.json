@@ -1,0 +1,125 @@
+{
+  "runId": "run_0123456789abcdef0123456789abcdef",
+  "question": "Compare synthetic regional revenue",
+  "sqg": {
+    "version": "sqg.v0",
+    "intent": "Compare synthetic regional revenue",
+    "ontology": "synthetic-commerce@2026.1",
+    "resolvedMembers": [],
+    "metrics": ["metric.profit"],
+    "dimensions": [
+      "commerce.sales_record.period",
+      "commerce.sales_record.region"
+    ],
+    "filters": [
+      {
+        "field": "commerce.sales_record.period",
+        "operator": "between",
+        "value": "{\"end_exclusive\":\"2026-09-01T00:00:00+08:00\",\"start\":\"2026-07-01T00:00:00+08:00\"}"
+      }
+    ],
+    "policyChecks": ["validated_sqg", "versioned_source_mapping"]
+  },
+  "physicalNodes": [
+    {
+      "id": "physical-aggregate_profit",
+      "kind": "AGGREGATE",
+      "label": "Aggregate node",
+      "plainLanguage": "Executes a validated aggregate without accepting provider SQL.",
+      "inputs": [],
+      "outputFields": ["region", "period", "profit"]
+    }
+  ],
+  "result": {
+    "columns": [
+      {
+        "key": "region",
+        "label": "Region",
+        "dataType": "string",
+        "format": "text",
+        "nullable": false
+      },
+      {
+        "key": "profit",
+        "label": "Profit",
+        "dataType": "decimal",
+        "format": "currency",
+        "nullable": false
+      }
+    ],
+    "rows": [["北辰区", "2334.00"]],
+    "rowCount": 1,
+    "truncated": false
+  },
+  "manifest": {
+    "resultId": "result-synthetic",
+    "runId": "run_0123456789abcdef0123456789abcdef",
+    "nodeId": "physical-aggregate_profit",
+    "storage": "inline",
+    "uri": "inline://run_0123456789abcdef0123456789abcdef/physical-aggregate_profit/result-synthetic",
+    "rowCount": 1,
+    "byteCount": 128,
+    "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "committedAt": "2026-08-15T01:00:01Z"
+  },
+  "lineage": {
+    "version": "query-runtime/v0",
+    "runId": "run_0123456789abcdef0123456789abcdef",
+    "nodes": [
+      {
+        "id": "logical:aggregate_profit",
+        "kind": "logical",
+        "operation": "AGGREGATE",
+        "sourceAlias": null,
+        "sourceType": null,
+        "resultId": null,
+        "parameters": []
+      },
+      {
+        "id": "physical:physical-aggregate_profit",
+        "kind": "physical",
+        "operation": "AGGREGATE",
+        "sourceAlias": null,
+        "sourceType": null,
+        "resultId": null,
+        "parameters": []
+      },
+      {
+        "id": "source:synthetic_sales",
+        "kind": "source",
+        "operation": null,
+        "sourceAlias": "synthetic_sales",
+        "sourceType": "synthetic_csv",
+        "resultId": null,
+        "parameters": []
+      },
+      {
+        "id": "result:result-synthetic",
+        "kind": "result",
+        "operation": null,
+        "sourceAlias": null,
+        "sourceType": null,
+        "resultId": "result-synthetic",
+        "parameters": []
+      }
+    ],
+    "edges": [
+      {
+        "source": "logical:aggregate_profit",
+        "target": "physical:physical-aggregate_profit",
+        "relation": "realized_as"
+      },
+      {
+        "source": "physical:physical-aggregate_profit",
+        "target": "source:synthetic_sales",
+        "relation": "reads_from"
+      },
+      {
+        "source": "physical:physical-aggregate_profit",
+        "target": "result:result-synthetic",
+        "relation": "produces"
+      }
+    ]
+  },
+  "diagnostics": []
+}

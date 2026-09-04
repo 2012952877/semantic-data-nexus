@@ -70,6 +70,7 @@ describe('route smoke tests', () => {
       .mockResolvedValueOnce(second)
       .mockResolvedValueOnce(third)
     const client: SemanticNexusClient = {
+      mode: 'mock',
       listRuns: vi.fn(),
       getRun,
       startRun: vi.fn(),

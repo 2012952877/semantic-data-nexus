@@ -6,6 +6,7 @@ import type {
 } from '@/domain'
 
 export interface SemanticNexusClient {
+  readonly mode: 'mock' | 'http'
   listRuns(): Promise<Run[]>
   getRun(id: string): Promise<Run | undefined>
   startRun(request: AskRequest, onProgress?: (run: Run) => void): Promise<Run>

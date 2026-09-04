@@ -10,7 +10,7 @@ export type StageKey = 'initialize' | 'compile' | 'optimize' | 'execute' | 'gene
 export type StageState = 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
 export interface SqgSummary {
-  version: '0.1'
+  version: string
   intent: string
   ontology: string
   resolvedMembers: string[]
@@ -28,7 +28,17 @@ export interface Stage {
   durationMs?: number
 }
 
-export type NodeKind = 'AGGREGATE' | 'PIVOT' | 'DERIVE' | 'PROJECT'
+export type NodeKind =
+  | 'SOURCE'
+  | 'SELECT'
+  | 'FILTER'
+  | 'AGGREGATE'
+  | 'PIVOT'
+  | 'DERIVE'
+  | 'PROJECT'
+  | 'SORT'
+  | 'LIMIT'
+  | 'JOIN'
 
 export interface PlanNode {
   id: string
@@ -42,14 +52,18 @@ export interface PlanNode {
 export interface ResultColumn {
   key: string
   label: string
-  format: 'text' | 'currency' | 'percent' | 'number'
+  dataType: 'string' | 'integer' | 'float' | 'decimal' | 'boolean' | 'date' | 'timestamp'
+  format: 'text' | 'currency' | 'percent' | 'number' | 'date' | 'timestamp'
 }
+
+export type ResultCell = string | number | boolean | null
 
 export interface ResultSet {
   columns: ResultColumn[]
-  rows: Array<Record<string, string | number>>
+  rows: Array<Record<string, ResultCell>>
   rowCount: number
   coverage: string
+  truncated?: boolean
 }
 
 export interface LineageSource {
@@ -87,6 +101,9 @@ export interface Run {
   createdAt: string
   completedAt?: string
   elapsedMs: number
+  workload?: string
+  ontology?: string
+  compilationMode?: string
   model: string
   executionMode: string
   outputMode: string
@@ -159,6 +176,6 @@ export interface AskRequest {
 export interface ComponentStatus {
   name: string
   provider: string
-  status: 'healthy' | 'degraded'
+  status: 'healthy' | 'degraded' | 'unknown'
   detail: string
 }
