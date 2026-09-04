@@ -33,7 +33,7 @@ async def test_health_start_status_detail_and_idempotency(service) -> None:
 
         detail = await client.get(f"/v1/runs/{request.run_id}/detail")
         assert detail.status_code == 200
-        assert detail.json()["result"]["manifest"]["rowCount"] == 4
+        assert detail.json()["manifest"]["rowCount"] == 4
 
 
 async def test_conflicting_id_and_validation_fail_closed(service) -> None:

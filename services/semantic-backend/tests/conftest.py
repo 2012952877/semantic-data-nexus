@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest_asyncio
 from semantic_api.models import CompilationMode
 
-from semantic_backend.models import ExecutionOptions, StartRunRequest
+from semantic_backend.models import ExecutionMode, OutputMode, StartRunRequest
 from semantic_backend.service import OrchestrationService
 
 
@@ -29,13 +29,16 @@ def request_for(
     )
     return StartRunRequest(
         run_id=run_id,
+        client_request_id=f"request-{run_id[-8:]}",
+        workload="synthetic-profit",
         question=question,
         requested_by="synthetic-demo-user",
         trace_id=f"trace-{run_id[-8:]}",
         evaluation_clock=datetime(2024, 4, 15, 9, tzinfo=UTC),
-        evaluation_timezone="UTC",
+        evaluation_timezone="Etc/UTC",
         compilation_mode=mode,
-        execution_options=ExecutionOptions(max_rows=1_000, timeout_seconds=10),
+        execution_mode=ExecutionMode.THREAD,
+        output_mode=OutputMode.NORMAL,
     )
 
 

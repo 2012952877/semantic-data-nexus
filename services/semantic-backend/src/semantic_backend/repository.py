@@ -6,8 +6,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from query_runtime.coordinator import QueryCoordinator
+from query_runtime.domain import PhysicalPlan
+from semantic_api.models import CompileResponse
 
-from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
+from semantic_backend.models import (
+    LineageDetail,
+    RunDetail,
+    RunStatus,
+    SqgSummary,
+    StartRunRequest,
+)
 
 
 class RunNotFoundError(LookupError):
@@ -31,6 +39,8 @@ class RunRecord:
     task: asyncio.Task[None] | None = None
     coordinator: QueryCoordinator | None = None
     cancel_requested: bool = False
+    compile_response: CompileResponse | None = None
+    physical_plan: PhysicalPlan | None = None
 
 
 class RunRepository(Protocol):
@@ -72,12 +82,13 @@ class InMemoryRunRepository:
             detail = RunDetail(
                 run_id=request.run_id,
                 question=request.question,
-                requested_by=request.requested_by,
-                trace_id=request.trace_id,
-                evaluation_clock=request.evaluation_clock,
-                evaluation_timezone=request.evaluation_timezone,
-                compilation_mode=request.compilation_mode,
-                status=status,
+                sqg=SqgSummary(
+                    version="sqg.v0",
+                    intent=request.question,
+                    ontology="pending",
+                    policy_checks=["validation_pending"],
+                ),
+                lineage=LineageDetail(run_id=request.run_id),
             )
             record = RunRecord(request=request, status=status, detail=detail)
             self._records[request.run_id] = record

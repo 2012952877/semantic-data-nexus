@@ -1,0 +1,240 @@
+{
+  "suite_version": "semantic-backend-m0-subset-v0",
+  "evaluation_clock": "2024-04-15T09:00:00+00:00",
+  "weights": {
+    "semantic": 30,
+    "plan": 25,
+    "execution_result": 25,
+    "governance": 10,
+    "observability": 10
+  },
+  "cases": [
+    {
+      "id": "integrated-regional-quarterly-profit",
+      "question_zh": "上季度各区域利润是多少?",
+      "expected": {
+        "semantic": {
+          "entities": ["commerce.sales_record"],
+          "fields": [
+            "commerce.sales_record.period",
+            "commerce.sales_record.region"
+          ],
+          "metrics": ["metric.profit"],
+          "relations": []
+        },
+        "time_range": {
+          "start": "2024-01-01T00:00:00+00:00",
+          "end_exclusive": "2024-04-01T00:00:00+00:00",
+          "source": "validated_sqg_filter"
+        },
+        "member_normalization": {},
+        "plan": {
+          "operators": ["SCAN", "FILTER", "AGGREGATE", "SORT", "PROJECT"],
+          "edges": [
+            ["select_sales", "filter_period_1"],
+            ["filter_period_1", "aggregate_profit"],
+            ["aggregate_profit", "sort_profit"],
+            ["sort_profit", "project_result"]
+          ],
+          "nodes": [
+            {
+              "id": "select_sales",
+              "operator": "SCAN",
+              "depends_on": [],
+              "inputs": [],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "filter_period_1",
+              "operator": "FILTER",
+              "depends_on": ["select_sales"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "aggregate_profit",
+              "operator": "AGGREGATE",
+              "depends_on": ["filter_period_1"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "sort_profit",
+              "operator": "SORT",
+              "depends_on": ["aggregate_profit"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "project_result",
+              "operator": "PROJECT",
+              "depends_on": ["sort_profit"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            }
+          ]
+        },
+        "result": {
+          "schema": [
+            {"name": "region", "type": "string"},
+            {"name": "period", "type": "datetime"},
+            {"name": "profit", "type": "number"}
+          ],
+          "grain": [
+            "commerce.sales_record.region",
+            "commerce.sales_record.period"
+          ],
+          "order_by": ["profit desc"],
+          "rows": [
+            {
+              "region": "北辰区",
+              "period": "2024-01-01T00:00:00Z",
+              "profit": 2334.0
+            },
+            {
+              "region": "西岭区",
+              "period": "2024-01-01T00:00:00Z",
+              "profit": 2095.5
+            },
+            {
+              "region": "南港区",
+              "period": "2024-01-01T00:00:00Z",
+              "profit": 1863.0
+            },
+            {
+              "region": "东湖区",
+              "period": "2024-01-01T00:00:00Z",
+              "profit": 1059.0
+            }
+          ],
+          "tolerance": 0.01
+        },
+        "behavior": {"class": "success"},
+        "governance": {"decision": "allow"},
+        "observability": {"lineage_required": true}
+      }
+    },
+    {
+      "id": "integrated-monthly-profit-comparison",
+      "question_zh": "对比各区域销售利润, 按月份",
+      "expected": {
+        "semantic": {
+          "entities": ["commerce.sales_record"],
+          "fields": [
+            "commerce.sales_record.period",
+            "commerce.sales_record.region"
+          ],
+          "metrics": ["metric.profit"],
+          "relations": []
+        },
+        "time_range": {
+          "start": "2024-03-01T00:00:00+00:00",
+          "end_exclusive": "2024-05-01T00:00:00+00:00",
+          "source": "validated_sqg_filter"
+        },
+        "member_normalization": {},
+        "plan": {
+          "operators": [
+            "SCAN",
+            "FILTER",
+            "AGGREGATE",
+            "PIVOT",
+            "DERIVE",
+            "PROJECT"
+          ],
+          "edges": [
+            ["select_sales", "filter_comparison_periods"],
+            ["filter_comparison_periods", "aggregate_profit"],
+            ["aggregate_profit", "pivot_period"],
+            ["pivot_period", "derive_change"],
+            ["derive_change", "project_result"]
+          ],
+          "nodes": [
+            {
+              "id": "select_sales",
+              "operator": "SCAN",
+              "depends_on": [],
+              "inputs": [],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "filter_comparison_periods",
+              "operator": "FILTER",
+              "depends_on": ["select_sales"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "aggregate_profit",
+              "operator": "AGGREGATE",
+              "depends_on": ["filter_comparison_periods"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "pivot_period",
+              "operator": "PIVOT",
+              "depends_on": ["aggregate_profit"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "derive_change",
+              "operator": "DERIVE",
+              "depends_on": ["pivot_period"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            },
+            {
+              "id": "project_result",
+              "operator": "PROJECT",
+              "depends_on": ["derive_change"],
+              "inputs": ["rows"],
+              "outputs": ["rows"]
+            }
+          ]
+        },
+        "result": {
+          "schema": [
+            {"name": "region", "type": "string"},
+            {"name": "profit_current", "type": "number"},
+            {"name": "profit_previous", "type": "number"},
+            {"name": "profit_change", "type": "number"}
+          ],
+          "grain": ["commerce.sales_record.region"],
+          "order_by": [],
+          "rows": [
+            {
+              "region": "东湖区",
+              "profit_current": 555.0,
+              "profit_previous": 126.0,
+              "profit_change": 429.0
+            },
+            {
+              "region": "北辰区",
+              "profit_current": 676.5,
+              "profit_previous": 594.0,
+              "profit_change": 82.5
+            },
+            {
+              "region": "南港区",
+              "profit_current": 525.0,
+              "profit_previous": 783.0,
+              "profit_change": -258.0
+            },
+            {
+              "region": "西岭区",
+              "profit_current": 858.0,
+              "profit_previous": 516.0,
+              "profit_change": 342.0
+            }
+          ],
+          "tolerance": 0.01
+        },
+        "behavior": {"class": "success"},
+        "governance": {"decision": "allow"},
+        "observability": {"lineage_required": true}
+      }
+    }
+  ]
+}

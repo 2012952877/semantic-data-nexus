@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+databricks = [
+  "semantic-data-nexus-databricks==0.1.0",
+]
 dev = [
   "build>=1.2,<2",
   "httpx>=0.28,<1",
@@ -25,6 +28,9 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
   "ruff>=0.9,<1",
+]
+eval = [
+  "semantic-data-nexus-evals==0.1.0",
 ]
 
 [project.scripts]
@@ -59,5 +65,5 @@ module = ["duckdb.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["query_runtime.*"]
+module = ["query_runtime.*", "semantic_data_nexus_databricks.*", "semantic_eval.*"]
 follow_untyped_imports = true

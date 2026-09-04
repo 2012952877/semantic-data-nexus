@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import duckdb
@@ -7,6 +8,9 @@ import pyarrow as pa
 
 
 def default_data_directory() -> Path:
+    configured = os.environ.get("SEMANTIC_NEXUS_DATA_DIR")
+    if configured:
+        return Path(configured)
     return Path(__file__).resolve().parents[4] / "data" / "synthetic" / "generated"
 
 
