@@ -82,8 +82,12 @@ Create requests carry the complete semantic execution input:
 }
 ```
 
-Questions are limited to 4,000 characters. `evaluationClock` requires an
-explicit UTC offset, `evaluationTimezone` must be an IANA identifier,
+All eight members are required and unknown members are rejected. Idempotency
+metadata is limited to 64 ASCII identifier characters and must begin with a
+letter or digit. Questions are limited to 4,000 Unicode scalar values and may
+not contain Unicode control, format, surrogate, private-use, or unassigned
+characters. `evaluationClock` requires an explicit UTC offset,
+`evaluationTimezone` must be an IANA identifier (including `UTC`),
 `compilationMode` is `regional_quarterly_profit` or
 `monthly_regional_comparison`, `executionMode` is `thread`, and `outputMode`
 is `normal` or `stream`. All fields participate in idempotency conflict
@@ -123,7 +127,10 @@ identity. Do not place tokens, connection strings, or credentials in files.
   nodes violate the bounded contract. Detail responses reject unknown JSON
   properties, mismatched run IDs or questions, object/array result cells, more
   than 100 columns or 1,000 inline rows, and oversized SQG, physical-plan,
-  lineage, manifest, or diagnostic collections.
+  lineage, manifest, or diagnostic collections. Integer cells are limited to
+  the interoperable range -9,007,199,254,740,991 through
+  9,007,199,254,740,991; finite number cells are limited to absolute values at
+  or below 10^28.
 - `ForwardedHeaders:KnownProxies`: explicit single-hop proxy IP allowlist.
   Unknown forwarders are ignored; header symmetry is required.
 - `OpenTelemetry:Otlp:Endpoint`: optional OTLP traces, metrics, and logs.

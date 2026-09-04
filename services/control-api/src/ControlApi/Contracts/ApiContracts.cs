@@ -62,28 +62,36 @@ public sealed record CreateRunRequest
     }
 
     [Required]
+    [JsonRequired]
     public string ClientRequestId { get; init; }
 
     [Required]
+    [JsonRequired]
     public string Workload { get; init; }
 
     [Required]
+    [JsonRequired]
     public string Question { get; init; }
 
     [Required]
+    [JsonRequired]
     [JsonConverter(typeof(OffsetDateTimeJsonConverter))]
     public DateTimeOffset EvaluationClock { get; init; }
 
     [Required]
+    [JsonRequired]
     public string EvaluationTimezone { get; init; }
 
     [Required]
+    [JsonRequired]
     public CompilationMode CompilationMode { get; init; }
 
     [Required]
+    [JsonRequired]
     public ExecutionMode ExecutionMode { get; init; }
 
     [Required]
+    [JsonRequired]
     public OutputMode OutputMode { get; init; }
 }
 

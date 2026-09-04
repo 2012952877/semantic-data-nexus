@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ControlApi.Domain;
@@ -92,7 +93,7 @@ public sealed record SemanticSqgSummary(
 
 public sealed record SemanticPhysicalNode(
     string Id,
-    SemanticOperatorKind Kind,
+    [property: JsonRequired] SemanticOperatorKind Kind,
     string Label,
     string PlainLanguage,
     IReadOnlyList<string> Inputs,
@@ -101,32 +102,34 @@ public sealed record SemanticPhysicalNode(
 public sealed record SemanticResultColumn(
     string Key,
     string Label,
-    SemanticScalarType DataType,
-    SemanticColumnFormat Format,
-    bool Nullable);
+    [property: JsonRequired] SemanticScalarType DataType,
+    [property: JsonRequired] SemanticColumnFormat Format,
+    [property: JsonRequired] bool Nullable);
 
 public sealed record SemanticResultSet(
     IReadOnlyList<SemanticResultColumn> Columns,
     IReadOnlyList<IReadOnlyList<SemanticScalarValue>> Rows,
-    long RowCount,
-    bool Truncated);
+    [property: JsonRequired] long RowCount,
+    [property: JsonRequired] bool Truncated);
 
 public sealed record SemanticCommittedManifest(
     string ResultId,
     RunId RunId,
     string NodeId,
-    SemanticResultStorage Storage,
+    [property: JsonRequired] SemanticResultStorage Storage,
     string Uri,
-    long RowCount,
-    long ByteCount,
+    [property: JsonRequired] long RowCount,
+    [property: JsonRequired] long ByteCount,
     string Checksum,
     DateTimeOffset CommittedAt);
 
-public sealed record SemanticLineageParameter(string Name, SemanticScalarType DataType);
+public sealed record SemanticLineageParameter(
+    string Name,
+    [property: JsonRequired] SemanticScalarType DataType);
 
 public sealed record SemanticLineageNode(
     string Id,
-    SemanticLineageNodeKind Kind,
+    [property: JsonRequired] SemanticLineageNodeKind Kind,
     string? Operation,
     string? SourceAlias,
     string? SourceType,
@@ -136,7 +139,7 @@ public sealed record SemanticLineageNode(
 public sealed record SemanticLineageEdge(
     string Source,
     string Target,
-    SemanticLineageRelation Relation);
+    [property: JsonRequired] SemanticLineageRelation Relation);
 
 public sealed record SemanticLineage(
     string Version,
@@ -145,15 +148,15 @@ public sealed record SemanticLineage(
     IReadOnlyList<SemanticLineageEdge> Edges);
 
 public sealed record SemanticDetailDiagnostic(
-    long Sequence,
+    [property: JsonRequired] long Sequence,
     RunId RunId,
-    SemanticDiagnosticScope Scope,
+    [property: JsonRequired] SemanticDiagnosticScope Scope,
     string ScopeId,
     string Code,
     string Title,
     string Message,
     string Recovery,
-    SemanticDiagnosticSeverity Severity,
+    [property: JsonRequired] SemanticDiagnosticSeverity Severity,
     DateTimeOffset OccurredAt);
 
 public sealed record SemanticRunDetail(
@@ -206,6 +209,12 @@ public enum SemanticScalarKind
     Boolean
 }
 
+public static class SemanticScalarLimits
+{
+    public const long MaximumIntegerMagnitude = 9_007_199_254_740_991;
+    public const decimal MaximumNumberMagnitude = 10_000_000_000_000_000_000_000_000_000m;
+}
+
 [JsonConverter(typeof(SemanticScalarValueJsonConverter))]
 public sealed record SemanticScalarValue
 {
@@ -246,21 +255,48 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
     public override SemanticScalarValue Read(
         ref Utf8JsonReader reader,
         Type typeToConvert,
-        JsonSerializerOptions options) =>
-        reader.TokenType switch
+        JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
         {
-            JsonTokenType.Null => SemanticScalarValue.Null,
-            JsonTokenType.String => SemanticScalarValue.From(
+            return SemanticScalarValue.Null;
+        }
+
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            return SemanticScalarValue.From(
                 reader.GetString() ??
-                throw new JsonException("Scalar strings cannot be null.")),
-            JsonTokenType.Number when reader.TryGetInt64(out var integer) =>
-                SemanticScalarValue.From(integer),
-            JsonTokenType.Number when reader.TryGetDecimal(out var number) =>
-                SemanticScalarValue.From(number),
+                throw new JsonException("Scalar strings cannot be null."));
+        }
+
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            if (reader.TryGetInt64(out var integer))
+            {
+                if (Math.Abs((decimal)integer) > SemanticScalarLimits.MaximumIntegerMagnitude)
+                {
+                    throw new JsonException("Integer result cells exceed the shared safe range.");
+                }
+
+                return SemanticScalarValue.From(integer);
+            }
+
+            if (reader.TryGetDecimal(out var number) &&
+                Math.Abs(number) <= SemanticScalarLimits.MaximumNumberMagnitude)
+            {
+                return SemanticScalarValue.From(number);
+            }
+
+            throw new JsonException("Numeric result cells exceed the shared finite range.");
+        }
+
+        return reader.TokenType switch
+        {
             JsonTokenType.True => SemanticScalarValue.From(true),
             JsonTokenType.False => SemanticScalarValue.From(false),
             _ => throw new JsonException("Result cells must be JSON scalar values.")
         };
+    }
 
     public override void Write(
         Utf8JsonWriter writer,
@@ -449,7 +485,7 @@ public static class SemanticRunDetailValidator
         {
             SemanticScalarType.String =>
                 value.Kind == SemanticScalarKind.String &&
-                value.StringValue!.Length <= MaximumScalarStringLength,
+                value.StringValue!.EnumerateRunes().Count() <= MaximumScalarStringLength,
             SemanticScalarType.Integer => value.Kind == SemanticScalarKind.Integer,
             SemanticScalarType.Float or SemanticScalarType.Decimal =>
                 value.Kind is SemanticScalarKind.Integer or SemanticScalarKind.Number,
@@ -589,8 +625,14 @@ public static class SemanticRunDetailValidator
 
     private static bool ValidText(string? value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) &&
-        value.Length <= maximumLength &&
-        !value.Any(character => char.IsControl(character));
+        value.EnumerateRunes().Count() <= maximumLength &&
+        !value.EnumerateRunes().Any(rune =>
+            Rune.GetUnicodeCategory(rune) is
+                UnicodeCategory.Control or
+                UnicodeCategory.Format or
+                UnicodeCategory.Surrogate or
+                UnicodeCategory.PrivateUse or
+                UnicodeCategory.OtherNotAssigned);
 
     private static bool HasExplicitOffset(string value)
     {

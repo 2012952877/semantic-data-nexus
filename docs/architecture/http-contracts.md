@@ -21,9 +21,13 @@ enums use the literal values below, and every response is bounded and typed.
 }
 ```
 
-`question` is 1-4,000 characters. `evaluationClock` must contain `Z` or an
-explicit numeric UTC offset, and `evaluationTimezone` must be a valid IANA
-name. Compilation mode is `regional_quarterly_profit` or
+All eight fields are required, and unknown JSON members are rejected.
+`clientRequestId` and `workload` contain 1-64 ASCII letters, digits, `.`, `_`,
+or `-` and begin with a letter or digit. `question` is 1-4,000 Unicode scalar
+values and rejects Unicode category C characters (control, format, surrogate,
+private-use, and unassigned). `evaluationClock` must contain `Z` or an explicit
+numeric UTC offset, and `evaluationTimezone` must be a valid IANA name,
+including the `UTC` link. Compilation mode is `regional_quarterly_profit` or
 `monthly_regional_comparison`; execution mode is `thread`; output mode is
 `normal` or `stream`.
 
@@ -94,14 +98,17 @@ idempotency and safe start reconciliation.
 
 Result data is column-oriented by schema: each row is an array whose cell at
 index `n` must match column `n`. Cells may only be JSON null, string, integer,
-finite decimal number, or boolean values. Dates are `yyyy-MM-dd` strings and
+finite number, or boolean values. Integers use the interoperable range
+`[-9007199254740991, 9007199254740991]`; finite numbers have absolute value at
+most `10^28`. Booleans are not integers. Dates are `yyyy-MM-dd` strings and
 timestamps require an explicit UTC offset. Objects and arrays are rejected.
 
 The BFF accepts at most 100 result columns, 1,000 inline rows, 1,000 physical
 nodes, 5,000 lineage nodes, 10,000 lineage edges, and 1,000 diagnostics. It
 also rejects unknown JSON properties, duplicate node or column IDs, invalid
 references, out-of-order diagnostic sequences, mismatched nested run IDs, and
-a question that differs from the persisted create request.
+a question that differs from the persisted create request. Governed enum,
+boolean, and count members are required rather than defaulted when absent.
 
 ## Errors and transport
 

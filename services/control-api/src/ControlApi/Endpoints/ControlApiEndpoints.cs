@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
+using System.Text;
 using ControlApi.Authentication;
 using ControlApi.Contracts;
 using ControlApi.Domain;
@@ -511,6 +513,7 @@ public static class ControlApiEndpoints
     {
         if (string.IsNullOrWhiteSpace(request.ClientRequestId) ||
             request.ClientRequestId.Length > 64 ||
+            !char.IsAsciiLetterOrDigit(request.ClientRequestId[0]) ||
             !request.ClientRequestId.All(character =>
                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
         {
@@ -522,6 +525,7 @@ public static class ControlApiEndpoints
 
         if (string.IsNullOrWhiteSpace(request.Workload) ||
             request.Workload.Length > 64 ||
+            !char.IsAsciiLetterOrDigit(request.Workload[0]) ||
             !request.Workload.All(character =>
                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
         {
@@ -532,7 +536,8 @@ public static class ControlApiEndpoints
         }
 
         if (string.IsNullOrWhiteSpace(request.Question) ||
-            request.Question.Length > 4_000)
+            request.Question.EnumerateRunes().Count() > 4_000 ||
+            HasDisallowedUnicodeCategory(request.Question))
         {
             return Invalid(
                 context,
@@ -568,6 +573,15 @@ public static class ControlApiEndpoints
 
         return null;
     }
+
+    private static bool HasDisallowedUnicodeCategory(string value) =>
+        value.EnumerateRunes().Any(rune =>
+            Rune.GetUnicodeCategory(rune) is
+                UnicodeCategory.Control or
+                UnicodeCategory.Format or
+                UnicodeCategory.Surrogate or
+                UnicodeCategory.PrivateUse or
+                UnicodeCategory.OtherNotAssigned);
 
     private static bool IsIanaTimeZone(string? value)
     {

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using ControlApi.Contracts;
 using ControlApi.Domain;
@@ -293,6 +294,78 @@ public sealed class ApiEndpointTests
         var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UnknownCreateMemberIsRejected()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = JsonSerializer.SerializeToNode(
+            ValidCreateRequest("unknown-member"),
+            JsonOptions)!.AsObject();
+        request["executionOptions"] = new JsonObject();
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("clientRequestId")]
+    [InlineData("workload")]
+    public async Task MetadataCannotStartWithPunctuation(string field)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("leading-punctuation");
+        request = field switch
+        {
+            "clientRequestId" => request with { ClientRequestId = "_request" },
+            "workload" => request with { Workload = ".workload" },
+            _ => throw new InvalidOperationException("Unsupported test field.")
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("\u0001")]
+    [InlineData("\u200B")]
+    [InlineData("\uE000")]
+    public async Task QuestionRejectsUnicodeCategoryCCharacters(string disallowed)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("category-c") with
+        {
+            Question = $"Synthetic{disallowed} question"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_question", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task QuestionLimitCountsUnicodeScalars()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("unicode-limit") with
+        {
+            Question = string.Concat(Enumerable.Repeat("\U0001F680", 4_000))
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
     }
 
     [Theory]
@@ -719,13 +792,19 @@ public sealed class ApiEndpointTests
             .GetProperty("rows")
             .GetProperty("items")
             .GetProperty("items");
+        var scalarAlternatives = scalarSchema.GetProperty("anyOf").EnumerateArray().ToArray();
         Assert.Equal(
             ["string", "integer", "number", "boolean"],
-            scalarSchema
-                .GetProperty("oneOf")
-                .EnumerateArray()
-                .Select(item => item.GetProperty("type").GetString())
-                .ToArray());
+            scalarAlternatives.Select(item => item.GetProperty("type").GetString()).ToArray());
+        Assert.True(scalarAlternatives[0].GetProperty("nullable").GetBoolean());
+        Assert.Equal("int64", scalarAlternatives[1].GetProperty("format").GetString());
+        Assert.Equal(
+            SemanticScalarLimits.MaximumIntegerMagnitude,
+            scalarAlternatives[1].GetProperty("maximum").GetInt64());
+        Assert.Equal("double", scalarAlternatives[2].GetProperty("format").GetString());
+        Assert.Equal(
+            SemanticScalarLimits.MaximumNumberMagnitude,
+            scalarAlternatives[2].GetProperty("maximum").GetDecimal());
     }
 
     [Fact]

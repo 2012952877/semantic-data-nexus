@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ControlApi.Contracts;
 using ControlApi.Domain;
 using ControlApi.Semantic;
@@ -111,6 +113,130 @@ public sealed class SemanticBackendClientTests
             client.GetDetailAsync(requested, default));
 
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
+    public async Task BackendProducedDetailFixtureDeserializesAndValidates()
+    {
+        var runId = RunId.Parse(
+            "run_0123456789abcdef0123456789abcdef",
+            provider: null);
+        var fixture = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "Fixtures",
+            "backend-run-detail.json"));
+        var handler = new DelegateHandler((request, _) =>
+        {
+            Assert.Equal($"/v1/runs/{runId.Value}/detail", request.RequestUri!.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(fixture, Encoding.UTF8, "application/json")
+            });
+        });
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/")
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        var detail = await client.GetDetailAsync(runId, default);
+
+        Assert.Equal(runId, detail.RunId);
+        Assert.Equal("physical-aggregate_profit", Assert.Single(detail.PhysicalNodes).Id);
+        Assert.Equal(2, detail.Result!.Columns.Count);
+        Assert.Equal(SemanticScalarKind.String, detail.Result.Rows[0][0].Kind);
+        Assert.Equal(SemanticScalarKind.Number, detail.Result.Rows[0][1].Kind);
+        Assert.Equal(runId, detail.Manifest!.RunId);
+        Assert.Equal(4, detail.Lineage.Nodes.Count);
+    }
+
+    [Theory]
+    [InlineData("physicalNodes/0/kind")]
+    [InlineData("result/columns/0/dataType")]
+    [InlineData("result/columns/0/format")]
+    [InlineData("result/columns/0/nullable")]
+    [InlineData("result/rowCount")]
+    [InlineData("result/truncated")]
+    [InlineData("manifest/storage")]
+    [InlineData("manifest/rowCount")]
+    [InlineData("manifest/byteCount")]
+    [InlineData("lineage/nodes/0/kind")]
+    [InlineData("lineage/nodes/0/parameters/0/dataType")]
+    [InlineData("lineage/edges/0/relation")]
+    [InlineData("diagnostics/0/sequence")]
+    [InlineData("diagnostics/0/scope")]
+    [InlineData("diagnostics/0/severity")]
+    public async Task BackendFixtureRejectsMissingGovernedMembers(string path)
+    {
+        var runId = RunId.Parse(
+            "run_0123456789abcdef0123456789abcdef",
+            provider: null);
+        var root = BackendDetailFixture();
+        root["lineage"]!["nodes"]![0]!["parameters"] = JsonNode.Parse(
+            """[{"name":"synthetic_limit","dataType":"integer"}]""");
+        root["diagnostics"] = JsonNode.Parse(
+            """
+            [{
+              "sequence": 1,
+              "runId": "run_0123456789abcdef0123456789abcdef",
+              "scope": "run",
+              "scopeId": "run",
+              "code": "synthetic_notice",
+              "title": "Synthetic notice",
+              "message": "Synthetic diagnostic.",
+              "recovery": "No action is required.",
+              "severity": "info",
+              "occurredAt": "2026-08-15T01:00:01Z"
+            }]
+            """);
+        RemoveJsonPath(root, path);
+
+        var exception = await GetDetailFailureAsync(root.ToJsonString(), runId);
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Theory]
+    [InlineData("9007199254740992")]
+    [InlineData("-9007199254740992")]
+    [InlineData("1e29")]
+    [InlineData("-1e29")]
+    public async Task BackendFixtureRejectsNumericValuesOutsideSharedRange(string value)
+    {
+        var runId = RunId.Parse(
+            "run_0123456789abcdef0123456789abcdef",
+            provider: null);
+        var payload = BackendDetailFixture()
+            .ToJsonString()
+            .Replace("2334.0", value, StringComparison.Ordinal);
+
+        var exception = await GetDetailFailureAsync(payload, runId);
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
+    public void ScalarConverterAcceptsSharedNumericBoundaries()
+    {
+        var positiveInteger = JsonSerializer.Deserialize<SemanticScalarValue>(
+            SemanticScalarLimits.MaximumIntegerMagnitude.ToString(CultureInfo.InvariantCulture));
+        var negativeInteger = JsonSerializer.Deserialize<SemanticScalarValue>(
+            (-SemanticScalarLimits.MaximumIntegerMagnitude).ToString(CultureInfo.InvariantCulture));
+        var positiveNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
+            "1e28");
+        var negativeNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
+            "-1e28");
+
+        Assert.Equal(SemanticScalarKind.Integer, positiveInteger!.Kind);
+        Assert.Equal(SemanticScalarKind.Integer, negativeInteger!.Kind);
+        Assert.Equal(SemanticScalarLimits.MaximumIntegerMagnitude, positiveInteger.IntegerValue);
+        Assert.Equal(-SemanticScalarLimits.MaximumIntegerMagnitude, negativeInteger.IntegerValue);
+        Assert.Equal(SemanticScalarKind.Number, positiveNumber!.Kind);
+        Assert.Equal(SemanticScalarKind.Number, negativeNumber!.Kind);
+        Assert.Equal(SemanticScalarLimits.MaximumNumberMagnitude, positiveNumber.NumberValue);
+        Assert.Equal(-SemanticScalarLimits.MaximumNumberMagnitude, negativeNumber.NumberValue);
     }
 
     [Fact]
@@ -274,5 +400,46 @@ public sealed class SemanticBackendClientTests
         JsonContractOptions.Configure(options);
         SemanticJsonContractOptions.Configure(options);
         return options;
+    }
+
+    private static JsonObject BackendDetailFixture() =>
+        JsonNode.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "Fixtures",
+            "backend-run-detail.json")))!.AsObject();
+
+    private static void RemoveJsonPath(JsonObject root, string path)
+    {
+        var segments = path.Split('/');
+        JsonNode current = root;
+        foreach (var segment in segments[..^1])
+        {
+            current = int.TryParse(segment, out var index)
+                ? current[index]!
+                : current[segment]!;
+        }
+
+        Assert.True(current.AsObject().Remove(segments[^1]));
+    }
+
+    private static async Task<SemanticBackendException> GetDetailFailureAsync(
+        string payload,
+        RunId runId)
+    {
+        var handler = new DelegateHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            }));
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/")
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        return await Assert.ThrowsAsync<SemanticBackendException>(() =>
+            client.GetDetailAsync(runId, default));
     }
 }

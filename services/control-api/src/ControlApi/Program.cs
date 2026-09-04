@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
 using ControlApi;
@@ -47,18 +48,30 @@ builder.Services.AddSwaggerGen(options =>
     });
     options.MapType<SemanticScalarValue>(() => new OpenApiSchema
     {
-        Nullable = true,
-        OneOf =
+        AnyOf =
         [
-            new OpenApiSchema { Type = "string" },
-            new OpenApiSchema { Type = "integer", Format = "int64" },
-            new OpenApiSchema { Type = "number", Format = "decimal" },
+            new OpenApiSchema { Type = "string", Nullable = true },
+            new OpenApiSchema
+            {
+                Type = "integer",
+                Format = "int64",
+                Minimum = -SemanticScalarLimits.MaximumIntegerMagnitude,
+                Maximum = SemanticScalarLimits.MaximumIntegerMagnitude
+            },
+            new OpenApiSchema
+            {
+                Type = "number",
+                Format = "double",
+                Minimum = -SemanticScalarLimits.MaximumNumberMagnitude,
+                Maximum = SemanticScalarLimits.MaximumNumberMagnitude
+            },
             new OpenApiSchema { Type = "boolean" }
         ]
     });
 });
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
+    options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
     JsonContractOptions.Configure(options.SerializerOptions);
     SemanticJsonContractOptions.Configure(options.SerializerOptions);
 });
