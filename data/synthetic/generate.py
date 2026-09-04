@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import random
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -55,6 +56,18 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) 
         writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def canonical_csv_bytes(path: Path) -> bytes:
+    """Normalize checkout line endings before deterministic corpus hashing."""
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def corpus_digest(directory: Path) -> dict[str, str]:
+    return {
+        path.name: hashlib.sha256(canonical_csv_bytes(path)).hexdigest()
+        for path in sorted(directory.glob("*.csv"))
+    }
 
 
 def generate(output: Path = DEFAULT_OUTPUT) -> None:

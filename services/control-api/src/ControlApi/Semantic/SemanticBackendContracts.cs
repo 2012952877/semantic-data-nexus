@@ -439,7 +439,7 @@ public static class SemanticRunDetailValidator
                 "The semantic backend returned inconsistent result and manifest details.");
         }
 
-        ValidateLineage(detail.Lineage, expectedRunId);
+        ValidateLineage(detail.Lineage, expectedRunId, detail.Manifest);
         ValidateDiagnostics(detail.Diagnostics, expectedRunId);
     }
 
@@ -605,7 +605,10 @@ public static class SemanticRunDetailValidator
         }
     }
 
-    private static void ValidateLineage(SemanticLineage? lineage, RunId expectedRunId)
+    private static void ValidateLineage(
+        SemanticLineage? lineage,
+        RunId expectedRunId,
+        SemanticCommittedManifest? manifest)
     {
         if (lineage is null ||
             lineage.RunId != expectedRunId ||
@@ -619,6 +622,7 @@ public static class SemanticRunDetailValidator
         }
 
         var ids = new HashSet<string>(StringComparer.Ordinal);
+        var resultIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var node in lineage.Nodes)
         {
             if (node is null ||
@@ -627,7 +631,7 @@ public static class SemanticRunDetailValidator
                 !Enum.IsDefined(node.Kind) ||
                 !ValidOptionalLabel(node.Operation) ||
                 !ValidOptionalIdentifier(node.SourceAlias) ||
-                !ValidOptionalLabel(node.SourceType) ||
+                !ValidOptionalIdentifier(node.SourceType) ||
                 !ValidOptionalIdentifier(node.ResultId) ||
                 node.Parameters is null ||
                 node.Parameters.Count > MaximumNodeItems ||
@@ -638,6 +642,27 @@ public static class SemanticRunDetailValidator
             {
                 throw Invalid("The semantic backend returned an invalid lineage node.");
             }
+
+            if (node.Kind == SemanticLineageNodeKind.Result)
+            {
+                if (node.ResultId is null ||
+                    !string.Equals(
+                        node.Id,
+                        $"result:{node.ResultId}",
+                        StringComparison.Ordinal))
+                {
+                    throw Invalid(
+                        "The semantic backend returned an inconsistent lineage result identity.");
+                }
+
+                resultIds.Add(node.ResultId);
+            }
+        }
+
+        if (manifest is not null && !resultIds.Contains(manifest.ResultId))
+        {
+            throw Invalid(
+                "The semantic backend lineage does not contain the committed result.");
         }
 
         foreach (var edge in lineage.Edges)

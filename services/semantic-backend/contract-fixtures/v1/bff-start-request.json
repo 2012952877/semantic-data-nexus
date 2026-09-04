@@ -1,0 +1,13 @@
+{
+  "runId": "run_0123456789abcdef0123456789abcdef",
+  "clientRequestId": "request-typed",
+  "workload": "synthetic-workload",
+  "question": "Compare synthetic regional revenue",
+  "evaluationClock": "2026-08-15T09:00:00+08:00",
+  "evaluationTimezone": "Asia/Shanghai",
+  "compilationMode": "monthly_regional_comparison",
+  "executionMode": "thread",
+  "outputMode": "stream",
+  "requestedBy": "synthetic-user",
+  "traceId": "trace"
+}

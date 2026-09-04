@@ -26,13 +26,29 @@ async def test_inline_and_parquet_paging(tmp_path: Path) -> None:
         {"value": 6},
         {"value": 7},
     ]
-
     hybrid = HybridResultStore(tmp_path, inline_max_bytes=1)
     manifest = await hybrid.commit("run-parquet", "node-parquet", table)
     assert manifest.result.storage == "parquet"
     assert (Path(manifest.result.uri) / "_COMMITTED").is_file()
     assert (await hybrid.read_page(manifest.result, 18, 10)).num_rows == 2
 
+
+@pytest.mark.asyncio
+async def test_result_store_preserves_lossless_physical_node_ids() -> None:
+    store = InlineResultStore()
+    physical_node_id = "physical-" + ("n" * 128)
+    manifest = await store.commit(
+        "run-lossless-id",
+        physical_node_id,
+        pa.table({"value": [1]}),
+    )
+    assert manifest.result.node_id == physical_node_id
+    with pytest.raises(ResultStoreFailure, match="unsafe"):
+        await store.commit(
+            "run-lossless-id",
+            "n" * 161,
+            pa.table({"value": [1]}),
+        )
 
 class _FailingStore(ParquetResultStore):
     def _commit_directory(self, temporary: Path, final: Path) -> None:

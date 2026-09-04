@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 
 from sqlglot import Dialect, TokenType, exp, parse
 from sqlglot.errors import SqlglotError
@@ -175,9 +176,18 @@ class DatabricksResolver:
     def capabilities() -> CapabilityDeclaration:
         return CapabilityDeclaration.databricks_sql()
 
-    async def resolve(self, fragment: PhysicalSourceFragment) -> TabularResult:
+    async def resolve(
+        self,
+        fragment: PhysicalSourceFragment,
+        *,
+        on_statement_submitted: Callable[[str], Awaitable[None]] | None = None,
+    ) -> TabularResult:
         validate_fragment(fragment)
-        result = await self._client.execute(fragment.sql, fragment.parameters)
+        result = await self._client.execute(
+            fragment.sql,
+            fragment.parameters,
+            on_statement_submitted=on_statement_submitted,
+        )
         if result.result_format is not ResultFormat.JSON_ARRAY:
             raise ProtocolError("Normalized tabular resolution requires JSON_ARRAY format")
         return TabularResult(

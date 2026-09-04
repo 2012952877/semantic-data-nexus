@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "semantic-backend"
+version = "0.1.0"
+description = "M0 orchestration service for validated semantic compiler and query runtime flows"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "semantic-api==0.1.0",
+  "semantic-query-runtime==0.1.0",
+  "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+databricks = [
+  "semantic-data-nexus-databricks==0.1.0",
+]
+dev = [
+  "build>=1.2,<2",
+  "httpx>=0.28,<1",
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "ruff>=0.9,<1",
+]
+eval = [
+  "semantic-data-nexus-evals==0.1.0",
+]
+
+[project.scripts]
+semantic-backend = "semantic_backend.__main__:main"
+semantic-backend-demo = "semantic_backend.demo:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/semantic_backend"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/semantic_backend/resources/source_mapping.v0.json" = "semantic_backend/resources/source_mapping.v0.json"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["semantic_backend"]
+
+[[tool.mypy.overrides]]
+module = ["duckdb.*", "pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["query_runtime.*", "semantic_data_nexus_databricks.*", "semantic_eval.*"]
+follow_untyped_imports = true

@@ -11,6 +11,7 @@ namespace ControlApi.Semantic;
 public sealed class SemanticBackendOptions
 {
     public const string SectionName = "SemanticBackend";
+    public const int MaximumResponseContentBytes = 32 * 1024 * 1024;
     public bool UseFake { get; init; }
     public string? BaseUri { get; init; }
     public int TimeoutSeconds { get; init; } = 5;

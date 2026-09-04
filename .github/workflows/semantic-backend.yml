@@ -1,0 +1,72 @@
+name: Semantic backend
+
+on:
+  pull_request:
+    paths:
+      - "data/synthetic/**"
+      - ".dockerignore"
+      - ".gitignore"
+      - "evals/**"
+      - "connectors/databricks/**"
+      - "services/semantic-api/**"
+      - "services/query-runtime/**"
+      - "services/semantic-backend/**"
+      - "services/control-api/**"
+      - ".github/workflows/semantic-backend.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "data/synthetic/**"
+      - ".dockerignore"
+      - ".gitignore"
+      - "evals/**"
+      - "connectors/databricks/**"
+      - "services/semantic-api/**"
+      - "services/query-runtime/**"
+      - "services/semantic-backend/**"
+      - "services/control-api/**"
+      - ".github/workflows/semantic-backend.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            services/semantic-api/pyproject.toml
+            services/query-runtime/pyproject.toml
+            services/semantic-backend/pyproject.toml
+      - name: Install local integration packages
+        run: >-
+          python -m pip install
+          -e evals
+          -e connectors/databricks
+          -e services/semantic-api
+          -e services/query-runtime
+          -e "services/semantic-backend[databricks,dev,eval]"
+      - name: Check formatting and lint
+        run: |
+          python -m ruff format --check services/semantic-backend
+          python -m ruff check services/semantic-backend
+      - name: Type check
+        working-directory: services/semantic-backend
+        run: python -m mypy src
+      - name: Test real compiler-to-runtime flow
+        run: python -m pytest services/semantic-backend
+      - name: Build package
+        run: python -m build services/semantic-backend
+      - name: Run offline demos
+        run: |
+          python -m semantic_backend.demo --scenario simple
+          python -m semantic_backend.demo --scenario complex
+      - name: Build non-root backend image
+        run: docker build --file services/semantic-backend/Dockerfile .

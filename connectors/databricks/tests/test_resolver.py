@@ -146,13 +146,20 @@ async def test_resolver_returns_normalized_rows_and_non_secret_lineage() -> None
     )
     client = StatementExecutionClient(config(), SyntheticTokenProvider(), transport=transport)
     resolver = DatabricksResolver(client)
+    submitted: list[str] = []
+
+    async def on_statement_submitted(statement_id: str) -> None:
+        submitted.append(statement_id)
+
     result = await resolver.resolve(
         PhysicalSourceFragment(
             source_name="demo_sales",
             sql="SELECT region FROM orders WHERE region = :region",
             parameters=(StatementParameter.string("region", "north"),),
-        )
+        ),
+        on_statement_submitted=on_statement_submitted,
     )
+    assert submitted == ["statement-test"]
     assert result.rows == (("north",),)
     assert result.lineage.resolver == "azure_databricks_statement_execution"
     assert result.lineage.statement_id == "statement-test"

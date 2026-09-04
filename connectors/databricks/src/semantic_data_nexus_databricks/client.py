@@ -39,6 +39,7 @@ from .transport import AsyncHttpTransport, HttpResponse, HttpxTransport
 
 Clock = Callable[[], float]
 Sleeper = Callable[[float], Awaitable[None]]
+StatementSubmitted = Callable[[str], Awaitable[None]]
 
 _REQUEST_ID_HEADERS = (
     "x-databricks-request-id",
@@ -100,6 +101,8 @@ class StatementExecutionClient:
         self,
         statement: str,
         parameters: tuple[StatementParameter, ...] = (),
+        *,
+        on_statement_submitted: StatementSubmitted | None = None,
     ) -> StatementExecutionResult:
         started = self._clock()
         deadline = started + self._config.statement_timeout_seconds
@@ -108,6 +111,12 @@ class StatementExecutionClient:
         except _DeadlineExceeded:
             await self._handle_timeout(None, started, cancel=False)
         statement_id = response.statement_id
+        if on_statement_submitted is not None:
+            try:
+                await on_statement_submitted(statement_id)
+            except BaseException:
+                await self._cancel_after_submission_callback_failure(statement_id)
+                raise
         request_ids = [response.request_id] if response.request_id else []
         delay = self._config.poll_initial_seconds
         if self._clock() >= deadline:
@@ -181,6 +190,31 @@ class StatementExecutionClient:
             state=response.status.state.value,
         )
         return result
+
+    async def _cancel_after_submission_callback_failure(
+        self,
+        statement_id: str,
+    ) -> None:
+        cleanup = asyncio.create_task(
+            self._cancel(
+                statement_id,
+                min(self._config.request_timeout_seconds, 2.0),
+            )
+        )
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        try:
+            cleanup.result()
+        except Exception:
+            self._emit(
+                "DBR_CANCEL_FAILED",
+                DiagnosticLevel.WARNING,
+                "Statement cancellation cleanup failed",
+                statement_id=statement_id,
+            )
 
     async def _handle_timeout(
         self,

@@ -175,7 +175,8 @@ else
     {
         client.BaseAddress = semanticBaseUri;
         client.Timeout = TimeSpan.FromSeconds(semanticOptions.TimeoutSeconds);
-        client.MaxResponseContentBufferSize = 1024 * 1024;
+        client.MaxResponseContentBufferSize =
+            SemanticBackendOptions.MaximumResponseContentBytes;
     });
 }
 
