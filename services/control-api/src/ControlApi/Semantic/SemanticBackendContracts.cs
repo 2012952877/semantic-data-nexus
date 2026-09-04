@@ -381,8 +381,6 @@ public static class SemanticRunDetailValidator
                 throw Invalid("The semantic backend returned an invalid physical node.");
             }
         }
-
-        #pragma warning restore CA1720
     }
 
     private static void ValidateResult(SemanticResultSet result)
