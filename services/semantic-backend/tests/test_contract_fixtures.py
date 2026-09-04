@@ -80,6 +80,7 @@ def test_backend_detail_fixture_round_trips_exactly() -> None:
     [
         ("integer", 9_007_199_254_740_992),
         ("float", 1.0000001e28),
+        ("float", 9_223_372_036_854_775_808),
         ("timestamp", "2026-08-15T01:00:00"),
         ("timestamp", "2026-08-15X01:00:00Z"),
         ("date", "2026-W35-5"),
@@ -95,6 +96,15 @@ def test_backend_detail_fixture_rejects_out_of_domain_scalars(
     document["result"]["rows"][0][0] = value
     with pytest.raises(ValidationError):
         RunDetail.model_validate(document)
+
+
+def test_backend_detail_preserves_small_finite_number() -> None:
+    document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
+    document["result"]["columns"][1]["dataType"] = "float"
+    document["result"]["rows"][0][1] = 1e-29
+    detail = RunDetail.model_validate(document)
+    assert detail.result is not None
+    assert detail.result.rows[0][1] == 1e-29
 
 
 @pytest.mark.parametrize(

@@ -297,14 +297,12 @@ class ResultSet(ApiModel):
                 and -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER
             )
         elif column.data_type in {ScalarType.FLOAT, ScalarType.DECIMAL}:
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if isinstance(value, int) and not isinstance(value, bool):
+                valid = -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER
+            elif isinstance(value, float):
                 try:
                     number = Decimal(str(value))
-                    valid = (
-                        (not isinstance(value, float) or isfinite(value))
-                        and number.is_finite()
-                        and abs(number) <= _MAX_DECIMAL
-                    )
+                    valid = isfinite(value) and number.is_finite() and abs(number) <= _MAX_DECIMAL
                 except InvalidOperation:
                     valid = False
         elif column.data_type is ScalarType.BOOLEAN:
