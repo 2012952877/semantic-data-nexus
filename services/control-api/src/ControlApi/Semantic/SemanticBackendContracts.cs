@@ -5,6 +5,8 @@ using ControlApi.Domain;
 
 namespace ControlApi.Semantic;
 
+#pragma warning disable CA1720 // Contract enum names intentionally mirror cross-language scalar types.
+
 public enum SemanticOperatorKind
 {
     Source,
@@ -356,6 +358,8 @@ public static class SemanticRunDetailValidator
             throw Invalid("The semantic backend returned an invalid SQG summary.");
         }
     }
+
+    #pragma warning restore CA1720
 
     private static void ValidatePhysicalNodes(IReadOnlyList<SemanticPhysicalNode>? nodes)
     {
