@@ -326,58 +326,93 @@ class DeterministicInitializer:
 
     @staticmethod
     def _is_negated(question: str, mention_start: int, mention_end: int) -> bool:
-        prefix = DeterministicInitializer._normalize_negation_phrase(
-            question[max(0, mention_start - 40) : mention_start]
+        prefix, suffix = DeterministicInitializer._bounded_negation_context(
+            question,
+            mention_start,
+            mention_end,
         )
-        suffix = DeterministicInitializer._normalize_negation_phrase(
-            question[mention_end : mention_end + 40]
+        return any(
+            DeterministicInitializer._contains_negation_marker(context)
+            for context in (prefix, suffix)
         )
-        auxiliary = (
-            r"(?:do|does|did|is|are|was|were|have|has|had|should|would|could|might|may|"
-            r"must|will|shall|can|need|dare|ought)"
+
+    @staticmethod
+    def _bounded_negation_context(
+        question: str,
+        mention_start: int,
+        mention_end: int,
+    ) -> tuple[str, str]:
+        limit = 80
+        prefix = question[max(0, mention_start - limit) : mention_start]
+        suffix = question[mention_end : mention_end + limit]
+        clause_boundary = re.compile(
+            (
+                r"\b(?:but|however|instead|whereas|then|when|where|if|unless|although|"
+                r"though|while)\b|(?:但是|但|不过|然而|然后|当|如果|除非|虽然)"
+            ),
+            re.IGNORECASE,
         )
-        modal = r"(?:should|would|could|might|may|must|will|shall|can|need|dare|ought)"
-        governed_verb = r"(?:include|use|show)"
-        governed_participle = r"(?:included|used|shown)"
-        negative_passive_chain = (
-            rf"(?:(?:has|have|had)\s+not\s+been\s+|"
-            rf"{modal}\s+not\s+have\s+been\s+|"
-            rf"(?:{auxiliary}\s+not|cannot|not)\s+(?:to\s+)?(?:be\s+)?)"
-        )
-        return (
-            re.search(
-                (
-                    rf"(?:{auxiliary}\s+not\s+(?:to\s+)?{governed_verb}|"
-                    rf"cannot\s+{governed_verb}|"
-                    r"(?:is|was)\s+not\s+(?:including|using|showing)|"
-                    r"not\s+(?:including|using|showing)|"
-                    r"exclude|excluding|except(?:\s+for)?|"
-                    r"other\s+than|not|without)(?:\s+the)?\s*$"
-                ),
-                prefix,
+
+        prefix_boundaries = [
+            match.end()
+            for match in re.finditer(r"[,;.!?\n\r\u3002\uff01\uff1f\uff1b\uff0c]", prefix)
+        ]
+        prefix_boundaries.extend(match.end() for match in clause_boundary.finditer(prefix))
+        if prefix_boundaries:
+            prefix = prefix[max(prefix_boundaries) :]
+
+        suffix_boundaries = [
+            match.start() for match in re.finditer(r"[;.!?\n\r\u3002\uff01\uff1f\uff1b]", suffix)
+        ]
+        suffix_boundaries.extend(match.start() for match in clause_boundary.finditer(suffix))
+        if suffix_boundaries:
+            suffix = suffix[: min(suffix_boundaries)]
+
+        return prefix, suffix
+
+    @staticmethod
+    def _contains_negation_marker(value: str) -> bool:
+        normalized = DeterministicInitializer._normalize_negation_phrase(value)
+        english_tokens = set(re.findall(r"[a-z]+", normalized))
+        if english_tokens & {
+            "not",
+            "no",
+            "without",
+            "except",
+            "never",
+            "neither",
+            "nor",
+            "cannot",
+        }:
+            return True
+        if any(
+            re.fullmatch(
+                r"(?:exclud(?:e|es|ed|ing)|exclusion|omit(?:s|ted|ting)?|omission)",
+                token,
             )
-            is not None
-            or re.search(
-                r"(?:不要包括|不要包含|不要使用|不包括|不包含|排除|不要|除了|除外|非)\s*$",
-                prefix,
+            for token in english_tokens
+        ):
+            return True
+        if re.search(r"\b(?:other\s+than|left\s+out)\b", normalized):
+            return True
+        return any(
+            marker in normalized
+            for marker in (
+                "不",
+                "非",
+                "排除",
+                "除外",
+                "除了",
+                "以外",
+                "之外",
+                "不要",
+                "无需",
+                "无须",
+                "不含",
+                "不包括",
+                "不包含",
+                "未",
             )
-            is not None
-            or re.match(
-                r"\s*(?:以外|之外|被排除|应(?:该)?(?:被)?排除|不应(?:该)?包括)",
-                suffix,
-            )
-            is not None
-            or re.match(
-                (
-                    r"[\s,]*(?:(?:(?:is|was)\s+)?"
-                    r"(?:excluded|omitted|left\s+out)|"
-                    rf"(?:should|would|could|might|must|will|shall|can)\s+be\s+"
-                    r"(?:excluded|omitted|left\s+out)|"
-                    rf"{negative_passive_chain}{governed_participle})\b"
-                ),
-                suffix,
-            )
-            is not None
         )
 
     @staticmethod

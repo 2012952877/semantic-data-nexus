@@ -11,6 +11,8 @@ accepts, or executes SQL.
   prompt text.
 - Provider output must match `sqg.v0`, exact ontology membership, query policy, DAG, operator,
   column-flow, grain, and result-schema rules.
+- Negation is normalized and detected conservatively within bounded mention clauses; unsupported
+  negative member, time, entity, field, or metric requests fail closed with typed diagnostics.
 - Validation failures permit exactly one provider repair using only the rejected candidate and
   stable machine-readable diagnostics. Failure remains explicit.
 - Static deterministic compilation is the only configured provider. There are no credentials,

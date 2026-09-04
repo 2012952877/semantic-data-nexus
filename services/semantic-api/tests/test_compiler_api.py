@@ -238,6 +238,46 @@ async def test_problem_details_and_no_raw_exception_leak(
             "NEGATED_MEMBER_UNSUPPORTED",
         ),
         (
+            "Show regional quarterly profit where East cannot have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East can't have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East can\u2019t have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East won't have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East won\u2019t have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East ought not to have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East oughtn't to have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East oughtn\u2019t to have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit for East, not included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit for East (omitted)",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
             "Show regional quarterly profit 去年 not included",
             "NEGATED_TIME_UNSUPPORTED",
         ),
@@ -255,6 +295,26 @@ async def test_problem_details_and_no_raw_exception_leak(
         ),
         (
             "Show regional quarterly profit 去年 should not have been included",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 cannot have been shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 can\u2019t have been included",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 shan't have been shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 shan\u2019t have been shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 oughtn't to have been shown",
             "NEGATED_TIME_UNSUPPORTED",
         ),
         (
@@ -285,6 +345,22 @@ async def test_problem_details_and_no_raw_exception_leak(
             "Show regional profit should not have been used",
             "NEGATED_CONCEPT_UNSUPPORTED",
         ),
+        (
+            "Show regional profit cannot have been used",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit can\u2019t have been shown",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit ought not to have been included",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit oughtn\u2019t to have been shown",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
         ("Show regional quarterly profit where 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional quarterly profit 去年应该被排除", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional 利润应排除", "NEGATED_CONCEPT_UNSUPPORTED"),
@@ -303,6 +379,28 @@ async def test_compile_fails_closed_for_copular_and_modal_negation(
     assert response.candidate_sqg is None
     assert response.normalized_sqg is None
     assert diagnostic_code in {item.code for item in response.diagnostics}
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Do not show inventory. Show regional quarterly profit for East",
+        "Omit taxes; show regional quarterly profit for 去年",
+        "Don't include inventory, show regional quarterly profit for East",
+        "不要显示库存\uff1b显示去年季度区域利润",
+    ],
+)
+async def test_prior_clause_negation_does_not_contaminate_positive_request(
+    question: str,
+) -> None:
+    response = await SemanticCompiler.default().compile(
+        compiler_request(request_payload(question)),
+        "correlation",
+    )
+
+    assert response.status is CompileStatus.SUCCEEDED
+    assert response.normalized_sqg is not None
+    assert not any(item.code.startswith("NEGATED_") for item in response.diagnostics)
 
 
 async def test_injection_shaped_question_is_marked_untrusted_data() -> None:
