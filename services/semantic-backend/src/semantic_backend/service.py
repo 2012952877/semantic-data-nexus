@@ -39,6 +39,7 @@ from semantic_api.models import (
 
 from semantic_backend.adapter import AdapterFailure, CompilerRuntimeAdapter
 from semantic_backend.models import (
+    MAX_SERIALIZED_DETAIL_BYTES,
     ColumnFormat,
     CommittedManifest,
     DetailDiagnostic,
@@ -66,6 +67,7 @@ from semantic_backend.models import (
     StageSummary,
     StartRunRequest,
     TokenUsage,
+    serialized_detail_size,
 )
 from semantic_backend.repository import InMemoryRunRepository, RunRecord, RunRepository
 from semantic_backend.resolver_factory import resolver_from_environment
@@ -628,9 +630,15 @@ class OrchestrationService:
             ],
         )
         async with record.lock:
-            record.detail = record.detail.model_copy(
+            detail = record.detail.model_copy(
                 update={"result": result, "manifest": committed, "lineage": lineage}
             )
+            if serialized_detail_size(detail) > MAX_SERIALIZED_DETAIL_BYTES:
+                raise RuntimeFailure(
+                    "DETAIL_SERIALIZATION_LIMIT",
+                    "The typed run detail exceeded its serialized response boundary.",
+                )
+            record.detail = detail
 
     def _connector_provenance(self, run_id: str) -> tuple[dict[str, str], ...]:
         reader = getattr(self.resolver, "provenance", None)

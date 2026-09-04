@@ -71,6 +71,23 @@ async def test_governed_member_id_maps_to_synthetic_source_value(service) -> Non
     assert [row["region"] for row in rows] == ["北辰区"]
 
 
+async def test_oversized_serialized_detail_fails_before_publication(
+    service,
+    monkeypatch,
+) -> None:
+    import semantic_backend.service as service_module
+
+    monkeypatch.setattr(service_module, "MAX_SERIALIZED_DETAIL_BYTES", 1)
+    request = request_for("run_00000000000000000000000000000123")
+    await service.start(request)
+    terminal = await wait_for_terminal(service, request.run_id)
+    assert terminal.state.value == "Failed"
+    assert terminal.diagnostics[0].code == "DETAIL_SERIALIZATION_LIMIT"
+    detail = await service.get_detail(request.run_id)
+    assert detail.result is None
+    assert detail.manifest is None
+
+
 async def test_complex_compiler_path_runs_pivot_derive_project(service) -> None:
     request = request_for(
         "run_00000000000000000000000000000002",

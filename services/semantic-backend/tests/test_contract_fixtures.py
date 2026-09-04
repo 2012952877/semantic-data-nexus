@@ -8,6 +8,7 @@ from conftest import request_for, wait_for_terminal
 from pydantic import ValidationError
 
 from semantic_backend.models import (
+    MAX_SERIALIZED_DETAIL_BYTES,
     LineageEdgeDetail,
     LineageNodeDetail,
     LineageNodeKind,
@@ -18,6 +19,7 @@ from semantic_backend.models import (
     RunDetail,
     RunState,
     StartRunRequest,
+    serialized_detail_size,
 )
 
 FIXTURES = Path(__file__).parents[1] / "contract-fixtures" / "v1"
@@ -147,6 +149,27 @@ def test_backend_detail_fixture_round_trips_exactly() -> None:
     document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
     detail = RunDetail.model_validate(document)
     assert detail.model_dump(mode="json", by_alias=True) == document
+
+
+def test_serialized_detail_boundary_handles_expansion_explicitly() -> None:
+    document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
+    document["result"]["columns"][0]["nullable"] = True
+    document["result"]["columns"].append(
+        {
+            "key": "note",
+            "label": "Note",
+            "dataType": "string",
+            "format": "text",
+            "nullable": False,
+        }
+    )
+    document["result"]["rows"] = [
+        ["\u0001" * 4_000, "2334.00", "\u0001" * 4_000] for _ in range(1_000)
+    ]
+    document["result"]["rowCount"] = 1_000
+    document["manifest"]["rowCount"] = 1_000
+    detail = RunDetail.model_validate(document)
+    assert serialized_detail_size(detail) > MAX_SERIALIZED_DETAIL_BYTES
 
 
 def test_backend_detail_rejects_corrupted_result_lineage_identity() -> None:

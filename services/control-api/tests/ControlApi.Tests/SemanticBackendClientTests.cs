@@ -120,6 +120,60 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public async Task DetailTransportAcceptsWorstCaseEscapedResult()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var rows = Enumerable.Range(0, 1_000)
+            .Select(_ => (IReadOnlyList<SemanticScalarValue>)
+            [
+                SemanticScalarValue.From(new string('"', 4_000)),
+                SemanticScalarValue.From("2334.00")
+            ])
+            .ToArray();
+        var detail = valid with
+        {
+            Result = valid.Result! with
+            {
+                Rows = rows,
+                RowCount = rows.Length,
+                Truncated = false
+            },
+            Manifest = valid.Manifest! with { RowCount = rows.Length }
+        };
+        var options = JsonOptions();
+        var payload = JsonSerializer.SerializeToUtf8Bytes(detail, options);
+        Assert.True(payload.Length > 8 * 1024 * 1024);
+        Assert.True(payload.Length < SemanticBackendOptions.MaximumResponseContentBytes);
+        var handler = new DelegateHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(payload)
+                {
+                    Headers =
+                    {
+                        ContentType =
+                            new System.Net.Http.Headers.MediaTypeHeaderValue(
+                                "application/json")
+                    }
+                }
+            }));
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/"),
+            MaxResponseContentBufferSize =
+                SemanticBackendOptions.MaximumResponseContentBytes
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        var received = await client.GetDetailAsync(runId, default);
+
+        Assert.Equal(1_000, received.Result!.Rows.Count);
+    }
+
+    [Fact]
     public async Task BackendProducedDetailFixtureDeserializesAndValidates()
     {
         var runId = RunId.Parse(

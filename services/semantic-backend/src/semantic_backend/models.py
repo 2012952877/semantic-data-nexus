@@ -30,6 +30,7 @@ _RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\
 _DECIMAL_TEXT = re.compile(r"^-?(0|[1-9][0-9]*)(?:\.([0-9]+))?$")
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _MAX_DECIMAL = Decimal("1e28")
+MAX_SERIALIZED_DETAIL_BYTES = 24 * 1024 * 1024
 
 
 def _camel(value: str) -> str:
@@ -448,3 +449,7 @@ class RunDetail(ApiModel):
                 raise ValueError("diagnostics must match the run and increase by sequence")
             previous = diagnostic.sequence
         return self
+
+
+def serialized_detail_size(detail: RunDetail) -> int:
+    return len(detail.model_dump_json(by_alias=True).encode("utf-8"))
