@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using ControlApi.Contracts;
 using ControlApi.Domain;
@@ -125,6 +127,84 @@ public sealed class ApiEndpointTests
     }
 
     [Fact]
+    public async Task ReaderCanGetTypedRunDetail()
+    {
+        var backend = new StubSemanticBackendClient();
+        await using var factory = new ControlApiFactory(backend);
+        using var contributor = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("detail-success") with
+        {
+            Question = "Compare synthetic regional revenue"
+        };
+        var create = await contributor.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var run = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        using var reader = factory.CreateAuthenticatedClient("reader");
+        var response = await reader.GetAsync($"/api/v1/runs/{run!.Id}/detail");
+        var detail = await response.Content.ReadFromJsonAsync<SemanticRunDetail>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(run.Id, detail!.RunId);
+        Assert.Equal(request.Question, detail.Question);
+        Assert.Equal(1, backend.DetailCalls);
+    }
+
+    [Fact]
+    public async Task DetailRequiresAuthentication()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/v1/runs/{RunId.New()}/detail");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("semantic_backend_timeout", HttpStatusCode.GatewayTimeout)]
+    [InlineData("semantic_backend_detail_failed", HttpStatusCode.BadGateway)]
+    public async Task DetailFailuresMapToStableProblems(
+        string code,
+        HttpStatusCode expectedStatus)
+    {
+        var backend = new StubSemanticBackendClient();
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var create = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            ValidCreateRequest($"detail-{code}"),
+            JsonOptions);
+        var run = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        backend.DetailException = new SemanticBackendException(code, "Synthetic detail failure.");
+
+        var response = await client.GetAsync($"/api/v1/runs/{run!.Id}/detail");
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        Assert.Equal(code, Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task DetailQuestionMismatchIsRejected()
+    {
+        var backend = new StubSemanticBackendClient();
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var create = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            ValidCreateRequest("detail-question"),
+            JsonOptions);
+        var run = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        backend.DetailResult = StubSemanticBackendClient.Detail(run!.Id, "Different question");
+
+        var response = await client.GetAsync($"/api/v1/runs/{run.Id}/detail");
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("semantic_backend_invalid_response", Extension(problem!, "code"));
+    }
+
+    [Fact]
     public async Task InvalidRunIdReturnsStableProblemDetailsAndTraceId()
     {
         await using var factory = new ControlApiFactory();
@@ -139,6 +219,347 @@ public sealed class ApiEndpointTests
         Assert.Equal("invalid_run_id", Extension(problem, "code"));
         Assert.False(string.IsNullOrWhiteSpace(Extension(problem, "traceId")));
         Assert.Equal("test-correlation-001", Extension(problem, "correlationId"));
+    }
+
+    [Theory]
+    [InlineData("question", " ", "invalid_question")]
+    [InlineData("evaluationTimezone", "Not//AZone", "invalid_evaluation_timezone")]
+    public async Task InvalidRunRequestFieldsReturnStableProblems(
+        string field,
+        string value,
+        string expectedCode)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest($"invalid-{field}");
+        request = field switch
+        {
+            "question" => request with { Question = value },
+            "evaluationTimezone" => request with { EvaluationTimezone = value },
+            _ => throw new InvalidOperationException("Unsupported test field.")
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(expectedCode, Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task EvaluationClockWithoutOffsetIsRejected()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using var content = new StringContent(
+            """
+            {
+              "clientRequestId": "invalid-clock",
+              "workload": "synthetic-workload",
+              "question": "Compare synthetic regional revenue",
+              "evaluationClock": "2026-08-15T09:00:00",
+              "evaluationTimezone": "Asia/Shanghai",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """,
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("clientRequestId")]
+    [InlineData("workload")]
+    [InlineData("question")]
+    [InlineData("evaluationClock")]
+    [InlineData("evaluationTimezone")]
+    [InlineData("compilationMode")]
+    [InlineData("executionMode")]
+    [InlineData("outputMode")]
+    public async Task MissingCreateFieldsAreRejected(string missingField)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = JsonSerializer.SerializeToNode(
+            ValidCreateRequest("missing-field"),
+            JsonOptions)!.AsObject();
+        Assert.True(request.Remove(missingField));
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UnknownCreateMemberIsRejected()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = JsonSerializer.SerializeToNode(
+            ValidCreateRequest("unknown-member"),
+            JsonOptions)!.AsObject();
+        request["executionOptions"] = new JsonObject();
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("clientRequestId")]
+    [InlineData("workload")]
+    public async Task MetadataCannotStartWithPunctuation(string field)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("leading-punctuation");
+        request = field switch
+        {
+            "clientRequestId" => request with { ClientRequestId = "_request" },
+            "workload" => request with { Workload = ".workload" },
+            _ => throw new InvalidOperationException("Unsupported test field.")
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("\u0001")]
+    [InlineData("\u200B")]
+    [InlineData("\uE000")]
+    public async Task QuestionRejectsUnicodeCategoryCCharacters(string disallowed)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("category-c") with
+        {
+            Question = $"Synthetic{disallowed} question"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_question", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task QuestionLimitCountsUnicodeScalars()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("unicode-limit") with
+        {
+            Question = string.Concat(Enumerable.Repeat("\U0001F680", 4_000))
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("Asia/Shanghai")]
+    [InlineData("America/New_York")]
+    [InlineData("Etc/UTC")]
+    [InlineData("UTC")]
+    [InlineData("Synthetic/Zone")]
+    public async Task IanaTimeZonesAreAcceptedWithInvariantGlobalization(string timeZone)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest($"iana-{timeZone.Replace('/', '-')}")
+            with
+        { EvaluationTimezone = timeZone };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task WindowsTimeZoneIdIsNotAcceptedAsIana()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("windows-timezone")
+            with
+        { EvaluationTimezone = "Eastern Standard Time" };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_evaluation_timezone", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("CET")]
+    [InlineData("GMT")]
+    [InlineData("Japan")]
+    [InlineData("Asia//Shanghai")]
+    [InlineData("Asia/Shang.hai")]
+    [InlineData("Asia/ComponentLongerThan14")]
+    public async Task NonCanonicalIanaAliasesAreRejected(string timeZone)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("invalid-iana-alias") with
+        {
+            EvaluationTimezone = timeZone
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_evaluation_timezone", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task UnpairedSurrogateInRequestMapsToBadRequest()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using var content = new StringContent(
+            """
+            {
+              "clientRequestId": "invalid-surrogate",
+              "workload": "synthetic-workload",
+              "question": "\uD800",
+              "evaluationClock": "2026-08-15T09:00:00+08:00",
+              "evaluationTimezone": "UTC",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task UnpairedSurrogateInEvaluationClockMapsToBadRequest()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using var content = new StringContent(
+            """
+            {
+              "clientRequestId": "invalid-clock-surrogate",
+              "workload": "synthetic-workload",
+              "question": "Synthetic question",
+              "evaluationClock": "\uD800",
+              "evaluationTimezone": "UTC",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("enum")]
+    [InlineData("property")]
+    public async Task UnpairedSurrogateInEnumOrPropertyNameMapsToBadRequest(string location)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var payload =
+            """
+            {
+              "clientRequestId": "invalid-json-unicode",
+              "workload": "synthetic-workload",
+              "question": "Synthetic question",
+              "evaluationClock": "2026-08-15T09:00:00+08:00",
+              "evaluationTimezone": "UTC",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """;
+        payload = location == "enum"
+            ? payload.Replace(
+                "\"compilationMode\": \"regional_quarterly_profit\"",
+                "\"compilationMode\": \"\\uD800\"",
+                StringComparison.Ordinal)
+            : payload.TrimEnd()[..^1] + ",\n  \"\\uD800\": true\n}";
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task ValidUtf16JsonRequestRemainsSupported()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var payload = JsonSerializer.Serialize(
+            ValidCreateRequest("utf16-json"),
+            JsonOptions);
+        using var content = new ByteArrayContent(Encoding.Unicode.GetBytes(payload));
+        content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+            {
+                CharSet = "utf-16"
+            };
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("utf-7")]
+    [InlineData("x-unsupported-charset")]
+    public async Task UnsupportedJsonCharsetMapsToBadRequest(string charset)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var payload = JsonSerializer.Serialize(
+            ValidCreateRequest("unsupported-charset"),
+            JsonOptions);
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(payload));
+        content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+            {
+                CharSet = charset
+            };
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
     }
 
     [Theory]
@@ -453,27 +874,280 @@ public sealed class ApiEndpointTests
         var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("invalid_feedback", Extension(problem!, "code"));
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("submissionId")]
+    [InlineData("rating")]
+    [InlineData("outcome")]
+    [InlineData("reasonCodes")]
+    [InlineData("expectedRunVersion")]
+    public async Task MissingFeedbackFieldsAreRejected(string missingField)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = JsonSerializer.SerializeToNode(
+            new SubmitFeedbackRequest(
+                "feedback-required",
+                5,
+                FeedbackOutcome.Helpful,
+                ["clear"],
+                1),
+            JsonOptions)!.AsObject();
+        Assert.True(request.Remove(missingField));
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{RunId.New()}/feedback",
+            request,
+            JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
     }
 
     [Fact]
-    public async Task OpenApiRequiresFeedbackOutcome()
+    public async Task OpenApiDescribesRequiredRunOptionsFeedbackAndDetail()
     {
         await using var factory = new ControlApiFactory();
         using var client = factory.CreateClient();
 
         using var document = JsonDocument.Parse(
             await client.GetStringAsync("/swagger/v1/swagger.json"));
-        var required = document.RootElement
+        var schemas = document.RootElement
             .GetProperty("components")
-            .GetProperty("schemas")
+            .GetProperty("schemas");
+        var feedbackRequired = schemas
             .GetProperty(nameof(SubmitFeedbackRequest))
             .GetProperty("required")
             .EnumerateArray()
             .Select(item => item.GetString())
             .ToArray();
+        var createSchema = schemas.GetProperty(nameof(CreateRunRequest));
+        var createRequired = createSchema
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        var createProperties = createSchema.GetProperty("properties");
+        var detailOperation = document.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/v1/runs/{runId}/detail")
+            .GetProperty("get");
 
-        Assert.Contains("outcome", required);
+        Assert.Equal(
+            new[]
+            {
+                "submissionId",
+                "rating",
+                "outcome",
+                "reasonCodes",
+                "expectedRunVersion"
+            }.Order(),
+            feedbackRequired.Order());
+        Assert.Contains("question", createRequired);
+        Assert.Contains("evaluationClock", createRequired);
+        Assert.Contains("evaluationTimezone", createRequired);
+        Assert.Contains("compilationMode", createRequired);
+        Assert.Contains("executionMode", createRequired);
+        Assert.Contains("outputMode", createRequired);
+        Assert.True(createProperties.TryGetProperty("question", out _));
+        Assert.True(createProperties.TryGetProperty("evaluationClock", out _));
+        var detailResponses = detailOperation.GetProperty("responses");
+        Assert.True(detailResponses.TryGetProperty("200", out var detailResponse));
+        Assert.Equal(
+            "#/components/schemas/SemanticRunDetail",
+            detailResponse
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema")
+                .GetProperty("$ref")
+                .GetString());
+        Assert.True(
+            detailOperation
+                .GetProperty("security")[0]
+                .TryGetProperty("Bearer", out var scopes));
+        Assert.Equal(JsonValueKind.Array, scopes.ValueKind);
+        Assert.Equal(
+            "http",
+            document.RootElement
+                .GetProperty("components")
+                .GetProperty("securitySchemes")
+                .GetProperty("Bearer")
+                .GetProperty("type")
+                .GetString());
+        var runIdSchema = schemas
+            .GetProperty(nameof(SemanticRunDetail))
+            .GetProperty("properties")
+            .GetProperty("runId");
+        Assert.Equal("string", runIdSchema.GetProperty("type").GetString());
+        Assert.Equal(
+            "^run_[0-9a-f]{32}$",
+            runIdSchema.GetProperty("pattern").GetString());
+        var scalarSchema = schemas
+            .GetProperty(nameof(SemanticResultSet))
+            .GetProperty("properties")
+            .GetProperty("rows")
+            .GetProperty("items")
+            .GetProperty("items");
+        var scalarAlternatives = scalarSchema.GetProperty("anyOf").EnumerateArray().ToArray();
+        Assert.Equal(
+            ["string", "integer", "number", "boolean"],
+            scalarAlternatives.Select(item => item.GetProperty("type").GetString()).ToArray());
+        Assert.True(scalarAlternatives[0].GetProperty("nullable").GetBoolean());
+        Assert.Equal("int64", scalarAlternatives[1].GetProperty("format").GetString());
+        Assert.Equal(
+            SemanticScalarLimits.MaximumIntegerMagnitude,
+            scalarAlternatives[1].GetProperty("maximum").GetInt64());
+        Assert.Equal("double", scalarAlternatives[2].GetProperty("format").GetString());
+        Assert.Equal(
+            SemanticScalarLimits.MaximumNumberMagnitude,
+            scalarAlternatives[2].GetProperty("maximum").GetDecimal());
+        Assert.Equal(
+            "integer",
+            scalarAlternatives[2].GetProperty("not").GetProperty("type").GetString());
+        var detailRequired = schemas
+            .GetProperty(nameof(SemanticRunDetail))
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        Assert.Equal(
+            new[] { "runId", "question", "sqg", "physicalNodes", "lineage", "diagnostics" }
+                .Order(),
+            detailRequired.Order());
+        var detailProperties = schemas.GetProperty(nameof(SemanticRunDetail))
+            .GetProperty("properties");
+        Assert.False(
+            detailProperties.GetProperty("question").TryGetProperty("nullable", out var questionNullable) &&
+            questionNullable.GetBoolean());
+        Assert.True(detailProperties.GetProperty("result").GetProperty("nullable").GetBoolean());
+        Assert.True(detailProperties.GetProperty("manifest").GetProperty("nullable").GetBoolean());
+        Assert.DoesNotContain("result", detailRequired);
+        Assert.DoesNotContain("manifest", detailRequired);
+        var resultRequired = schemas.GetProperty(nameof(SemanticResultSet))
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        Assert.Equal(
+            new[] { "columns", "rows", "rowCount", "truncated" }.Order(),
+            resultRequired.Order());
+        var lineageNodeSchema = schemas.GetProperty(nameof(SemanticLineageNode));
+        Assert.Contains(
+            "operation",
+            lineageNodeSchema
+                .GetProperty("required")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.True(
+            lineageNodeSchema
+                .GetProperty("properties")
+                .GetProperty("operation")
+                .GetProperty("nullable")
+                .GetBoolean());
+        Assert.Equal(
+            ["SOURCE", "SELECT", "FILTER", "AGGREGATE", "PIVOT", "DERIVE", "PROJECT", "SORT", "LIMIT", "JOIN"],
+            schemas
+                .GetProperty(nameof(SemanticPhysicalNode))
+                .GetProperty("properties")
+                .GetProperty("kind")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Contains(
+            "decimal",
+            schemas
+                .GetProperty(nameof(SemanticResultColumn))
+                .GetProperty("properties")
+                .GetProperty("dataType")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Contains(
+            "realized_as",
+            schemas
+                .GetProperty(nameof(SemanticLineageEdge))
+                .GetProperty("properties")
+                .GetProperty("relation")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(
+            ["info", "warning", "error"],
+            schemas
+                .GetProperty(nameof(SemanticDetailDiagnostic))
+                .GetProperty("properties")
+                .GetProperty("severity")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["regional_quarterly_profit", "monthly_regional_comparison"],
+            createProperties
+                .GetProperty("compilationMode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["thread"],
+            createProperties
+                .GetProperty("executionMode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["normal", "stream"],
+            createProperties
+                .GetProperty("outputMode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["Helpful", "PartiallyHelpful", "NotHelpful"],
+            schemas
+                .GetProperty(nameof(SubmitFeedbackRequest))
+                .GetProperty("properties")
+                .GetProperty("outcome")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        var metadataProperties = schemas
+            .GetProperty(nameof(RunMetadata))
+            .GetProperty("properties");
+        Assert.Equal(
+            [
+                "StartPending",
+                "DispatchUnknown",
+                "Queued",
+                "Starting",
+                "Running",
+                "CancelRequested",
+                "Cancelled",
+                "Succeeded",
+                "Failed"
+            ],
+            metadataProperties
+                .GetProperty("state")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["NotRequested", "Pending", "Delivered"],
+            metadataProperties
+                .GetProperty("cancellationDelivery")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
     }
 
     [Fact]
@@ -897,9 +1571,21 @@ public sealed class ApiEndpointTests
     private static JsonSerializerOptions CreateJsonOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-        options.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
+        JsonContractOptions.Configure(options);
+        SemanticJsonContractOptions.Configure(options);
         return options;
     }
+
+    private static CreateRunRequest ValidCreateRequest(string clientRequestId) =>
+        new(
+            clientRequestId,
+            "synthetic-workload",
+            "Compare synthetic regional revenue",
+            new DateTimeOffset(2026, 8, 15, 9, 0, 0, TimeSpan.FromHours(8)),
+            "Asia/Shanghai",
+            CompilationMode.RegionalQuarterlyProfit,
+            ExecutionMode.Thread,
+            OutputMode.Normal);
 
     private static TaskCompletionSource<bool> NewGate() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);

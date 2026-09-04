@@ -1,16 +1,21 @@
 using System.Diagnostics;
 using System.Net;
-using System.Threading.RateLimiting;
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
 using ControlApi;
 using ControlApi.Authentication;
+using ControlApi.Contracts;
+using ControlApi.Domain;
 using ControlApi.Endpoints;
+using ControlApi.Infrastructure;
 using ControlApi.Persistence;
 using ControlApi.Semantic;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.OpenApi.Models;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -27,10 +32,81 @@ builder.Logging.Configure(options =>
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        Description = "Microsoft Entra bearer token."
+    });
+    options.OperationFilter<OpenApiSecurityOperationFilter>();
+    options.SchemaFilter<JsonRequiredSchemaFilter>();
+    options.UseAllOfToExtendReferenceSchemas();
+    options.MapType<CompilationMode>(() =>
+        OpenApiContractSchemas.StringEnum<CompilationMode>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<ExecutionMode>(() =>
+        OpenApiContractSchemas.StringEnum<ExecutionMode>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<OutputMode>(() =>
+        OpenApiContractSchemas.StringEnum<OutputMode>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<FeedbackOutcome>(OpenApiContractSchemas.StringEnum<FeedbackOutcome>);
+    options.MapType<RunState>(OpenApiContractSchemas.StringEnum<RunState>);
+    options.MapType<CancellationDeliveryState>(
+        OpenApiContractSchemas.StringEnum<CancellationDeliveryState>);
+    options.MapType<SemanticOperatorKind>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticOperatorKind>(JsonNamingPolicy.SnakeCaseUpper));
+    options.MapType<SemanticScalarType>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticScalarType>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticColumnFormat>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticColumnFormat>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticResultStorage>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticResultStorage>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticLineageNodeKind>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticLineageNodeKind>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticLineageRelation>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticLineageRelation>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticDiagnosticSeverity>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticDiagnosticSeverity>(
+            JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticDiagnosticScope>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticDiagnosticScope>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<RunId>(() => new OpenApiSchema
+    {
+        Type = "string",
+        Pattern = "^run_[0-9a-f]{32}$"
+    });
+    options.MapType<SemanticScalarValue>(() => new OpenApiSchema
+    {
+        Description = "A typed result cell. Decimal columns use canonical fixed-point strings with absolute value at most 10^28; float columns use finite JSON numbers.",
+        AnyOf =
+        [
+            new OpenApiSchema { Type = "string", Nullable = true },
+            new OpenApiSchema
+            {
+                Type = "integer",
+                Format = "int64",
+                Minimum = -SemanticScalarLimits.MaximumIntegerMagnitude,
+                Maximum = SemanticScalarLimits.MaximumIntegerMagnitude
+            },
+            new OpenApiSchema
+            {
+                Type = "number",
+                Format = "double",
+                Minimum = -SemanticScalarLimits.MaximumNumberMagnitude,
+                Maximum = SemanticScalarLimits.MaximumNumberMagnitude,
+                Not = new OpenApiSchema { Type = "integer" }
+            },
+            new OpenApiSchema { Type = "boolean" }
+        ]
+    });
+});
 builder.Services.ConfigureHttpJsonOptions(options =>
-    options.SerializerOptions.Converters.Add(
-        new JsonStringEnumConverter(allowIntegerValues: false)));
+{
+    options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+    JsonContractOptions.Configure(options.SerializerOptions);
+    SemanticJsonContractOptions.Configure(options.SerializerOptions);
+});
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IRunRepository, InMemoryRunRepository>();
 builder.Services.AddSingleton<IRunDispatchCoordinator, RunDispatchCoordinator>();
@@ -197,6 +273,7 @@ app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
+app.UseMiddleware<JsonUnicodeValidationMiddleware>();
 
 if (app.Environment.IsDevelopment() ||
     builder.Configuration.GetValue<bool>("OpenApi:Enabled"))

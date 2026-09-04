@@ -24,7 +24,7 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             if (createKeys.TryGetValue(key, out var existingId))
             {
                 var existing = runs[existingId];
-                if (!string.Equals(existing.Workload, request.Workload, StringComparison.Ordinal))
+                if (!Matches(existing, request))
                 {
                     throw new IdempotencyConflictException(
                         "The client request ID was already used with different run metadata.");
@@ -38,6 +38,12 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
                 RunId.New(),
                 request.ClientRequestId,
                 request.Workload,
+                request.Question,
+                request.EvaluationClock,
+                request.EvaluationTimezone,
+                request.CompilationMode,
+                request.ExecutionMode,
+                request.OutputMode,
                 subject,
                 RunState.StartPending,
                 CancellationDeliveryState.NotRequested,
@@ -56,6 +62,18 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             return Task.FromResult(new CreateRunResult(run, true));
         }
     }
+
+    private static bool Matches(RunMetadata run, CreateRunRequest request) =>
+        string.Equals(run.Workload, request.Workload, StringComparison.Ordinal) &&
+        string.Equals(run.Question, request.Question, StringComparison.Ordinal) &&
+        run.EvaluationClock == request.EvaluationClock &&
+        string.Equals(
+            run.EvaluationTimezone,
+            request.EvaluationTimezone,
+            StringComparison.Ordinal) &&
+        run.CompilationMode == request.CompilationMode &&
+        run.ExecutionMode == request.ExecutionMode &&
+        run.OutputMode == request.OutputMode;
 
     public Task<IReadOnlyList<RunMetadata>> ListAsync(int limit, CancellationToken cancellationToken)
     {

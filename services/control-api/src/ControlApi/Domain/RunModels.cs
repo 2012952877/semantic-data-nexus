@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ControlApi.Contracts;
 
 namespace ControlApi.Domain;
 
@@ -154,6 +155,12 @@ public sealed record RunMetadata(
     RunId Id,
     string ClientRequestId,
     string Workload,
+    string Question,
+    DateTimeOffset EvaluationClock,
+    string EvaluationTimezone,
+    CompilationMode CompilationMode,
+    ExecutionMode ExecutionMode,
+    OutputMode OutputMode,
     string CreatedBy,
     RunState State,
     CancellationDeliveryState CancellationDelivery,

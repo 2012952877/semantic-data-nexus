@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - "services/control-api/**"
+      - "docs/architecture/http-contracts.md"
       - ".github/workflows/control-api.yml"
   push:
     branches:
       - main
     paths:
       - "services/control-api/**"
+      - "docs/architecture/http-contracts.md"
       - ".github/workflows/control-api.yml"
 
 permissions:
@@ -30,4 +32,7 @@ jobs:
       - run: dotnet format SemanticDataNexus.ControlApi.sln --verify-no-changes --no-restore
       - run: dotnet test SemanticDataNexus.ControlApi.sln --configuration Release --no-restore
       - run: dotnet publish src/ControlApi/ControlApi.csproj --configuration Release --no-restore
-      - run: docker build --file Dockerfile .
+      - run: docker build --tag semantic-data-nexus-control-api:test --file Dockerfile .
+      - run: >-
+          docker run --rm --entrypoint sh semantic-data-nexus-control-api:test
+          -c "test -f /usr/share/zoneinfo/Asia/Shanghai"

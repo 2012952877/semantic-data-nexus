@@ -1,5 +1,6 @@
 using System.Net;
 using System.Collections.Concurrent;
+using ControlApi.Contracts;
 using ControlApi.Domain;
 using ControlApi.Semantic;
 using Microsoft.AspNetCore.Hosting;
@@ -149,6 +150,8 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
     public Exception? StartException { get; set; }
     public SemanticRunStatus? StartResult { get; set; }
     public Exception? StatusException { get; set; }
+    public Exception? DetailException { get; set; }
+    public SemanticRunDetail? DetailResult { get; set; }
     public Exception? CancelException { get; set; }
     public TaskCompletionSource<bool>? StartEntered { get; set; }
     public TaskCompletionSource<bool>? ReleaseStart { get; set; }
@@ -156,7 +159,9 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
     public TaskCompletionSource<bool>? ReleaseCancel { get; set; }
     public int StartCalls { get; private set; }
     public int StatusCalls { get; private set; }
+    public int DetailCalls { get; private set; }
     public int CancelCalls { get; private set; }
+    public SemanticRunStart? LastStartRequest { get; private set; }
     public Dictionary<RunId, SemanticRunStatus> Runs { get; } = [];
     public ConcurrentQueue<string> Operations { get; } = new();
     public ConcurrentQueue<Func<RunId, SemanticRunStatus>> StatusResponses { get; } = new();
@@ -166,6 +171,7 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
         CancellationToken cancellationToken)
     {
         StartCalls++;
+        LastStartRequest = request;
         Operations.Enqueue("start");
         StartEntered?.TrySetResult(true);
         if (ReleaseStart is not null)
@@ -181,6 +187,22 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
         var status = StartResult ?? Status(request.RunId, RunState.Starting);
         Runs[request.RunId] = status;
         return status;
+    }
+
+    public Task<SemanticRunDetail> GetDetailAsync(
+        RunId runId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        DetailCalls++;
+        if (DetailException is not null)
+        {
+            throw DetailException;
+        }
+
+        return Task.FromResult(
+            DetailResult ??
+            Detail(runId, LastStartRequest?.Question ?? "Synthetic governed question"));
     }
 
     public Task<SemanticRunStatus> GetStatusAsync(
@@ -241,6 +263,104 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
             new TokenUsage(0, 0),
             []);
     }
+
+    public static SemanticRunDetail Detail(
+        RunId id,
+        string question = "Synthetic governed question") =>
+        new(
+            id,
+            question,
+            new SemanticSqgSummary(
+                "0.1",
+                question,
+                "synthetic-sales",
+                ["region"],
+                ["net_sales"],
+                ["region"],
+                [new SemanticSqgFilter("period", "between", "2025-Q1..2025-Q2")],
+                ["governed"]),
+            [
+                new SemanticPhysicalNode(
+                    "aggregate-region",
+                    SemanticOperatorKind.Aggregate,
+                    "Aggregate by region",
+                    "Groups synthetic sales by region.",
+                    ["synthetic-sales"],
+                    ["region", "net_sales"])
+            ],
+            new SemanticResultSet(
+                [
+                    new SemanticResultColumn(
+                        "region",
+                        "Region",
+                        SemanticScalarType.String,
+                        SemanticColumnFormat.Text,
+                        false),
+                    new SemanticResultColumn(
+                        "net_sales",
+                        "Net sales",
+                        SemanticScalarType.Decimal,
+                        SemanticColumnFormat.Currency,
+                        false)
+                ],
+                [
+                    [
+                        SemanticScalarValue.From("North"),
+                        SemanticScalarValue.From("1250.50")
+                    ]
+                ],
+                1,
+                false),
+            new SemanticCommittedManifest(
+                "result-synthetic",
+                id,
+                "aggregate-region",
+                SemanticResultStorage.Parquet,
+                "results/run/result-synthetic",
+                1,
+                128,
+                "sha256:synthetic",
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)),
+            new SemanticLineage(
+                "query-runtime/v0",
+                id,
+                [
+                    new SemanticLineageNode(
+                        "source:synthetic-sales",
+                        SemanticLineageNodeKind.Source,
+                        null,
+                        "synthetic-sales",
+                        "fixture",
+                        null,
+                        []),
+                    new SemanticLineageNode(
+                        "result:result-synthetic",
+                        SemanticLineageNodeKind.Result,
+                        null,
+                        null,
+                        null,
+                        "result-synthetic",
+                        [])
+                ],
+                [
+                    new SemanticLineageEdge(
+                        "source:synthetic-sales",
+                        "result:result-synthetic",
+                        SemanticLineageRelation.Produces)
+                ]),
+            [
+                new SemanticDetailDiagnostic(
+                    0,
+                    id,
+                    SemanticDiagnosticScope.Run,
+                    id.Value,
+                    "synthetic_complete",
+                    "Synthetic run complete",
+                    "The synthetic run completed.",
+                    "No action is required.",
+                    SemanticDiagnosticSeverity.Info,
+                    new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero))
+            ]);
 }
 
 public sealed class DelegateHandler(
