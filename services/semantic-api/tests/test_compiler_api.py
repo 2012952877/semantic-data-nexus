@@ -466,6 +466,37 @@ async def test_injection_shaped_question_is_marked_untrusted_data() -> None:
     assert "hidden_table" not in response.normalized_sqg.model_dump_json()  # type: ignore[union-attr]
 
 
+async def test_provider_cannot_mutate_authoritative_initialization_snapshot() -> None:
+    class MutatingProvider(StaticFixtureProvider):
+        async def compile(self, context: StructuredCompileContext) -> ProviderResult:
+            terms = context.resolved_terms
+            member = next(term for term in terms if term.kind.value == "member")
+            member.machine_id = "region.west"
+            windows = context.time_windows
+            windows.clear()
+            semantic_context = context.semantic_context
+            semantic_context.fields.clear()
+            return ProviderResult(
+                candidate=self._quarterly_profit(windows, terms, semantic_context)
+            )
+
+    compiler = SemanticCompiler(
+        OntologyRegistry.load_default(),
+        lambda _: MutatingProvider(),
+    )
+    response = await compiler.compile(
+        compiler_request(request_payload("Show East regional quarterly profit for 上季度")),
+        "correlation",
+    )
+
+    assert response.status is CompileStatus.FAILED
+    assert any(term.machine_id == "region.east" for term in response.resolved_terms)
+    assert response.selected_semantic_context.fields
+    assert {"MISSING_MEMBER_CONSTRAINT", "MISSING_TIME_CONSTRAINT"} <= {
+        item.code for item in response.diagnostics
+    }
+
+
 async def test_resolved_member_is_preserved_as_exact_filter() -> None:
     compiler = SemanticCompiler.default()
     response = await compiler.compile(
@@ -484,7 +515,7 @@ async def test_resolved_member_is_preserved_as_exact_filter() -> None:
 
 async def test_monthly_mode_preserves_all_member_and_time_constraints() -> None:
     compiler = SemanticCompiler.default()
-    payload = request_payload("Compare East and West monthly regional profit 去年")
+    payload = request_payload("Compare East and West monthly regional profit")
     payload["compilation_mode"] = "monthly_regional_comparison"
     response = await compiler.compile(compiler_request(payload), "correlation")
 
@@ -500,6 +531,76 @@ async def test_monthly_mode_preserves_all_member_and_time_constraints() -> None:
         "region.west",
     }
     assert filters[1].parameters.predicate.operator.value == "between"  # type: ignore[union-attr]
+    assert filters[1].parameters.predicate.value == {  # type: ignore[union-attr]
+        "start": "2026-07-01T00:00:00+08:00",
+        "end_exclusive": "2026-09-01T00:00:00+08:00",
+    }
+
+
+async def test_monthly_mode_binds_pivot_aliases_to_evaluation_clock() -> None:
+    responses = []
+    for year in (2026, 2030):
+        payload = request_payload("Compare monthly regional profit")
+        payload["compilation_mode"] = CompilationMode.MONTHLY_REGIONAL_COMPARISON.value
+        payload["evaluation_clock"] = f"{year}-08-15T09:00:00+08:00"
+        responses.append(
+            await SemanticCompiler.default().compile(
+                compiler_request(payload),
+                f"correlation-{year}",
+            )
+        )
+
+    assert all(response.status is CompileStatus.SUCCEEDED for response in responses)
+    bindings = []
+    for response in responses:
+        pivot = next(
+            node
+            for node in response.normalized_sqg.nodes  # type: ignore[union-attr]
+            if node.operator.value == "PIVOT"
+        )
+        bindings.append(
+            {
+                binding.alias: binding.value.isoformat()
+                for binding in pivot.parameters.value_bindings  # type: ignore[union-attr]
+            }
+        )
+
+    assert bindings == [
+        {
+            "profit_current": "2026-08-01T00:00:00+08:00",
+            "profit_previous": "2026-07-01T00:00:00+08:00",
+        },
+        {
+            "profit_current": "2030-08-01T00:00:00+08:00",
+            "profit_previous": "2030-07-01T00:00:00+08:00",
+        },
+    ]
+
+
+async def test_monthly_mode_rejects_provider_period_binding_tampering() -> None:
+    class TamperingProvider(StaticFixtureProvider):
+        async def compile(self, context: StructuredCompileContext) -> ProviderResult:
+            snapshot = context.snapshot()
+            candidate = self._monthly_comparison(
+                snapshot.time_windows,
+                snapshot.resolved_terms,
+                snapshot.semantic_context,
+            )
+            pivot = next(node for node in candidate["nodes"] if node["operator"] == "PIVOT")
+            pivot["parameters"]["value_bindings"][0]["value"] = "2030-08-01T00:00:00+08:00"
+            return ProviderResult(candidate=candidate)
+
+    compiler = SemanticCompiler(
+        OntologyRegistry.load_default(),
+        lambda _: TamperingProvider(),
+    )
+    payload = request_payload("Compare monthly regional profit")
+    payload["compilation_mode"] = CompilationMode.MONTHLY_REGIONAL_COMPARISON.value
+
+    response = await compiler.compile(compiler_request(payload), "correlation")
+
+    assert response.status is CompileStatus.FAILED
+    assert "COMPILATION_MODE_PIVOT_INVALID" in {item.code for item in response.diagnostics}
 
 
 async def test_monthly_mode_rejects_quarterly_provider_shape() -> None:

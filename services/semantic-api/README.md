@@ -8,11 +8,14 @@ accepts, or executes SQL.
 
 - Questions and ontology/catalog values are untrusted data, never instructions.
 - Providers receive a bounded, structured `compile-context.v0` object rather than concatenated
-  prompt text.
+  prompt text. The context is an immutable serialized snapshot separate from the authoritative
+  initialization result used for validation.
 - Provider output must match `sqg.v0`, exact ontology membership, query policy, DAG, operator,
   column-flow, grain, and result-schema rules.
 - Negation is normalized and detected conservatively within bounded mention clauses; unsupported
   negative member, time, entity, field, or metric requests fail closed with typed diagnostics.
+- Monthly comparison derives concrete current and previous calendar-month windows from the
+  evaluation clock, filters exactly their combined range, and binds pivot aliases to month starts.
 - Validation failures permit exactly one provider repair using only the rejected candidate and
   stable machine-readable diagnostics. Failure remains explicit.
 - Static deterministic compilation is the only configured provider. There are no credentials,

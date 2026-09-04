@@ -7,6 +7,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from semantic_api.models import (
+    CompilationMode,
     CompileStatus,
     Diagnostic,
     DiagnosticSeverity,
@@ -51,7 +52,27 @@ class DeterministicInitializer:
             request.evaluation_timezone,
         )
         diagnostics.extend(time_diagnostics)
-        if len(windows) > 1:
+        if request.compilation_mode is CompilationMode.MONTHLY_REGIONAL_COMPARISON:
+            if windows:
+                diagnostics.append(
+                    Diagnostic(
+                        code="MONTHLY_EXPLICIT_TIME_UNSUPPORTED",
+                        severity=DiagnosticSeverity.ERROR,
+                        stage=DiagnosticStage.INITIALIZE,
+                        message=(
+                            "Monthly comparison derives current and previous month periods "
+                            "from the evaluation clock and does not accept another time window."
+                        ),
+                        path="question",
+                    )
+                )
+            elif not time_diagnostics:
+                windows, comparison_diagnostics = self._monthly_comparison_windows(
+                    request.evaluation_clock,
+                    request.evaluation_timezone,
+                )
+                diagnostics.extend(comparison_diagnostics)
+        elif len(windows) > 1:
             diagnostics.append(
                 Diagnostic(
                     code="MULTIPLE_TIME_WINDOWS_UNSUPPORTED",
@@ -70,7 +91,11 @@ class DeterministicInitializer:
                     machine_id=(
                         f"time:{window.start.isoformat()}/{window.end_exclusive.isoformat()}"
                     ),
-                    resolution_source=ResolutionSource.RELATIVE_TIME,
+                    resolution_source=(
+                        ResolutionSource.EVALUATION_CLOCK
+                        if window.source_text.startswith("evaluation_clock.")
+                        else ResolutionSource.RELATIVE_TIME
+                    ),
                 )
             )
         context = self.registry.retrieve(request.question, terms, request.ontology_scope)
@@ -334,7 +359,7 @@ class DeterministicInitializer:
         return any(
             DeterministicInitializer._contains_negation_marker(context)
             for context in (prefix, suffix)
-        )
+        ) or DeterministicInitializer._has_spanning_exclusion(prefix, suffix)
 
     @staticmethod
     def _bounded_negation_context(
@@ -348,19 +373,25 @@ class DeterministicInitializer:
         shared_clause_boundary = re.compile(
             (
                 r"\b(?:however|instead|whereas|then|when|where|if|although|though|while)\b|"
-                r"(?:但是|但|不过|然而|然后|当|如果|虽然)"
+                r"(?:但是|但|不过|然而|然后|如果|虽然)"
             ),
+            re.IGNORECASE,
+        )
+        quantified_but = re.search(
+            r"\b(?:all|every)\b[^\n;.!?]{0,60}\bbut\s*$",
+            prefix,
             re.IGNORECASE,
         )
 
         prefix_boundaries = [
             match.end()
             for match in re.finditer(r"[,;.!?\n\r\u3002\uff01\uff1f\uff1b\uff0c]", prefix)
+            if quantified_but is None or match.start() < quantified_but.start()
         ]
         prefix_boundaries.extend(match.end() for match in shared_clause_boundary.finditer(prefix))
         for match in re.finditer(r"\bbut\b", prefix, re.IGNORECASE):
             preceding = prefix[: match.start()]
-            if re.search(r"\b(?:all|every)\b[^,;.!?]{0,60}$", preceding, re.IGNORECASE):
+            if re.search(r"\b(?:all|every)\b[^\n;.!?]{0,60}$", preceding, re.IGNORECASE):
                 continue
             prefix_boundaries.append(match.end())
         if prefix_boundaries:
@@ -403,29 +434,30 @@ class DeterministicInitializer:
         ):
             return True
         if re.search(
-            r"\b(?:other\s+than|left\s+out|(?:all|every)\b[^,;.!?]{0,60}\bbut)\b",
+            r"\b(?:other\s+than|left\s+out|(?:all|every)\b[^\n;.!?]{0,60}\bbut)\b",
             normalized,
         ):
             return True
-        return any(
-            marker in normalized
-            for marker in (
-                "不",
-                "非",
-                "排除",
-                "除外",
-                "除了",
-                "除非",
-                "以外",
-                "之外",
-                "不要",
-                "无需",
-                "无须",
-                "不含",
-                "不包括",
-                "不包含",
-                "未",
+        return (
+            re.search(
+                (
+                    r"(?:排除|除外|除了|除非|以外|之外|不要|无需|无须|不含|"
+                    r"不(?:应|该|能|可|会)?(?:包括|包含|使用|显示|展示|纳入|选择)|"
+                    r"未(?:被)?(?:包括|包含|使用|显示|展示|纳入|选择)|"
+                    r"(?:^|[\s,\uff0c:\uff1a])非(?:$|[\s,\uff0c:\uff1a]))"
+                ),
+                normalized,
             )
+            is not None
+        )
+
+    @staticmethod
+    def _has_spanning_exclusion(prefix: str, suffix: str) -> bool:
+        normalized_prefix = DeterministicInitializer._normalize_negation_phrase(prefix)
+        normalized_suffix = DeterministicInitializer._normalize_negation_phrase(suffix)
+        return (
+            re.search(r"除\s*$", normalized_prefix) is not None
+            and re.match(r"\s*(?:外|以外|之外)", normalized_suffix) is not None
         )
 
     @staticmethod
@@ -523,6 +555,44 @@ class DeterministicInitializer:
                     )
                 )
         return windows, diagnostics
+
+    def _monthly_comparison_windows(
+        self,
+        evaluation_clock: datetime,
+        timezone_name: str,
+    ) -> tuple[list[TimeWindow], list[Diagnostic]]:
+        try:
+            local_clock = evaluation_clock.astimezone(ZoneInfo(timezone_name))
+            current_start, current_end, _ = self._this_month(local_clock)
+            previous_start, previous_end, _ = self._previous_month(local_clock)
+        except (ZoneInfoNotFoundError, ValueError, OSError, OverflowError):
+            return [], [
+                Diagnostic(
+                    code="INVALID_EVALUATION_CLOCK",
+                    severity=DiagnosticSeverity.ERROR,
+                    stage=DiagnosticStage.INITIALIZE,
+                    message=(
+                        "Monthly comparison periods cannot be derived from the evaluation clock."
+                    ),
+                    path="evaluation_clock",
+                )
+            ]
+        return [
+            TimeWindow(
+                source_text="evaluation_clock.current_month",
+                start=current_start,
+                end_exclusive=current_end,
+                timezone=timezone_name,
+                grain="month",
+            ),
+            TimeWindow(
+                source_text="evaluation_clock.previous_month",
+                start=previous_start,
+                end_exclusive=previous_end,
+                timezone=timezone_name,
+                grain="month",
+            ),
+        ], []
 
     @staticmethod
     def _at_midnight(clock: datetime, year: int, month: int, day: int = 1) -> datetime:

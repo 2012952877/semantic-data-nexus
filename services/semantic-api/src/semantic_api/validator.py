@@ -1182,6 +1182,14 @@ class SQGValidator:
                 )
                 continue
             expected_windows.add((start_utc, end_utc))
+        expected_filter_windows = expected_windows
+        if (
+            compilation_mode is CompilationMode.MONTHLY_REGIONAL_COMPARISON
+            and len(expected_windows) == 2
+        ):
+            ordered_windows = sorted(expected_windows)
+            if ordered_windows[0][1] == ordered_windows[1][0]:
+                expected_filter_windows = {(ordered_windows[0][0], ordered_windows[1][1])}
         member_predicates: dict[str, list[set[str]]] = {}
         time_predicates: list[tuple[datetime, datetime] | None] = []
         enforced_members: set[str] = set()
@@ -1315,25 +1323,25 @@ class SQGValidator:
                     details={"member_id": member_id},
                 )
             )
-        if expected_windows - enforced_windows:
+        if expected_filter_windows - enforced_windows:
             diagnostics.append(
                 self._error(
                     "MISSING_TIME_CONSTRAINT",
                     "A normalized time window is not enforced by the candidate SQG.",
                     path="nodes",
-                    details={"window_count": len(expected_windows - enforced_windows)},
+                    details={"window_count": len(expected_filter_windows - enforced_windows)},
                 )
             )
-        if introduced_windows - expected_windows:
+        if introduced_windows - expected_filter_windows:
             diagnostics.append(
                 self._error(
                     "UNRESOLVED_TIME_CONSTRAINT",
                     "Candidate SQG introduced a time window not normalized from the request.",
                     path="nodes",
-                    details={"window_count": len(introduced_windows - expected_windows)},
+                    details={"window_count": len(introduced_windows - expected_filter_windows)},
                 )
             )
-        if len(time_predicates) != len(expected_windows) or any(
+        if len(time_predicates) != len(expected_filter_windows) or any(
             item is None for item in time_predicates
         ):
             diagnostics.append(
@@ -1342,7 +1350,7 @@ class SQGValidator:
                     "Time constraints require exactly one canonical governed BETWEEN predicate.",
                     path="nodes",
                     details={
-                        "expected_count": len(expected_windows),
+                        "expected_count": len(expected_filter_windows),
                         "predicate_count": len(time_predicates),
                     },
                 )
@@ -1541,12 +1549,40 @@ class SQGValidator:
                 for node in linear_path
                 if isinstance(node.parameters, PivotParameters)
             ]
+            value_bindings = (
+                pivot_parameters[0].value_bindings if len(pivot_parameters) == 1 else []
+            )
+            actual_bindings = [
+                (binding.alias, self._as_utc(binding.value)) for binding in value_bindings
+            ]
+            if len(time_windows) == 2:
+                ordered_windows = sorted(time_windows, key=lambda window: window.start)
+                expected_bindings = [
+                    ("profit_current", self._as_utc(ordered_windows[1].start)),
+                    ("profit_previous", self._as_utc(ordered_windows[0].start)),
+                ]
+            else:
+                expected_bindings = [
+                    ("profit_current", actual_bindings[0][1] if actual_bindings else None),
+                    (
+                        "profit_previous",
+                        actual_bindings[1][1] if len(actual_bindings) > 1 else None,
+                    ),
+                ]
             exact_pivot = (
                 len(pivot_parameters) == 1
                 and pivot_parameters[0].index == ["commerce.sales_record.region"]
                 and pivot_parameters[0].column == "commerce.sales_record.period"
                 and pivot_parameters[0].value == "profit"
                 and pivot_parameters[0].values == ["profit_current", "profit_previous"]
+                and actual_bindings == expected_bindings
+                and all(value is not None for _, value in actual_bindings)
+                and (
+                    len(actual_bindings) == 2
+                    and actual_bindings[1][1] is not None
+                    and actual_bindings[0][1] is not None
+                    and actual_bindings[1][1] < actual_bindings[0][1]
+                )
             )
             if not exact_pivot:
                 diagnostics.append(

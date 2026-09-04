@@ -90,6 +90,7 @@ class ResolutionSource(StrEnum):
     LABEL = "label"
     SYNONYM = "synonym"
     RELATIVE_TIME = "relative_time"
+    EVALUATION_CLOCK = "evaluation_clock"
 
 
 class ResolvedTerm(StrictModel):
@@ -291,12 +292,25 @@ class AggregateParameters(StrictModel):
     measures: list[AggregateMeasure]
 
 
+class PivotValueBinding(StrictModel):
+    alias: str
+    value: datetime
+
+    @field_validator("value")
+    @classmethod
+    def require_aware_value(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("pivot values must include an explicit UTC offset")
+        return value
+
+
 class PivotParameters(StrictModel):
     kind: Literal[Operator.PIVOT] = Operator.PIVOT
     index: list[str]
     column: str
     value: str
     values: list[str] = Field(min_length=1, max_length=100)
+    value_bindings: list[PivotValueBinding] = Field(default_factory=list, max_length=100)
 
 
 class DerivedColumn(StrictModel):

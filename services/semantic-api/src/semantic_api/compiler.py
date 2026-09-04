@@ -83,12 +83,14 @@ class SemanticCompiler:
                 timing_metadata=empty_timing,
             )
 
+        authoritative_json = initialization.model_dump_json()
+        authoritative = InitializeResponse.model_validate_json(authoritative_json)
         context = StructuredCompileContext(
             question=UntrustedQuestion(value=request.question),
             compilation_mode=request.compilation_mode,
-            resolved_terms=initialization.resolved_terms,
-            time_windows=initialization.time_windows,
-            semantic_context=initialization.selected_semantic_context,
+            resolved_terms=authoritative.resolved_terms,
+            time_windows=authoritative.time_windows,
+            semantic_context=authoritative.selected_semantic_context,
         )
         provider = self.provider_factory(request.provider_selection)
         invoker = ProviderInvoker(provider, self.provider_timeout_seconds)
@@ -99,10 +101,10 @@ class SemanticCompiler:
             provider_ms = self._elapsed_ms(provider_start)
             return self._failure(
                 correlation_id=correlation_id,
-                initialization=initialization,
+                initialization=authoritative,
                 candidate=None,
                 diagnostics=[
-                    *initialization.diagnostics,
+                    *authoritative.diagnostics,
                     Diagnostic(
                         code="PROVIDER_TIMEOUT",
                         severity=DiagnosticSeverity.ERROR,
@@ -121,9 +123,9 @@ class SemanticCompiler:
         validation_start = perf_counter()
         validation = self.validator.validate(
             provider_result.candidate,
-            initialization.selected_semantic_context,
-            initialization.resolved_terms,
-            initialization.time_windows,
+            authoritative.selected_semantic_context,
+            authoritative.resolved_terms,
+            authoritative.time_windows,
             request.compilation_mode,
         )
         validation_ms = self._elapsed_ms(validation_start)
@@ -132,11 +134,11 @@ class SemanticCompiler:
             return CompileResponse(
                 status=CompileStatus.SUCCEEDED,
                 correlation_id=correlation_id,
-                resolved_terms=initialization.resolved_terms,
-                selected_semantic_context=initialization.selected_semantic_context,
+                resolved_terms=authoritative.resolved_terms,
+                selected_semantic_context=authoritative.selected_semantic_context,
                 candidate_sqg=provider_result.candidate,
                 normalized_sqg=validation.normalized,
-                diagnostics=[*initialization.diagnostics, *validation.diagnostics],
+                diagnostics=[*authoritative.diagnostics, *validation.diagnostics],
                 token_metadata=tokens,
                 timing_metadata=TimingMetadata(
                     initialization_ms=initialization_ms,
@@ -155,10 +157,10 @@ class SemanticCompiler:
             provider_ms += self._elapsed_ms(repair_start)
             return self._failure(
                 correlation_id=correlation_id,
-                initialization=initialization,
+                initialization=authoritative,
                 candidate=provider_result.candidate,
                 diagnostics=[
-                    *initialization.diagnostics,
+                    *authoritative.diagnostics,
                     *validation.diagnostics,
                     Diagnostic(
                         code="REPAIR_TIMEOUT",
@@ -178,9 +180,9 @@ class SemanticCompiler:
         repair_validation_start = perf_counter()
         repaired = self.validator.validate(
             repair_result.candidate,
-            initialization.selected_semantic_context,
-            initialization.resolved_terms,
-            initialization.time_windows,
+            authoritative.selected_semantic_context,
+            authoritative.resolved_terms,
+            authoritative.time_windows,
             request.compilation_mode,
         )
         validation_ms += self._elapsed_ms(repair_validation_start)
@@ -194,12 +196,12 @@ class SemanticCompiler:
             return CompileResponse(
                 status=CompileStatus.SUCCEEDED,
                 correlation_id=correlation_id,
-                resolved_terms=initialization.resolved_terms,
-                selected_semantic_context=initialization.selected_semantic_context,
+                resolved_terms=authoritative.resolved_terms,
+                selected_semantic_context=authoritative.selected_semantic_context,
                 candidate_sqg=repair_result.candidate,
                 normalized_sqg=repaired.normalized,
                 diagnostics=[
-                    *initialization.diagnostics,
+                    *authoritative.diagnostics,
                     Diagnostic(
                         code="REPAIR_APPLIED",
                         severity=DiagnosticSeverity.INFO,
@@ -218,10 +220,10 @@ class SemanticCompiler:
             )
         return self._failure(
             correlation_id=correlation_id,
-            initialization=initialization,
+            initialization=authoritative,
             candidate=repair_result.candidate,
             diagnostics=[
-                *initialization.diagnostics,
+                *authoritative.diagnostics,
                 *repaired.diagnostics,
                 Diagnostic(
                     code="REPAIR_FAILED",

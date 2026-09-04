@@ -6,6 +6,7 @@ import pytest
 
 from semantic_api.initializer import DeterministicInitializer
 from semantic_api.models import (
+    CompilationMode,
     CompileStatus,
     InitializeRequest,
     MemberResolutionMode,
@@ -130,6 +131,53 @@ def test_multiple_relative_windows_are_explicitly_rejected(
     assert any(item.code == "MULTIPLE_TIME_WINDOWS_UNSUPPORTED" for item in result.diagnostics)
 
 
+def test_monthly_mode_materializes_clock_bound_comparison_windows(
+    registry: OntologyRegistry,
+) -> None:
+    result = DeterministicInitializer(registry).initialize(
+        request(
+            "Compare monthly regional profit",
+            compilation_mode=CompilationMode.MONTHLY_REGIONAL_COMPARISON,
+        ),
+        "correlation",
+    )
+
+    assert result.status is CompileStatus.SUCCEEDED
+    assert [
+        (window.source_text, window.start.isoformat(), window.end_exclusive.isoformat())
+        for window in result.time_windows
+    ] == [
+        (
+            "evaluation_clock.current_month",
+            "2026-08-01T00:00:00+08:00",
+            "2026-09-01T00:00:00+08:00",
+        ),
+        (
+            "evaluation_clock.previous_month",
+            "2026-07-01T00:00:00+08:00",
+            "2026-08-01T00:00:00+08:00",
+        ),
+    ]
+    assert {
+        term.resolution_source
+        for term in result.resolved_terms
+        if term.kind is ResolvedTermKind.TIME_WINDOW
+    } == {ResolutionSource.EVALUATION_CLOCK}
+
+
+def test_monthly_mode_rejects_explicit_relative_time(registry: OntologyRegistry) -> None:
+    result = DeterministicInitializer(registry).initialize(
+        request(
+            "Compare monthly regional profit 去年",
+            compilation_mode=CompilationMode.MONTHLY_REGIONAL_COMPARISON,
+        ),
+        "correlation",
+    )
+
+    assert result.status is CompileStatus.FAILED
+    assert any(item.code == "MONTHLY_EXPLICIT_TIME_UNSUPPORTED" for item in result.diagnostics)
+
+
 @pytest.mark.parametrize(
     ("question", "code"),
     [
@@ -248,6 +296,26 @@ def test_negated_semantic_concepts_are_explicitly_rejected(
     assert result.status is CompileStatus.FAILED
     assert any(item.code == "NEGATED_CONCEPT_UNSUPPORTED" for item in result.diagnostics)
     assert not any(term.kind is kind for term in result.resolved_terms)
+
+
+@pytest.mark.parametrize(
+    ("question", "kind"),
+    [
+        ("显示不同地区的季度利润", ResolvedTermKind.FIELD),
+        ("显示非常高的区域季度利润", ResolvedTermKind.METRIC),
+        ("显示未来的区域季度利润", ResolvedTermKind.METRIC),
+    ],
+)
+def test_positive_chinese_words_are_not_negation_markers(
+    registry: OntologyRegistry,
+    question: str,
+    kind: ResolvedTermKind,
+) -> None:
+    result = DeterministicInitializer(registry).initialize(request(question), "correlation")
+
+    assert result.status is CompileStatus.SUCCEEDED
+    assert any(term.kind is kind for term in result.resolved_terms)
+    assert not any(item.code.startswith("NEGATED_") for item in result.diagnostics)
 
 
 def test_clock_requires_explicit_offset() -> None:
