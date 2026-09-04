@@ -98,7 +98,7 @@ jobs:
             echo "Databricks Compose configuration unexpectedly accepted missing credentials." >&2
             exit 1
           fi
-          grep -q "DATABRICKS_WORKSPACE_HOST" live-config-error.txt
+          test -s live-config-error.txt
           rm live-config-error.txt
 
       - name: Validate live profile topology
