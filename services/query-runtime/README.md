@@ -27,9 +27,10 @@ demonstrates two concurrent source nodes followed by a local join and sort.
 
 - `planner.py` accepts a synthetic validated logical graph and an exact `ConceptBinder`. A future
   compiler adapter maps its validated SQG/bound plan into these package-local v0 types.
-- `resolver.py` accepts only typed `SourceFragment` objects. `ParameterizedSourceAdapter` is the
-  connector seam for an independent Databricks implementation; this package performs no HTTP,
-  token, workspace, or SQL-statement handling.
+- `resolver.py` accepts only typed `SourceFragment` objects plus an `ExecutionContext` carrying
+  run/node/attempt identity and an opaque cancellation handle. `ParameterizedSourceAdapter` is
+  the connector seam for an independent Databricks implementation; this package performs no
+  HTTP, token, workspace, or SQL-statement handling.
 - Local expressions are a closed typed AST. Identifiers are verified against Arrow schemas,
   literals are bound parameters, and division uses `NULLIF(divisor, 0)`.
 - `EventStore` and `ResultStore` are replaceable protocols. M0 provides in-memory events with an

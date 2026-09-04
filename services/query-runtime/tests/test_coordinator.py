@@ -125,6 +125,30 @@ class _CancellingClaimStore(InMemoryEventStore):
         raise asyncio.CancelledError
 
 
+class _FailingOnceClaimStore(InMemoryEventStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed = False
+
+    async def claim(self, run_id: str) -> bool:
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("synthetic claim failure")
+        return await super().claim(run_id)
+
+
+class _PausingFailingClaimStore(InMemoryEventStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def claim(self, run_id: str) -> bool:
+        self.started.set()
+        await self.release.wait()
+        raise RuntimeError("synthetic delayed claim failure")
+
+
 def _memory_chain_fixture() -> tuple[PhysicalPlan, FakeResolver, int]:
     alias = "memory-source"
     source = PhysicalNode(
@@ -276,7 +300,13 @@ async def test_cancel_and_timeout_propagate(tmp_path: Path) -> None:
         if fixture.resolver.cancelled:
             break
         await asyncio.sleep(0)
-    assert fixture.resolver.cancelled == [("run-cancel", "source-profit")]
+    assert len(fixture.resolver.cancelled) == 1
+    context = fixture.resolver.executions[fixture.resolver.cancelled[0]]
+    assert (context.run_id, context.node_id, context.attempt) == (
+        "run-cancel",
+        "source-profit",
+        1,
+    )
     await _wait_for_coordinator_cleanup(coordinator)
 
     timeout_fixture = delayed_fixture()
@@ -297,7 +327,7 @@ async def test_cancel_terminalizes_all_waves_when_resolver_cancel_fails(
     fixture = complex_profit_fixture()
     fixture.resolver._delays["regional_source"] = 1.0
 
-    async def failing_cancel(run_id: str, node_id: str) -> None:
+    async def failing_cancel(cancellation_handle: str) -> None:
         raise RuntimeError("synthetic resolver cancellation failure")
 
     monkeypatch.setattr(fixture.resolver, "cancel", failing_cancel)
@@ -366,7 +396,7 @@ async def test_resolver_cancel_timeout_does_not_block_run_finalization(
 ) -> None:
     fixture = delayed_fixture()
 
-    async def stubborn_cancel(run_id: str, node_id: str) -> None:
+    async def stubborn_cancel(cancellation_handle: str) -> None:
         try:
             await asyncio.sleep(10)
         except asyncio.CancelledError:
@@ -405,8 +435,10 @@ async def test_run_cancel_wakes_noncooperative_active_resolver(
     resolver_cancelled = asyncio.Event()
     resolver_cancel_calls = 0
     source_table = fixture.resolver._tables["regional_source"]
+    execution_contexts = []
 
-    async def stubborn_execute(fragment, cancel_event):
+    async def stubborn_execute(context, fragment, cancel_event):
+        execution_contexts.append(context)
         execute_started.set()
         while not execute_release.is_set():
             try:
@@ -415,9 +447,12 @@ async def test_run_cancel_wakes_noncooperative_active_resolver(
                 continue
         return source_table
 
-    async def record_cancel(run_id: str, node_id: str) -> None:
+    cancellation_handles: list[str] = []
+
+    async def record_cancel(cancellation_handle: str) -> None:
         nonlocal resolver_cancel_calls
         resolver_cancel_calls += 1
+        cancellation_handles.append(cancellation_handle)
         resolver_cancelled.set()
 
     monkeypatch.setattr(fixture.resolver, "execute", stubborn_execute)
@@ -443,6 +478,12 @@ async def test_run_cancel_wakes_noncooperative_active_resolver(
     assert outcome.summary.state is ExecutionState.CANCELLED
     await asyncio.wait_for(resolver_cancelled.wait(), timeout=0.05)
     assert resolver_cancel_calls == 1
+    context = execution_contexts[0]
+    assert cancellation_handles == [context.cancellation_handle]
+    assert (context.run_id, context.node_id) == (
+        "run-active-cancel",
+        "source-profit",
+    )
 
     execute_release.set()
     await _wait_for_coordinator_cleanup(coordinator)
@@ -579,6 +620,46 @@ async def test_cancelled_store_claim_propagates_without_spinning() -> None:
     )
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_failed_store_claim_clears_local_claim_for_retry() -> None:
+    fixture = simple_profit_fixture()
+    events = _FailingOnceClaimStore()
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+    )
+    with pytest.raises(RuntimeError, match="synthetic claim failure"):
+        await coordinator.run(fixture.plan, run_id="run-claim-retry")
+    assert "run-claim-retry" not in coordinator._claiming_run_ids
+
+    outcome = await coordinator.run(
+        fixture.plan, run_id="run-claim-retry"
+    )
+    assert outcome.summary.state is ExecutionState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_cancellation_wins_over_delayed_claim_failure() -> None:
+    fixture = simple_profit_fixture()
+    events = _PausingFailingClaimStore()
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-cancelled-claim-failure")
+    )
+    await events.started.wait()
+    task.cancel()
+    events.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "run-cancelled-claim-failure" not in coordinator._claiming_run_ids
 
 
 @pytest.mark.asyncio
@@ -740,6 +821,7 @@ async def test_failed_deferred_cleanup_releases_memory_budget(
             break
         await asyncio.sleep(0)
     assert coordinator._memory.current == 0
+    await _wait_for_coordinator_cleanup(coordinator)
 
 
 @pytest.mark.asyncio
@@ -750,7 +832,7 @@ async def test_noncooperative_resolver_cannot_extend_node_deadline(
     source_table = fixture.resolver._tables["regional_source"]
     cancel_called = asyncio.Event()
 
-    async def stubborn_execute(fragment, cancel_event):
+    async def stubborn_execute(context, fragment, cancel_event):
         deadline = asyncio.get_running_loop().time() + 0.2
         while asyncio.get_running_loop().time() < deadline:
             try:
@@ -759,7 +841,7 @@ async def test_noncooperative_resolver_cannot_extend_node_deadline(
                 continue
         return source_table
 
-    async def record_cancel(run_id: str, node_id: str) -> None:
+    async def record_cancel(cancellation_handle: str) -> None:
         cancel_called.set()
 
     monkeypatch.setattr(fixture.resolver, "execute", stubborn_execute)
@@ -799,10 +881,12 @@ async def test_timed_out_operator_retains_input_and_output_memory_until_settled(
     resolver_calls = 0
     original_resolver_execute = resolver.execute
 
-    async def counted_resolver_execute(fragment, cancel_event):
+    async def counted_resolver_execute(context, fragment, cancel_event):
         nonlocal resolver_calls
         resolver_calls += 1
-        return await original_resolver_execute(fragment, cancel_event)
+        return await original_resolver_execute(
+            context, fragment, cancel_event
+        )
 
     async def cancellation_resistant_operator(operation, inputs, cancel_event):
         operator_started.set()
@@ -1018,7 +1102,7 @@ async def test_pre_admission_rejects_before_resolver_allocation(
     fixture = simple_profit_fixture()
     called = False
 
-    async def should_not_execute(fragment, cancel_event):
+    async def should_not_execute(context, fragment, cancel_event):
         nonlocal called
         called = True
         return fixture.resolver._tables["regional_source"]

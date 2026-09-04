@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Protocol
 
 import pyarrow as pa
@@ -12,12 +13,23 @@ from query_runtime.errors import ResolverFailure
 from query_runtime.operators import DuckDBOperatorExecutor
 
 
+@dataclass(frozen=True)
+class ExecutionContext:
+    run_id: str
+    node_id: str
+    attempt: int
+    cancellation_handle: str
+
+
 class SourceResolver(Protocol):
     async def execute(
-        self, fragment: SourceFragment, cancel_event: asyncio.Event
+        self,
+        context: ExecutionContext,
+        fragment: SourceFragment,
+        cancel_event: asyncio.Event,
     ) -> pa.Table: ...
 
-    async def cancel(self, run_id: str, node_id: str) -> None: ...
+    async def cancel(self, cancellation_handle: str) -> None: ...
 
     async def health(self) -> bool: ...
 
@@ -28,12 +40,15 @@ class ParameterizedSourceAdapter(Protocol):
     """Integration seam for a connector such as the independent Databricks package."""
 
     async def execute_validated_fragment(
-        self, fragment: SourceFragment, cancel_event: asyncio.Event
+        self,
+        context: ExecutionContext,
+        fragment: SourceFragment,
+        cancel_event: asyncio.Event,
     ) -> pa.Table:
         """Map a typed fragment to a parameterized connector request."""
         ...
 
-    async def cancel(self, run_id: str, node_id: str) -> None: ...
+    async def cancel(self, cancellation_handle: str) -> None: ...
 
     async def health(self) -> bool: ...
 
@@ -45,12 +60,17 @@ class AdapterResolver:
         self._adapter = adapter
 
     async def execute(
-        self, fragment: SourceFragment, cancel_event: asyncio.Event
+        self,
+        context: ExecutionContext,
+        fragment: SourceFragment,
+        cancel_event: asyncio.Event,
     ) -> pa.Table:
-        return await self._adapter.execute_validated_fragment(fragment, cancel_event)
+        return await self._adapter.execute_validated_fragment(
+            context, fragment, cancel_event
+        )
 
-    async def cancel(self, run_id: str, node_id: str) -> None:
-        await self._adapter.cancel(run_id, node_id)
+    async def cancel(self, cancellation_handle: str) -> None:
+        await self._adapter.cancel(cancellation_handle)
 
     async def health(self) -> bool:
         return await self._adapter.health()
@@ -77,11 +97,16 @@ class FakeResolver:
         self._executor = DuckDBOperatorExecutor()
         self.active = 0
         self.max_active = 0
-        self.cancelled: list[tuple[str, str]] = []
+        self.executions: dict[str, ExecutionContext] = {}
+        self.cancelled: list[str] = []
 
     async def execute(
-        self, fragment: SourceFragment, cancel_event: asyncio.Event
+        self,
+        context: ExecutionContext,
+        fragment: SourceFragment,
+        cancel_event: asyncio.Event,
     ) -> pa.Table:
+        self.executions[context.cancellation_handle] = context
         alias = fragment.source.alias
         if alias not in self._tables:
             raise ResolverFailure(
@@ -108,8 +133,13 @@ class FakeResolver:
         finally:
             self.active -= 1
 
-    async def cancel(self, run_id: str, node_id: str) -> None:
-        self.cancelled.append((run_id, node_id))
+    async def cancel(self, cancellation_handle: str) -> None:
+        if cancellation_handle not in self.executions:
+            raise ResolverFailure(
+                "RESOLVER_EXECUTION_UNKNOWN",
+                "Resolver cancellation handle is not active or known",
+            )
+        self.cancelled.append(cancellation_handle)
 
     async def health(self) -> bool:
         return True

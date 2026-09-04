@@ -24,8 +24,62 @@ from query_runtime.domain import (
     SourceFragment,
 )
 from query_runtime.events import InMemoryEventStore
-from query_runtime.resolver import FakeResolver
+from query_runtime.resolver import AdapterResolver, ExecutionContext, FakeResolver
 from query_runtime.result_store import ParquetResultStore
+
+
+class _RecordingParameterizedAdapter:
+    def __init__(self, table: pa.Table) -> None:
+        self.table = table
+        self.contexts: list[ExecutionContext] = []
+        self.cancelled: list[str] = []
+
+    async def execute_validated_fragment(
+        self,
+        context: ExecutionContext,
+        fragment: SourceFragment,
+        cancel_event: asyncio.Event,
+    ) -> pa.Table:
+        self.contexts.append(context)
+        return self.table
+
+    async def cancel(self, cancellation_handle: str) -> None:
+        self.cancelled.append(cancellation_handle)
+
+    async def health(self) -> bool:
+        return True
+
+    async def capabilities(self, source_alias: str) -> CapabilityCatalog:
+        return CapabilityCatalog(
+            source_alias=source_alias,
+            source_type="synthetic",
+            operator_kinds=frozenset({OperatorKind.SOURCE}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_adapter_resolver_forwards_execution_and_cancellation_identity() -> None:
+    adapter = _RecordingParameterizedAdapter(pa.table({"value": [1]}))
+    resolver = AdapterResolver(adapter)
+    context = ExecutionContext(
+        run_id="run-adapter",
+        node_id="node-adapter",
+        attempt=1,
+        cancellation_handle="exec-adapter",
+    )
+    fragment = SourceFragment(
+        source=BoundSource(
+            alias="adapter-source",
+            source_type="synthetic",
+            object_name="facts",
+        ),
+        operations=(OperatorSpec(kind=OperatorKind.SOURCE),),
+    )
+    table = await resolver.execute(context, fragment, asyncio.Event())
+    await resolver.cancel(context.cancellation_handle)
+    assert table.to_pylist() == [{"value": 1}]
+    assert adapter.contexts == [context]
+    assert adapter.cancelled == ["exec-adapter"]
 
 
 @pytest.mark.asyncio

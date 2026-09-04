@@ -35,7 +35,7 @@ from query_runtime.errors import (
 from query_runtime.events import EventStore, InMemoryEventStore, StateMachine
 from query_runtime.lineage import LineageRecorder
 from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits
-from query_runtime.resolver import SourceResolver
+from query_runtime.resolver import ExecutionContext, SourceResolver
 from query_runtime.result_store import ResultStore
 
 
@@ -493,6 +493,12 @@ class QueryCoordinator:
         resolver_cancel_requested = False
         execution: asyncio.Task[tuple[pa.Table, CommittedManifest]] | None = None
         inputs: tuple[pa.Table, ...] = ()
+        execution_context = ExecutionContext(
+            run_id=run_id,
+            node_id=node.id,
+            attempt=1,
+            cancellation_handle=f"exec-{uuid.uuid4().hex}",
+        )
         machine.transition(ExecutionState.READY)
         await emitter.emit(
             scope="node",
@@ -518,7 +524,12 @@ class QueryCoordinator:
                 inputs = tuple(tables[dependency] for dependency in node.dependencies)
                 execution = asyncio.create_task(
                     self._perform_and_commit(
-                        node, run_id, inputs, cancel_event, memory
+                        node,
+                        run_id,
+                        inputs,
+                        cancel_event,
+                        memory,
+                        execution_context,
                     )
                 )
                 cancellation = asyncio.create_task(cancel_event.wait())
@@ -538,7 +549,7 @@ class QueryCoordinator:
                         node.kind is PhysicalNodeKind.SOURCE_FRAGMENT
                         and not resolver_cancel_requested
                     ):
-                        self._request_resolver_cancel(run_id, node.id)
+                        self._request_resolver_cancel(execution_context)
                         resolver_cancel_requested = True
                     await self._handoff_deferred_execution(
                         execution,
@@ -562,7 +573,7 @@ class QueryCoordinator:
                     )
                     cleanup_deferred = True
                     if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
-                        self._request_resolver_cancel(run_id, node.id)
+                        self._request_resolver_cancel(execution_context)
                         resolver_cancel_requested = True
                     if was_cancelled:
                         raise asyncio.CancelledError
@@ -616,7 +627,7 @@ class QueryCoordinator:
                 node.kind is PhysicalNodeKind.SOURCE_FRAGMENT
                 and not resolver_cancel_requested
             ):
-                self._request_resolver_cancel(run_id, node.id)
+                self._request_resolver_cancel(execution_context)
             await self._emit_node_terminal(
                 machine,
                 emitter,
@@ -654,7 +665,7 @@ class QueryCoordinator:
                 node.kind is PhysicalNodeKind.SOURCE_FRAGMENT
                 and not resolver_cancel_requested
             ):
-                self._request_resolver_cancel(run_id, node.id)
+                self._request_resolver_cancel(execution_context)
             await self._emit_node_terminal(
                 machine,
                 emitter,
@@ -726,10 +737,13 @@ class QueryCoordinator:
         node: PhysicalNode,
         inputs: tuple[pa.Table, ...],
         cancel_event: asyncio.Event,
+        execution_context: ExecutionContext,
     ) -> pa.Table:
         if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
             assert node.source_fragment is not None
-            return await self.resolver.execute(node.source_fragment, cancel_event)
+            return await self.resolver.execute(
+                execution_context, node.source_fragment, cancel_event
+            )
         assert node.operator is not None
         return await self.executor.execute(node.operator, inputs, cancel_event)
 
@@ -740,10 +754,13 @@ class QueryCoordinator:
         inputs: tuple[pa.Table, ...],
         cancel_event: asyncio.Event,
         memory: _MemoryBudget,
+        execution_context: ExecutionContext,
     ) -> tuple[pa.Table, CommittedManifest]:
         await memory.reserve(run_id, node.id, self.limits.max_bytes)
         try:
-            table = await self._perform_node(node, inputs, cancel_event)
+            table = await self._perform_node(
+                node, inputs, cancel_event, execution_context
+            )
             self.executor.enforce_limits(table)
             await memory.reconcile(run_id, node.id, table)
             if cancel_event.is_set():
@@ -786,45 +803,42 @@ class QueryCoordinator:
                 )
             self._claiming_run_ids.add(run_id)
         claim = asyncio.create_task(self.event_store.claim(run_id))
-        was_cancelled = await _wait_for_task_completion(claim)
-        if claim.cancelled():
-            settlement = asyncio.create_task(
-                self._settle_claim(run_id, cancel_event, register=False)
-            )
-            await _wait_for_task_completion(settlement)
-            raise asyncio.CancelledError
+        registered = False
         try:
-            claimed = claim.result()
-        except Exception:
+            was_cancelled = await _wait_for_task_completion(claim)
+            if claim.cancelled():
+                raise asyncio.CancelledError
+            try:
+                claimed = claim.result()
+            except Exception:
+                if was_cancelled:
+                    raise asyncio.CancelledError from None
+                raise
+            if not claimed:
+                if was_cancelled:
+                    raise asyncio.CancelledError
+                raise RuntimeFailure(
+                    "RUN_ID_CONFLICT",
+                    "Run ID has already been used by this coordinator",
+                )
             settlement = asyncio.create_task(
-                self._settle_claim(run_id, cancel_event, register=False)
-            )
-            await _wait_for_task_completion(settlement)
-            raise
-        if not claimed:
-            settlement = asyncio.create_task(
-                self._settle_claim(run_id, cancel_event, register=False)
+                self._settle_claim(run_id, cancel_event, register=True)
             )
             was_cancelled = (
                 await _wait_for_task_completion(settlement)
                 or was_cancelled
             )
+            settlement.result()
+            registered = True
             if was_cancelled:
                 raise asyncio.CancelledError
-            raise RuntimeFailure(
-                "RUN_ID_CONFLICT",
-                "Run ID has already been used by this coordinator",
-            )
-        settlement = asyncio.create_task(
-            self._settle_claim(run_id, cancel_event, register=True)
-        )
-        was_cancelled = (
-            await _wait_for_task_completion(settlement)
-            or was_cancelled
-        )
-        settlement.result()
-        if was_cancelled:
-            raise asyncio.CancelledError
+        finally:
+            if not registered:
+                settlement = asyncio.create_task(
+                    self._settle_claim(run_id, cancel_event, register=False)
+                )
+                await _wait_for_task_completion(settlement)
+                settlement.result()
 
     async def _settle_claim(
         self,
@@ -1040,15 +1054,19 @@ class QueryCoordinator:
         with suppress(asyncio.CancelledError, Exception):
             task.result()
 
-    def _request_resolver_cancel(self, run_id: str, node_id: str) -> None:
+    def _request_resolver_cancel(self, context: ExecutionContext) -> None:
         cancellation = asyncio.create_task(
-            self._bounded_resolver_cancel(run_id, node_id)
+            self._bounded_resolver_cancel(context.cancellation_handle)
         )
         self._resolver_cancellations.add(cancellation)
         cancellation.add_done_callback(self._finish_resolver_cancel)
 
-    async def _bounded_resolver_cancel(self, run_id: str, node_id: str) -> None:
-        cancellation = asyncio.create_task(self.resolver.cancel(run_id, node_id))
+    async def _bounded_resolver_cancel(
+        self, cancellation_handle: str
+    ) -> None:
+        cancellation = asyncio.create_task(
+            self.resolver.cancel(cancellation_handle)
+        )
         done, _ = await asyncio.wait(
             {cancellation},
             timeout=min(1.0, self.limits.node_timeout_seconds),
@@ -1280,4 +1298,6 @@ async def _wait_for_task_completion(task: asyncio.Task[Any]) -> bool:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             was_cancelled = True
+        except Exception:
+            pass
     return was_cancelled
