@@ -15,7 +15,7 @@ namespace ControlApi.Tests;
 public sealed class SemanticBackendClientTests
 {
     [Fact]
-    public async Task StartUsesTypedBoundaryAndDoesNotRetry()
+    public async Task StartPostsAllFieldsAcceptedByPythonValidatedFixture()
     {
         var runId = RunId.Parse(
             "run_0123456789abcdef0123456789abcdef",
@@ -46,6 +46,10 @@ public sealed class SemanticBackendClientTests
                     "Fixtures",
                     "bff-start-request.json")));
             Assert.True(JsonElement.DeepEquals(fixture.RootElement, document.RootElement));
+            var pythonValidated = JsonSerializer.Deserialize<SemanticRunStart>(
+                body,
+                JsonOptions());
+            Assert.Equal(start, pythonValidated);
             var root = document.RootElement;
             Assert.Equal(runId.Value, root.GetProperty("runId").GetString());
             Assert.Equal("request-typed", root.GetProperty("clientRequestId").GetString());
@@ -431,6 +435,61 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public void DetailValidatorPreservesLosslessDerivedIdentifiers()
+    {
+        var runId = RunId.New();
+        var physicalNodeId = "physical-" + new string('a', 128);
+        var sourceId = "source:" + new string('b', 128);
+        var resultId = new string('c', 128);
+        var lineageResultId = "result:" + resultId;
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var detail = valid with
+        {
+            PhysicalNodes =
+            [
+                valid.PhysicalNodes[0] with
+                {
+                    Id = physicalNodeId,
+                    Inputs = [sourceId]
+                }
+            ],
+            Manifest = valid.Manifest! with
+            {
+                ResultId = resultId,
+                NodeId = physicalNodeId
+            },
+            Lineage = valid.Lineage with
+            {
+                Nodes =
+                [
+                    valid.Lineage.Nodes[0] with
+                    {
+                        Id = sourceId,
+                        SourceAlias = new string('d', 128)
+                    },
+                    valid.Lineage.Nodes[1] with
+                    {
+                        Id = lineageResultId,
+                        ResultId = resultId
+                    }
+                ],
+                Edges =
+                [
+                    new SemanticLineageEdge(
+                        sourceId,
+                        lineageResultId,
+                        SemanticLineageRelation.Produces)
+                ]
+            }
+        };
+
+        SemanticRunDetailValidator.Validate(detail, runId);
+
+        Assert.Equal(physicalNodeId, detail.Manifest.NodeId);
+        Assert.Contains(detail.Lineage.Nodes, node => node.Id == lineageResultId);
+    }
+
+    [Fact]
     public async Task DetailRejectsUnknownJsonProperties()
     {
         var runId = RunId.New();
@@ -524,6 +583,50 @@ public sealed class SemanticBackendClientTests
             client.GetStatusAsync(RunId.New(), default));
 
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
+    public async Task StatusPreservesLongPhysicalNodeIdentifier()
+    {
+        var runId = RunId.New();
+        var physicalNodeId = "physical-" + new string('a', 128);
+        var now = DateTimeOffset.UtcNow;
+        var status = StubSemanticBackendClient.Status(runId, RunState.Running) with
+        {
+            Stages =
+            [
+                new StageSummary(
+                    "stage-synthetic-execution",
+                    "Synthetic execution",
+                    RunState.Running,
+                    now,
+                    null,
+                    [
+                        new NodeSummary(
+                            physicalNodeId,
+                            "AGGREGATE",
+                            RunState.Running,
+                            now,
+                            null)
+                    ])
+            ]
+        };
+        var handler = new DelegateHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(status, options: JsonOptions())
+            }));
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/")
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        var result = await client.GetStatusAsync(runId, default);
+
+        Assert.Equal(physicalNodeId, Assert.Single(Assert.Single(result.Stages).Nodes).NodeId);
     }
 
     [Fact]

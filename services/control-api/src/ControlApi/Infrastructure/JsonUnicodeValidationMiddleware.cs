@@ -47,7 +47,8 @@ public sealed class JsonUnicodeValidationMiddleware(RequestDelegate next)
                     IOException or
                     DecoderFallbackException or
                     ArgumentException or
-                    FormatException)
+                    FormatException or
+                    NotSupportedException)
             {
                 throw new BadHttpRequestException(
                     "The JSON request body is invalid.",
@@ -70,13 +71,23 @@ public sealed class JsonUnicodeValidationMiddleware(RequestDelegate next)
 
     private static Encoding GetRequestEncoding(string? contentType)
     {
-        var charset = MediaTypeHeaderValue.Parse(contentType!).CharSet?.Trim('"');
-        return string.IsNullOrWhiteSpace(charset)
-            ? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
-            : Encoding.GetEncoding(
-                charset,
-                EncoderFallback.ExceptionFallback,
-                DecoderFallback.ExceptionFallback);
+        var charset = MediaTypeHeaderValue.Parse(contentType!).CharSet?.Trim('"').ToLowerInvariant();
+        return charset switch
+        {
+            null or "" or "utf-8" or "unicode-1-1-utf-8" =>
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
+            "utf-16" or "utf-16le" or "unicode" =>
+                new UnicodeEncoding(
+                    bigEndian: false,
+                    byteOrderMark: true,
+                    throwOnInvalidBytes: true),
+            "utf-16be" =>
+                new UnicodeEncoding(
+                    bigEndian: true,
+                    byteOrderMark: true,
+                    throwOnInvalidBytes: true),
+            _ => throw new NotSupportedException("The JSON request charset is not supported.")
+        };
     }
 
     private static void ValidateStrings(JsonElement element)

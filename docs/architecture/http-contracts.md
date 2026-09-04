@@ -119,6 +119,8 @@ a question that differs from the persisted create request. Governed enum,
 boolean, and count members are required rather than defaulted when absent.
 OpenAPI marks every JSON-required member and distinguishes nullable optional
 result/manifest members from required nullable lineage-node fields.
+Runtime-derived status, physical-plan, manifest, and lineage identifiers are
+preserved losslessly up to 160 characters.
 
 ## Errors and transport
 

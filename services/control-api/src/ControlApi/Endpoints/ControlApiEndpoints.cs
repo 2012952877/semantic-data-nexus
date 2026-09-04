@@ -26,10 +26,14 @@ public static class ControlApiEndpoints
 
         var runs = api.MapGroup("/runs");
         runs.MapPost("/", CreateRun)
+            .Produces<RunMetadata>(StatusCodes.Status200OK)
+            .Produces<RunMetadata>(StatusCodes.Status202Accepted)
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/", ListRuns)
+            .Produces<RunListResponse>()
             .RequireAuthorization(Policies.Reader);
         runs.MapGet("/{runId}", GetRun)
+            .Produces<RunMetadata>()
             .RequireAuthorization(Policies.Reader);
         runs.MapGet("/{runId}/detail", GetRunDetail)
             .Produces<SemanticRunDetail>()
@@ -42,15 +46,20 @@ public static class ControlApiEndpoints
             .Produces<ProblemDetails>(StatusCodes.Status504GatewayTimeout)
             .RequireAuthorization(Policies.Reader);
         runs.MapPost("/{runId}/cancel", CancelRun)
+            .Produces<RunMetadata>(StatusCodes.Status202Accepted)
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/{runId}/semantic-status", GetSemanticStatus)
+            .Produces<RunMetadata>()
             .RequireAuthorization(Policies.Reader);
         runs.MapPost("/{runId}/feedback", SubmitFeedback)
+            .Produces<RunFeedback>()
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/{runId}/feedback", GetFeedback)
+            .Produces<RunFeedback[]>()
             .RequireAuthorization(Policies.Reader);
 
         api.MapGet("/statistics/summary", GetStatistics)
+            .Produces<RunStatistics>()
             .RequireAuthorization(Policies.Admin);
 
         return endpoints;

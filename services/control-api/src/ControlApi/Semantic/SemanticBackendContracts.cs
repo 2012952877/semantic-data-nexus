@@ -404,6 +404,7 @@ public static class SemanticRunDetailValidator
     private const int MaximumLineageNodes = 5_000;
     private const int MaximumLineageEdges = 10_000;
     private const int MaximumDiagnostics = 1_000;
+    private const int MaximumIdentifierLength = 160;
 
     public static void Validate(SemanticRunDetail detail, RunId expectedRunId)
     {
@@ -482,12 +483,12 @@ public static class SemanticRunDetailValidator
         foreach (var node in nodes)
         {
             if (node is null ||
-                !ValidLabel(node.Id) ||
+                !ValidIdentifier(node.Id) ||
                 !ids.Add(node.Id) ||
                 !Enum.IsDefined(node.Kind) ||
                 !ValidText(node.Label, 256) ||
                 !ValidText(node.PlainLanguage, 1_000) ||
-                !ValidLabels(node.Inputs, MaximumNodeItems) ||
+                !ValidIdentifiers(node.Inputs, MaximumNodeItems) ||
                 !ValidLabels(node.OutputFields, MaximumNodeItems))
             {
                 throw Invalid("The semantic backend returned an invalid physical node.");
@@ -590,8 +591,8 @@ public static class SemanticRunDetailValidator
         HashSet<string> physicalNodeIds)
     {
         if (manifest.RunId != expectedRunId ||
-            !ValidLabel(manifest.ResultId) ||
-            !ValidLabel(manifest.NodeId) ||
+            !ValidIdentifier(manifest.ResultId) ||
+            !ValidIdentifier(manifest.NodeId) ||
             !physicalNodeIds.Contains(manifest.NodeId) ||
             !Enum.IsDefined(manifest.Storage) ||
             !ValidText(manifest.Uri, 2_048) ||
@@ -621,13 +622,13 @@ public static class SemanticRunDetailValidator
         foreach (var node in lineage.Nodes)
         {
             if (node is null ||
-                !ValidLabel(node.Id) ||
+                !ValidIdentifier(node.Id) ||
                 !ids.Add(node.Id) ||
                 !Enum.IsDefined(node.Kind) ||
                 !ValidOptionalLabel(node.Operation) ||
-                !ValidOptionalLabel(node.SourceAlias) ||
+                !ValidOptionalIdentifier(node.SourceAlias) ||
                 !ValidOptionalLabel(node.SourceType) ||
-                !ValidOptionalLabel(node.ResultId) ||
+                !ValidOptionalIdentifier(node.ResultId) ||
                 node.Parameters is null ||
                 node.Parameters.Count > MaximumNodeItems ||
                 node.Parameters.Any(parameter =>
@@ -667,7 +668,7 @@ public static class SemanticRunDetailValidator
                 diagnostic.RunId != expectedRunId ||
                 diagnostic.Sequence <= previousSequence ||
                 !Enum.IsDefined(diagnostic.Scope) ||
-                !ValidLabel(diagnostic.ScopeId) ||
+                !ValidIdentifier(diagnostic.ScopeId) ||
                 !ValidLabel(diagnostic.Code) ||
                 !ValidText(diagnostic.Title, 256) ||
                 !ValidText(diagnostic.Message, 1_000) ||
@@ -687,10 +688,21 @@ public static class SemanticRunDetailValidator
         values.Count <= maximum &&
         values.All(ValidLabel);
 
+    private static bool ValidIdentifiers(IReadOnlyList<string>? values, int maximum) =>
+        values is not null &&
+        values.Count <= maximum &&
+        values.All(ValidIdentifier);
+
     private static bool ValidLabel(string? value) => ValidText(value, 128);
+
+    private static bool ValidIdentifier(string? value) =>
+        ValidText(value, MaximumIdentifierLength);
 
     private static bool ValidOptionalLabel(string? value) =>
         value is null || ValidLabel(value);
+
+    private static bool ValidOptionalIdentifier(string? value) =>
+        value is null || ValidIdentifier(value);
 
     private static bool ValidDecimal(string? value)
     {

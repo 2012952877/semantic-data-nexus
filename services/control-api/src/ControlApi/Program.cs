@@ -44,6 +44,16 @@ builder.Services.AddSwaggerGen(options =>
     options.OperationFilter<OpenApiSecurityOperationFilter>();
     options.SchemaFilter<JsonRequiredSchemaFilter>();
     options.UseAllOfToExtendReferenceSchemas();
+    options.MapType<CompilationMode>(() =>
+        OpenApiContractSchemas.StringEnum<CompilationMode>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<ExecutionMode>(() =>
+        OpenApiContractSchemas.StringEnum<ExecutionMode>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<OutputMode>(() =>
+        OpenApiContractSchemas.StringEnum<OutputMode>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<FeedbackOutcome>(OpenApiContractSchemas.StringEnum<FeedbackOutcome>);
+    options.MapType<RunState>(OpenApiContractSchemas.StringEnum<RunState>);
+    options.MapType<CancellationDeliveryState>(
+        OpenApiContractSchemas.StringEnum<CancellationDeliveryState>);
     options.MapType<SemanticOperatorKind>(() =>
         OpenApiContractSchemas.StringEnum<SemanticOperatorKind>(JsonNamingPolicy.SnakeCaseUpper));
     options.MapType<SemanticScalarType>(() =>

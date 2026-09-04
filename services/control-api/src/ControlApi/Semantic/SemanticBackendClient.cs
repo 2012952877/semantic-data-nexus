@@ -17,17 +17,17 @@ public sealed class SemanticBackendOptions
 }
 
 public sealed record SemanticRunStart(
-    RunId RunId,
-    string ClientRequestId,
-    string Workload,
-    string Question,
-    DateTimeOffset EvaluationClock,
-    string EvaluationTimezone,
-    CompilationMode CompilationMode,
-    ExecutionMode ExecutionMode,
-    OutputMode OutputMode,
-    string RequestedBy,
-    string TraceId);
+    [property: JsonRequired] RunId RunId,
+    [property: JsonRequired] string ClientRequestId,
+    [property: JsonRequired] string Workload,
+    [property: JsonRequired] string Question,
+    [property: JsonRequired] DateTimeOffset EvaluationClock,
+    [property: JsonRequired] string EvaluationTimezone,
+    [property: JsonRequired] CompilationMode CompilationMode,
+    [property: JsonRequired] ExecutionMode ExecutionMode,
+    [property: JsonRequired] OutputMode OutputMode,
+    [property: JsonRequired] string RequestedBy,
+    [property: JsonRequired] string TraceId);
 
 public sealed record SemanticRunStatus(
     RunId RunId,
@@ -413,6 +413,7 @@ public static class SemanticRunStatusValidator
     private const int MaximumStages = 100;
     private const int MaximumNodesPerStage = 1_000;
     private const int MaximumDiagnostics = 100;
+    private const int MaximumStatusIdentifierLength = 160;
 
     public static void Validate(SemanticRunStatus status, RunId expectedRunId)
     {
@@ -457,7 +458,7 @@ public static class SemanticRunStatusValidator
             foreach (var node in stage.Nodes)
             {
                 if (node is null ||
-                    !ValidLabel(node.NodeId) ||
+                    !ValidIdentifier(node.NodeId, MaximumStatusIdentifierLength) ||
                     !ValidLabel(node.Kind) ||
                     !IsBackendState(node.State))
                 {
@@ -545,7 +546,10 @@ public static class SemanticRunStatusValidator
             RunState.Failed;
 
     private static bool ValidLabel(string? value) =>
-        !string.IsNullOrWhiteSpace(value) && value.Length <= 64;
+        ValidIdentifier(value, 64);
+
+    private static bool ValidIdentifier(string? value, int maximumLength) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength;
 
     private static SemanticBackendException Invalid(string message) =>
         new(

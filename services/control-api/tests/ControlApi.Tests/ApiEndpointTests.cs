@@ -539,6 +539,30 @@ public sealed class ApiEndpointTests
     }
 
     [Theory]
+    [InlineData("utf-7")]
+    [InlineData("x-unsupported-charset")]
+    public async Task UnsupportedJsonCharsetMapsToBadRequest(string charset)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var payload = JsonSerializer.Serialize(
+            ValidCreateRequest("unsupported-charset"),
+            JsonOptions);
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(payload));
+        content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+            {
+                CharSet = charset
+            };
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
     [InlineData("semantic_backend_timeout", HttpStatusCode.GatewayTimeout)]
     [InlineData("semantic_backend_unavailable", HttpStatusCode.BadGateway)]
     public async Task SemanticFailuresMapToStableProblems(string code, HttpStatusCode expectedStatus)
@@ -1057,6 +1081,69 @@ public sealed class ApiEndpointTests
                 .GetProperty(nameof(SemanticDetailDiagnostic))
                 .GetProperty("properties")
                 .GetProperty("severity")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["regional_quarterly_profit", "monthly_regional_comparison"],
+            createProperties
+                .GetProperty("compilationMode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["thread"],
+            createProperties
+                .GetProperty("executionMode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["normal", "stream"],
+            createProperties
+                .GetProperty("outputMode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["Helpful", "PartiallyHelpful", "NotHelpful"],
+            schemas
+                .GetProperty(nameof(SubmitFeedbackRequest))
+                .GetProperty("properties")
+                .GetProperty("outcome")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        var metadataProperties = schemas
+            .GetProperty(nameof(RunMetadata))
+            .GetProperty("properties");
+        Assert.Equal(
+            [
+                "StartPending",
+                "DispatchUnknown",
+                "Queued",
+                "Starting",
+                "Running",
+                "CancelRequested",
+                "Cancelled",
+                "Succeeded",
+                "Failed"
+            ],
+            metadataProperties
+                .GetProperty("state")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Equal(
+            ["NotRequested", "Pending", "Delivered"],
+            metadataProperties
+                .GetProperty("cancellationDelivery")
                 .GetProperty("enum")
                 .EnumerateArray()
                 .Select(item => item.GetString())
