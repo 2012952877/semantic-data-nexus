@@ -455,6 +455,34 @@ public sealed class ApiEndpointTests
         Assert.Equal("invalid_request", Extension(problem!, "code"));
     }
 
+    [Fact]
+    public async Task UnpairedSurrogateInEvaluationClockMapsToBadRequest()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using var content = new StringContent(
+            """
+            {
+              "clientRequestId": "invalid-clock-surrogate",
+              "workload": "synthetic-workload",
+              "question": "Synthetic question",
+              "evaluationClock": "\uD800",
+              "evaluationTimezone": "UTC",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
     [Theory]
     [InlineData("semantic_backend_timeout", HttpStatusCode.GatewayTimeout)]
     [InlineData("semantic_backend_unavailable", HttpStatusCode.BadGateway)]

@@ -183,7 +183,17 @@ public sealed class OffsetDateTimeJsonConverter : JsonConverter<DateTimeOffset>
             throw new JsonException("Evaluation clocks must be JSON strings.");
         }
 
-        var value = reader.GetString();
+        string? value;
+        try
+        {
+            value = reader.GetString();
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new JsonException(
+                "Evaluation clocks must contain valid Unicode scalar values.",
+                exception);
+        }
         var timeSeparator = value?.IndexOf('T', StringComparison.Ordinal) ?? -1;
         if (value is null ||
             timeSeparator < 0 ||
