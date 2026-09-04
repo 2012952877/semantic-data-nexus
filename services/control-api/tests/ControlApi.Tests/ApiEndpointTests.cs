@@ -625,7 +625,7 @@ public sealed class ApiEndpointTests
         Assert.Contains("outputMode", createRequired);
         Assert.True(createProperties.TryGetProperty("question", out _));
         Assert.True(createProperties.TryGetProperty("evaluationClock", out _));
-        Assert.True(detailOperation.TryGetProperty("security", out _));
+        Assert.True(detailOperation.GetProperty("responses").TryGetProperty("200", out _));
     }
 
     [Fact]

@@ -554,14 +554,21 @@ public static class ControlApiEndpoints
     {
         if (string.IsNullOrWhiteSpace(value) ||
             value.Length > 100 ||
-            !TimeZoneInfo.TryConvertIanaIdToWindowsId(value, out _))
+            !value.Contains('/'))
         {
             return false;
         }
 
         try
         {
-            _ = TimeZoneInfo.FindSystemTimeZoneById(value);
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(value);
+            if (OperatingSystem.IsWindows() &&
+                !TimeZoneInfo.TryConvertIanaIdToWindowsId(value, out _))
+            {
+                return false;
+            }
+
+            _ = zone.GetUtcOffset(DateTimeOffset.UnixEpoch);
             return true;
         }
         catch (TimeZoneNotFoundException)
