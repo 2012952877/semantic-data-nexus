@@ -15,6 +15,7 @@ RUN dotnet publish src/ControlApi/ControlApi.csproj \
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS final
 WORKDIR /app
+RUN apk add --no-cache tzdata
 COPY --from=build /app/publish .
 
 ENV ASPNETCORE_HTTP_PORTS=8080

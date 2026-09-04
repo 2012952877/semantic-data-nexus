@@ -1,6 +1,7 @@
 using ControlApi.Persistence;
 using ControlApi.Semantic;
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 
@@ -71,6 +72,8 @@ public sealed class ApiExceptionHandler(
             SemanticBackendException semanticException =>
                 (502, semanticException.DiagnosticCode, "Semantic backend failure", semanticException.Message),
             BadHttpRequestException =>
+                (400, "invalid_request", "Invalid request", "The request could not be parsed."),
+            JsonException =>
                 (400, "invalid_request", "Invalid request", "The request could not be parsed."),
             _ =>
                 (500, "internal_error", "Internal server error", "An unexpected error occurred.")

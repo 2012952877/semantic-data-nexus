@@ -1,7 +1,7 @@
 # Control API
 
 Typed ASP.NET Core 8 control-plane/BFF boundary for identity, run metadata,
-cancellation, structured feedback, statistics, and a future semantic backend.
+cancellation, structured feedback, statistics, and the semantic backend.
 It deliberately does not contain LLM calls, semantic compilation, SQL generation,
 query execution, credentials, or result blobs.
 
@@ -41,6 +41,7 @@ All business endpoints are under `/api/v1`.
 | POST | `/runs` | contributor | Idempotently create run metadata and start backend work |
 | GET | `/runs?limit=50` | reader | List latest run projections |
 | GET | `/runs/{runId}` | reader | Read run metadata and latest stored status |
+| GET | `/runs/{runId}/detail` | reader | Read validated SQG, plan, result, manifest, lineage, and diagnostics |
 | GET | `/runs/{runId}/semantic-status` | reader | Refresh status through the typed backend client |
 | POST | `/runs/{runId}/cancel` | contributor | Idempotently request cancellation |
 | POST | `/runs/{runId}/feedback` | contributor | Submit structured, version-checked feedback |
@@ -66,6 +67,35 @@ reconciles by `RunId`, then repeats the idempotent backend start with the same
 `RunId` only when the backend definitively reports it missing. Only a
 definitive backend rejection marks the run failed.
 
+Create requests carry the complete semantic execution input:
+
+```json
+{
+  "clientRequestId": "request-001",
+  "workload": "synthetic-workload",
+  "question": "Compare synthetic regional revenue",
+  "evaluationClock": "2026-08-15T09:00:00+08:00",
+  "evaluationTimezone": "Asia/Shanghai",
+  "compilationMode": "regional_quarterly_profit",
+  "executionMode": "thread",
+  "outputMode": "normal"
+}
+```
+
+All eight members are required and unknown members are rejected. Idempotency
+metadata is limited to 64 ASCII identifier characters and must begin with a
+letter or digit. Questions are limited to 4,000 Unicode scalar values and may
+not contain Unicode control, format, surrogate, private-use, or unassigned
+characters. `evaluationClock` requires an explicit UTC offset,
+`evaluationTimezone` must be exact `UTC` or a canonical slash-separated IANA
+identifier. Validation is lexical and therefore independent of host timezone
+data; single-component aliases such as `CET`, `GMT`, and `Japan` are rejected.
+`compilationMode` is `regional_quarterly_profit` or
+`monthly_regional_comparison`, `executionMode` is `thread`, and `outputMode`
+is `normal` or `stream`. All fields participate in idempotency conflict
+detection and are forwarded unchanged with the stable run ID, principal, and
+trace ID.
+
 Start, reconciliation, status refresh, cancellation, and feedback mutation hold
 a per-`RunId` dispatch lease in M0 so metadata writes cannot make a completed
 backend start look pending and cancellation cannot lose to a late start.
@@ -82,7 +112,8 @@ projection details without replacing local `CancelRequested`; a terminal
 observation resolves it and also makes a racing delivery acknowledgment
 idempotent. Feedback uses `submissionId` for idempotency and
 `expectedRunVersion` for optimistic concurrency. Feedback is structured to
-avoid an unrestricted text/prompt field; `outcome` is required and must be
+avoid an unrestricted text/prompt field. `submissionId`, `rating`, `outcome`,
+`reasonCodes`, and `expectedRunVersion` are all required; `outcome` must be
 `Helpful`, `PartiallyHelpful`, or `NotHelpful`.
 
 ## Configuration
@@ -96,7 +127,18 @@ identity. Do not place tokens, connection strings, or credentials in files.
   have no transport-level retry. Control-plane reconciliation uses the stable
   `RunId` before an explicit repeat dispatch. Responses are rejected before
   persistence when IDs, states, timestamps, usage, diagnostics, stages, or
-  nodes violate the bounded contract.
+  nodes violate the bounded contract. Detail responses reject unknown JSON
+  properties, mismatched run IDs or questions, object/array result cells, more
+  than 100 columns or 1,000 inline rows, and oversized SQG, physical-plan,
+  lineage, manifest, or diagnostic collections. Integer cells are limited to
+  the interoperable range -9,007,199,254,740,991 through
+  9,007,199,254,740,991. Float cells are finite JSON numbers with absolute
+  values at or below 10^28; integral float values remain within the safe
+  integer range so every accepted scalar round-trips without changing JSON
+  token kind. Decimal cells are canonical fixed-point JSON
+  strings with absolute values at or below 10^28, at most 29 significant
+  digits, and scale 28 so precision and trailing scale survive the Python/.NET
+  boundary.
 - `ForwardedHeaders:KnownProxies`: explicit single-hop proxy IP allowlist.
   Unknown forwarders are ignored; header symmetry is required.
 - `OpenTelemetry:Otlp:Endpoint`: optional OTLP traces, metrics, and logs.
@@ -141,7 +183,8 @@ dotnet publish src\ControlApi\ControlApi.csproj --configuration Release --no-res
 docker build --file Dockerfile .
 ```
 
-The package-local CI workflow runs for changes under `services/control-api/**`.
+The package-local CI workflow runs for changes under `services/control-api/**`
+and the shared HTTP contract document.
 
 ## Microsoft references
 

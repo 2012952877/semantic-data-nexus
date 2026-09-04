@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
+using System.Text;
 using ControlApi.Authentication;
 using ControlApi.Contracts;
 using ControlApi.Domain;
@@ -24,21 +26,40 @@ public static class ControlApiEndpoints
 
         var runs = api.MapGroup("/runs");
         runs.MapPost("/", CreateRun)
+            .Produces<RunMetadata>(StatusCodes.Status200OK)
+            .Produces<RunMetadata>(StatusCodes.Status202Accepted)
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/", ListRuns)
+            .Produces<RunListResponse>()
             .RequireAuthorization(Policies.Reader);
         runs.MapGet("/{runId}", GetRun)
+            .Produces<RunMetadata>()
+            .RequireAuthorization(Policies.Reader);
+        runs.MapGet("/{runId}/detail", GetRunDetail)
+            .Produces<SemanticRunDetail>()
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound)
+            .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests)
+            .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
+            .Produces<ProblemDetails>(StatusCodes.Status504GatewayTimeout)
             .RequireAuthorization(Policies.Reader);
         runs.MapPost("/{runId}/cancel", CancelRun)
+            .Produces<RunMetadata>(StatusCodes.Status202Accepted)
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/{runId}/semantic-status", GetSemanticStatus)
+            .Produces<RunMetadata>()
             .RequireAuthorization(Policies.Reader);
         runs.MapPost("/{runId}/feedback", SubmitFeedback)
+            .Produces<RunFeedback>()
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/{runId}/feedback", GetFeedback)
+            .Produces<RunFeedback[]>()
             .RequireAuthorization(Policies.Reader);
 
         api.MapGet("/statistics/summary", GetStatistics)
+            .Produces<RunStatistics>()
             .RequireAuthorization(Policies.Admin);
 
         return endpoints;
@@ -161,7 +182,14 @@ public static class ControlApiEndpoints
         semanticBackend.StartAsync(
             new SemanticRunStart(
                 run.Id,
+                run.ClientRequestId,
                 run.Workload,
+                run.Question,
+                run.EvaluationClock,
+                run.EvaluationTimezone,
+                run.CompilationMode,
+                run.ExecutionMode,
+                run.OutputMode,
                 subject,
                 Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier),
             cancellationToken);
@@ -320,6 +348,34 @@ public static class ControlApiEndpoints
         return TypedResults.Accepted($"/api/v1/runs/{id}", responseRun);
     }
 
+    private static async Task<IResult> GetRunDetail(
+        string runId,
+        HttpContext context,
+        IRunRepository repository,
+        ISemanticBackendClient semanticBackend,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRunId(runId, context, out var id, out var problem))
+        {
+            return problem;
+        }
+
+        var run = await repository.GetAsync(id, cancellationToken);
+        if (run is null)
+        {
+            return NotFound(context);
+        }
+
+        var detail = await semanticBackend.GetDetailAsync(id, cancellationToken);
+        if (!string.Equals(detail.Question, run.Question, StringComparison.Ordinal))
+        {
+            throw SemanticRunDetailValidator.Invalid(
+                "The semantic backend returned a question that does not match the run.");
+        }
+
+        return TypedResults.Ok(detail);
+    }
+
     private static async Task<RunMetadata> ReconcileMissingCancellation(
         RunId id,
         MutationResult cancellation,
@@ -455,6 +511,7 @@ public static class ControlApiEndpoints
     {
         if (string.IsNullOrWhiteSpace(request.ClientRequestId) ||
             request.ClientRequestId.Length > 64 ||
+            !char.IsAsciiLetterOrDigit(request.ClientRequestId[0]) ||
             !request.ClientRequestId.All(character =>
                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
         {
@@ -466,6 +523,7 @@ public static class ControlApiEndpoints
 
         if (string.IsNullOrWhiteSpace(request.Workload) ||
             request.Workload.Length > 64 ||
+            !char.IsAsciiLetterOrDigit(request.Workload[0]) ||
             !request.Workload.All(character =>
                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
         {
@@ -475,7 +533,80 @@ public static class ControlApiEndpoints
                 "Workload must contain 1-64 ASCII letters, digits, '.', '-', or '_'.");
         }
 
+        if (string.IsNullOrWhiteSpace(request.Question) ||
+            request.Question.EnumerateRunes().Count() > 4_000 ||
+            HasDisallowedUnicodeCategory(request.Question))
+        {
+            return Invalid(
+                context,
+                "invalid_question",
+                "Question must contain between 1 and 4000 characters.");
+        }
+
+        if (request.EvaluationClock == default)
+        {
+            return Invalid(
+                context,
+                "invalid_evaluation_clock",
+                "EvaluationClock must be a timezone-aware timestamp.");
+        }
+
+        if (!IsIanaTimeZone(request.EvaluationTimezone))
+        {
+            return Invalid(
+                context,
+                "invalid_evaluation_timezone",
+                "EvaluationTimezone must be a valid IANA time zone name.");
+        }
+
+        if (!Enum.IsDefined(request.CompilationMode) ||
+            !Enum.IsDefined(request.ExecutionMode) ||
+            !Enum.IsDefined(request.OutputMode))
+        {
+            return Invalid(
+                context,
+                "invalid_run_options",
+                "CompilationMode, ExecutionMode, and OutputMode must use supported values.");
+        }
+
         return null;
+    }
+
+    private static bool HasDisallowedUnicodeCategory(string value) =>
+        value.EnumerateRunes().Any(rune =>
+            Rune.GetUnicodeCategory(rune) is
+                UnicodeCategory.Control or
+                UnicodeCategory.Format or
+                UnicodeCategory.Surrogate or
+                UnicodeCategory.PrivateUse or
+                UnicodeCategory.OtherNotAssigned);
+
+    private static bool IsIanaTimeZone(string? value)
+    {
+        if (value == "UTC")
+        {
+            return true;
+        }
+
+        if (string.IsNullOrEmpty(value) || value.Length > 100)
+        {
+            return false;
+        }
+
+        var segments = value.Split('/');
+        return segments.Length >= 2 && segments.All(IsCanonicalIanaSegment);
+    }
+
+    private static bool IsCanonicalIanaSegment(string segment)
+    {
+        if (segment.Length is < 1 or > 14 || !char.IsAsciiLetter(segment[0]))
+        {
+            return false;
+        }
+
+        return segment.All(character =>
+            char.IsAsciiLetterOrDigit(character) ||
+            character is '_' or '-' or '+');
     }
 
     private static ProblemHttpResult? Validate(SubmitFeedbackRequest request, HttpContext context)

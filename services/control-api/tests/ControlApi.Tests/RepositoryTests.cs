@@ -18,6 +18,29 @@ public sealed class RepositoryTests
     }
 
     [Fact]
+    public async Task CreateIdempotencyCoversQuestionAndRunOptions()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var request = new CreateRunRequest("create-idempotency", "synthetic-workload");
+        var first = await repository.CreateAsync(request, "synthetic-user", default);
+        var duplicate = await repository.CreateAsync(request, "synthetic-user", default);
+
+        Assert.True(first.Created);
+        Assert.False(duplicate.Created);
+        Assert.Equal(first.Run.Id, duplicate.Run.Id);
+        await Assert.ThrowsAsync<IdempotencyConflictException>(() =>
+            repository.CreateAsync(
+                request with { Question = "A different synthetic question" },
+                "synthetic-user",
+                default));
+        await Assert.ThrowsAsync<IdempotencyConflictException>(() =>
+            repository.CreateAsync(
+                request with { OutputMode = OutputMode.Stream },
+                "synthetic-user",
+                default));
+    }
+
+    [Fact]
     public async Task CancellationIsIdempotentAndRejectsTerminalRuns()
     {
         var repository = new InMemoryRunRepository(TimeProvider.System);
