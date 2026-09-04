@@ -17,7 +17,7 @@ def resolver_from_environment(
     adapter: CompilerRuntimeAdapter,
     environment: Mapping[str, str] | None = None,
 ) -> SourceResolver:
-    values = environment or os.environ
+    values = os.environ if environment is None else environment
     mode = values.get("SEMANTIC_NEXUS_RESOLVER", "fake").strip().lower()
     source = adapter.mapping.source
     if mode == "fake":

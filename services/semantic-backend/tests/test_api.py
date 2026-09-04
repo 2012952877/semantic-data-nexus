@@ -4,6 +4,7 @@ import asyncio
 
 from conftest import request_for, wait_for_terminal
 from httpx import ASGITransport, AsyncClient
+from query_runtime.coordinator import QueryCoordinator
 
 from semantic_backend.api import create_app
 from semantic_backend.models import RunState
@@ -63,3 +64,24 @@ async def test_cancellation_is_idempotent(service) -> None:
     assert first.state is RunState.CANCELLED
     assert second.state is RunState.CANCELLED
     assert second.finalized_at is not None
+
+
+async def test_cancellation_before_runtime_registration_cannot_publish(
+    service,
+    monkeypatch,
+) -> None:
+    entered = asyncio.Event()
+
+    async def delayed_run(self, plan, *, run_id=None):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(QueryCoordinator, "run", delayed_run)
+    request = request_for("run_00000000000000000000000000000007")
+    await service.start(request)
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    status = await service.cancel(request.run_id)
+    detail = await service.get_detail(request.run_id)
+    assert status.state is RunState.CANCELLED
+    assert detail.result is None
+    assert detail.manifest is None

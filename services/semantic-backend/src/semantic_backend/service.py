@@ -209,7 +209,10 @@ class OrchestrationService:
             task = record.task
             coordinator = record.coordinator
         if coordinator is not None:
-            await coordinator.cancel(run_id)
+            accepted = await coordinator.cancel(run_id)
+            if not accepted and task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         elif task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -267,6 +270,11 @@ class OrchestrationService:
                     compile_response,
                     run_id=request.run_id,
                     compilation_mode=request.compilation_mode,
+                    source_type=getattr(
+                        self.resolver,
+                        "source_type",
+                        self.adapter.mapping.source.source_type,
+                    ),
                 )
                 plan = CapabilityPlanner(
                     binder=adapted.binder,
@@ -302,6 +310,7 @@ class OrchestrationService:
                         outcome.summary.diagnostic_code or "RUNTIME_FAILED",
                         "The validated physical plan did not succeed.",
                     )
+                await self._ensure_active(record)
                 table = await store.read_page(
                     outcome.manifest.result,
                     0,

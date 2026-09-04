@@ -3,15 +3,29 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from math import isfinite
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 from semantic_api.models import CompilationMode
 
 _RUN_ID = re.compile(r"^run_[0-9a-f]{32}$")
 _SAFE_METADATA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+_MAX_DECIMAL = Decimal("1e28")
 
 
 def _camel(value: str) -> str:
@@ -97,7 +111,7 @@ class StartRunRequest(ApiModel):
     @field_validator("evaluation_timezone")
     @classmethod
     def iana_timezone(cls, value: str) -> str:
-        if not value.strip() or "/" not in value:
+        if not value.strip() or (value != "UTC" and "/" not in value):
             raise ValueError("evaluation_timezone must be an IANA time zone name")
         try:
             ZoneInfo(value)
@@ -107,8 +121,8 @@ class StartRunRequest(ApiModel):
 
 
 class TokenUsage(ApiModel):
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
+    input_tokens: StrictInt = Field(default=0, ge=0)
+    output_tokens: StrictInt = Field(default=0, ge=0)
 
 
 class DiagnosticSummary(ApiModel):
@@ -242,14 +256,14 @@ class ResultColumn(ApiModel):
     label: str = Field(min_length=1, max_length=256)
     data_type: ScalarType
     format: ColumnFormat
-    nullable: bool
+    nullable: StrictBool
 
 
 class ResultSet(ApiModel):
     columns: list[ResultColumn] = Field(max_length=100)
     rows: list[list[JsonScalar]] = Field(max_length=1_000)
-    row_count: int = Field(ge=0, le=2_147_483_647)
-    truncated: bool
+    row_count: StrictInt = Field(ge=0, le=2_147_483_647)
+    truncated: StrictBool
 
     @model_validator(mode="after")
     def validate_rows(self) -> ResultSet:
@@ -277,18 +291,39 @@ class ResultSet(ApiModel):
         if column.data_type is ScalarType.STRING:
             valid = isinstance(value, str) and len(value) <= 4_000
         elif column.data_type is ScalarType.INTEGER:
-            valid = isinstance(value, int) and not isinstance(value, bool)
+            valid = (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER
+            )
         elif column.data_type in {ScalarType.FLOAT, ScalarType.DECIMAL}:
-            valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                try:
+                    number = Decimal(str(value))
+                    valid = (
+                        (not isinstance(value, float) or isfinite(value))
+                        and number.is_finite()
+                        and abs(number) <= _MAX_DECIMAL
+                    )
+                except InvalidOperation:
+                    valid = False
         elif column.data_type is ScalarType.BOOLEAN:
             valid = isinstance(value, bool)
-        elif column.data_type is ScalarType.DATE and isinstance(value, str):
+        elif (
+            column.data_type is ScalarType.DATE
+            and isinstance(value, str)
+            and _DATE.fullmatch(value)
+        ):
             try:
                 date.fromisoformat(value)
                 valid = len(value) == 10
             except ValueError:
                 valid = False
-        elif column.data_type is ScalarType.TIMESTAMP and isinstance(value, str):
+        elif (
+            column.data_type is ScalarType.TIMESTAMP
+            and isinstance(value, str)
+            and _RFC3339.fullmatch(value)
+        ):
             try:
                 parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
                 valid = parsed.tzinfo is not None and parsed.utcoffset() is not None
@@ -304,8 +339,8 @@ class CommittedManifest(ApiModel):
     node_id: str = Field(min_length=1, max_length=128)
     storage: ResultStorage
     uri: str = Field(min_length=1, max_length=2_048)
-    row_count: int = Field(ge=0)
-    byte_count: int = Field(ge=0)
+    row_count: StrictInt = Field(ge=0)
+    byte_count: StrictInt = Field(ge=0)
     checksum: str = Field(min_length=1, max_length=256)
     committed_at: datetime
 
@@ -339,7 +374,7 @@ class LineageDetail(ApiModel):
 
 
 class DetailDiagnostic(ApiModel):
-    sequence: int = Field(ge=0)
+    sequence: StrictInt = Field(ge=0)
     run_id: str
     scope: DiagnosticScope
     scope_id: str = Field(min_length=1, max_length=128)

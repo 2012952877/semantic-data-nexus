@@ -227,6 +227,8 @@ class DatabricksFragmentTranslator:
 
 
 class DatabricksSourceAdapter:
+    source_type = "azure_databricks_statement_execution"
+
     def __init__(
         self,
         resolver: ConnectorResolver,

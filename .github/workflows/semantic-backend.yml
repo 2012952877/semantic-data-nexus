@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "data/synthetic/**"
+      - "evals/**"
+      - "connectors/databricks/**"
       - "services/semantic-api/**"
       - "services/query-runtime/**"
       - "services/semantic-backend/**"
@@ -13,6 +15,8 @@ on:
       - main
     paths:
       - "data/synthetic/**"
+      - "evals/**"
+      - "connectors/databricks/**"
       - "services/semantic-api/**"
       - "services/query-runtime/**"
       - "services/semantic-backend/**"

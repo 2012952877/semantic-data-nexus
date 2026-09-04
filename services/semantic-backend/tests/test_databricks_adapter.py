@@ -193,10 +193,11 @@ async def test_live_adapter_converts_typed_result_to_arrow() -> None:
     assert table.to_pylist() == [{"region": "北辰区", "profit": 2334.0}]
 
 
-def test_resolver_factory_defaults_fake_and_live_fails_closed() -> None:
+def test_resolver_factory_defaults_fake_and_live_fails_closed(monkeypatch) -> None:
     from semantic_backend.adapter import CompilerRuntimeAdapter
 
     adapter = CompilerRuntimeAdapter()
+    monkeypatch.setenv("SEMANTIC_NEXUS_RESOLVER", "databricks")
     assert isinstance(resolver_from_environment(adapter, {}), FakeResolver)
     with pytest.raises(ResolverConfigurationError, match="missing required"):
         resolver_from_environment(

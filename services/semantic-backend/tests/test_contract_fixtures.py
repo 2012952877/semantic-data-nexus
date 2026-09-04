@@ -31,7 +31,22 @@ def test_bff_start_fixture_round_trips_exactly() -> None:
     }
 
 
-@pytest.mark.parametrize("field", ["runId", "question", "executionMode", "outputMode"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "runId",
+        "clientRequestId",
+        "workload",
+        "question",
+        "evaluationClock",
+        "evaluationTimezone",
+        "compilationMode",
+        "executionMode",
+        "outputMode",
+        "requestedBy",
+        "traceId",
+    ],
+)
 def test_bff_start_fixture_rejects_missing_required_fields(field: str) -> None:
     document = json.loads((FIXTURES / "bff-start-request.json").read_text(encoding="utf-8"))
     document.pop(field)
@@ -47,10 +62,114 @@ def test_bff_start_fixture_rejects_unknown_and_oversized_question() -> None:
         StartRunRequest.model_validate({**document, "question": "q" * 4_001})
 
 
+def test_bff_start_accepts_utc_but_rejects_windows_timezone_id() -> None:
+    document = json.loads((FIXTURES / "bff-start-request.json").read_text(encoding="utf-8"))
+    StartRunRequest.model_validate({**document, "evaluationTimezone": "UTC"})
+    with pytest.raises(ValidationError):
+        StartRunRequest.model_validate({**document, "evaluationTimezone": "Pacific Standard Time"})
+
+
 def test_backend_detail_fixture_round_trips_exactly() -> None:
     document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
     detail = RunDetail.model_validate(document)
     assert detail.model_dump(mode="json", by_alias=True) == document
+
+
+@pytest.mark.parametrize(
+    ("data_type", "value"),
+    [
+        ("integer", 9_007_199_254_740_992),
+        ("float", 1.0000001e28),
+        ("timestamp", "2026-08-15T01:00:00"),
+        ("timestamp", "2026-08-15X01:00:00Z"),
+        ("date", "2026-W35-5"),
+        ("integer", True),
+    ],
+)
+def test_backend_detail_fixture_rejects_out_of_domain_scalars(
+    data_type: str,
+    value: object,
+) -> None:
+    document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
+    document["result"]["columns"][0]["dataType"] = data_type
+    document["result"]["rows"][0][0] = value
+    with pytest.raises(ValidationError):
+        RunDetail.model_validate(document)
+
+
+@pytest.mark.parametrize(
+    ("container", "field"),
+    [
+        ("result", "rowCount"),
+        ("result", "truncated"),
+        ("manifest", "rowCount"),
+        ("manifest", "byteCount"),
+    ],
+)
+def test_backend_detail_rejects_boolean_counts(
+    container: str,
+    field: str,
+) -> None:
+    document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
+    document[container][field] = True
+    with pytest.raises(ValidationError):
+        RunDetail.model_validate(document)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "kind",
+        "dataType",
+        "format",
+        "nullable",
+        "truncated",
+        "storage",
+        "relation",
+        "resultRowCount",
+        "manifestRowCount",
+        "byteCount",
+    ],
+)
+def test_backend_detail_rejects_missing_governed_fields(field: str) -> None:
+    document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
+    targets = {
+        "kind": (document["physicalNodes"][0], "kind"),
+        "dataType": (document["result"]["columns"][0], "dataType"),
+        "format": (document["result"]["columns"][0], "format"),
+        "nullable": (document["result"]["columns"][0], "nullable"),
+        "truncated": (document["result"], "truncated"),
+        "storage": (document["manifest"], "storage"),
+        "relation": (document["lineage"]["edges"][0], "relation"),
+        "resultRowCount": (document["result"], "rowCount"),
+        "manifestRowCount": (document["manifest"], "rowCount"),
+        "byteCount": (document["manifest"], "byteCount"),
+    }
+    target, key = targets[field]
+    del target[key]
+    with pytest.raises(ValidationError):
+        RunDetail.model_validate(document)
+
+
+@pytest.mark.parametrize("field", ["scope", "severity", "sequence"])
+def test_backend_detail_rejects_missing_diagnostic_governance(field: str) -> None:
+    document = json.loads((FIXTURES / "backend-run-detail.json").read_text(encoding="utf-8"))
+    diagnostic = {
+        "sequence": 0,
+        "runId": document["runId"],
+        "scope": "run",
+        "scopeId": document["runId"],
+        "code": "SYNTHETIC_INFO",
+        "title": "Synthetic diagnostic",
+        "message": "No action is required.",
+        "recovery": "Continue with the synthetic workflow.",
+        "severity": "info",
+        "occurredAt": "2026-08-15T01:00:01Z",
+    }
+    del diagnostic[field]
+    document["diagnostics"] = [diagnostic]
+    with pytest.raises(ValidationError):
+        RunDetail.model_validate(document)
 
 
 async def test_actual_backend_detail_uses_cross_language_contract(service) -> None:

@@ -136,6 +136,7 @@ class CompilerRuntimeAdapter:
         *,
         run_id: str,
         compilation_mode: CompilationMode,
+        source_type: str | None = None,
     ) -> AdaptedExecution:
         if response.status is not CompileStatus.SUCCEEDED or response.normalized_sqg is None:
             raise AdapterFailure(
@@ -145,7 +146,7 @@ class CompilerRuntimeAdapter:
 
         source = BoundSource(
             alias=self.mapping.source.alias,
-            source_type=self.mapping.source.source_type,
+            source_type=source_type or self.mapping.source.source_type,
             object_name=self.mapping.source.object_name,
         )
         referenced_concepts = {
