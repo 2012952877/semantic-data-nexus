@@ -145,27 +145,66 @@ const isResult = (value: unknown): value is ResultSet =>
     ? value.rowCount > value.rows.length
     : value.rowCount === value.rows.length)
 
+const hasOwn = (value: Record<string, unknown>, key: string) =>
+  Object.prototype.hasOwnProperty.call(value, key)
+
+const isGregorianDate = (value: unknown): value is string => {
+  if (!isString(value) || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  if (year === undefined || month === undefined || day === undefined
+    || year < 1 || month < 1 || month > 12 || day < 1) return false
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ]
+  return day <= (daysInMonth[month - 1] ?? 0)
+}
+
 const inferLegacyColumnDataType = (
   column: Record<string, unknown>,
   rows: unknown[],
-): ResultColumn['dataType'] => {
-  if (column.format === 'date') return 'date'
-  if (column.format === 'timestamp') return 'timestamp'
-  const values = isString(column.key)
-    ? rows.flatMap((row) =>
-        isRecord(row) && row[column.key as string] !== null && row[column.key as string] !== undefined
-          ? [row[column.key as string]]
-          : [])
-    : []
-  if (values.length > 0 && values.every((value) => typeof value === 'boolean')) return 'boolean'
-  if (values.length > 0 && values.every((value) => typeof value === 'number')) {
-    return values.every((value) => Number.isSafeInteger(value)) ? 'integer' : 'float'
+): ResultColumn['dataType'] | undefined => {
+  if (!isString(column.key) || !isEnumValue(column.format, columnFormats)) return undefined
+  const values: unknown[] = []
+  for (const row of rows) {
+    if (!isRecord(row) || !hasOwn(row, column.key)) return undefined
+    const value = row[column.key]
+    if (value !== null) values.push(value)
   }
-  if (values.length > 0 && values.every(isString)) return 'string'
+  if (values.length === 0) return undefined
+  if (column.format === 'text') {
+    if (values.every(isString)) return 'string'
+    if (values.every((value) => typeof value === 'boolean')) return 'boolean'
+    return undefined
+  }
   if (column.format === 'currency'
     || column.format === 'percent'
-    || column.format === 'number') return 'float'
-  return 'string'
+    || column.format === 'number') {
+    if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+      return undefined
+    }
+    if (values.every(Number.isSafeInteger)) return 'integer'
+    return values.every((value) => !Number.isInteger(value) || Number.isSafeInteger(value))
+      ? 'float'
+      : undefined
+  }
+  if (column.format === 'date') {
+    return values.every(isGregorianDate) ? 'date' : undefined
+  }
+  return values.every((value) => isString(value) && isDateString(value))
+    ? 'timestamp'
+    : undefined
 }
 
 const migrateLegacyResultColumns = (value: unknown) => {
@@ -177,16 +216,21 @@ const migrateLegacyResultColumns = (value: unknown) => {
     return { value, migrated: false }
   }
   const rows = result.rows
-  let migrated = false
+  if (result.columns.length === 0) return { value, migrated: false }
+  if (!result.columns.every((column) =>
+    isRecord(column) && !hasOwn(column, 'dataType'))) {
+    return { value, migrated: false }
+  }
   const columns = result.columns.map((column) => {
-    if (!isRecord(column) || column.dataType !== undefined) return column
-    migrated = true
+    if (!isRecord(column)) return column
+    const dataType = inferLegacyColumnDataType(column, rows)
+    if (dataType === undefined) return column
     return {
       ...column,
-      dataType: inferLegacyColumnDataType(column, rows),
+      dataType,
     }
   })
-  return migrated
+  return columns.every((column) => isRecord(column) && hasOwn(column, 'dataType'))
     ? {
         value: {
           ...value,

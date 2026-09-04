@@ -103,7 +103,7 @@ describe('run history storage', () => {
 
   it('migrates and rewrites origin/main-shaped per-run v1 columns', async () => {
     const legacy = withoutColumnDataTypes(
-      createSeedRun('run-syn-legacy-record', '旧逐运行记录', 'empty', 10),
+      createSeedRun('run-syn-legacy-record', '旧逐运行记录', 'succeeded', 10),
     )
     const key = runStorageKey(legacy.id)
     window.localStorage.setItem(key, JSON.stringify({
@@ -116,7 +116,7 @@ describe('run history storage', () => {
 
     expect(migrated?.result?.columns.map((column) => column.dataType)).toEqual([
       'string',
-      'float',
+      'integer',
       'float',
       'float',
     ])
@@ -129,6 +129,54 @@ describe('run history storage', () => {
     })
     expect(window.localStorage.getItem(RUN_STORAGE_QUARANTINE_KEY)).toBeNull()
   })
+
+  it.each([
+    ['aggregate', 'mixed-presence'],
+    ['aggregate', 'mixed-cells'],
+    ['aggregate', 'ambiguous-empty'],
+    ['per-run', 'mixed-presence'],
+    ['per-run', 'mixed-cells'],
+    ['per-run', 'ambiguous-empty'],
+  ] as const)(
+    'rejects malformed legacy %s v1 records with %s',
+    async (storageKind, corruption) => {
+      const current = createSeedRun(
+        `run-syn-invalid-${storageKind}-${corruption}`,
+        '损坏旧记录',
+        corruption === 'ambiguous-empty' ? 'empty' : 'succeeded',
+        10,
+      )
+      const legacy = withoutColumnDataTypes(current)
+      if (corruption === 'mixed-presence') {
+        const firstColumn = legacy.result?.columns[0]
+        const currentFirstColumn = current.result?.columns[0]
+        if (!firstColumn || !currentFirstColumn) throw new Error('Column fixture is missing')
+        firstColumn.dataType = currentFirstColumn.dataType
+      } else if (corruption === 'mixed-cells') {
+        const secondRow = legacy.result?.rows[1]
+        if (!secondRow) throw new Error('Row fixture is missing')
+        secondRow.region = true
+      }
+
+      const key = runStorageKey(legacy.id)
+      if (storageKind === 'aggregate') {
+        store([legacy])
+      } else {
+        window.localStorage.setItem(key, JSON.stringify({
+          version: RUN_STORAGE_VERSION,
+          run: legacy,
+        }))
+      }
+
+      const client = new MockSemanticNexusClient(0, false)
+
+      await expect(client.listRuns()).resolves.toEqual([])
+      expect(window.localStorage.getItem(RUN_STORAGE_QUARANTINE_KEY)).not.toBeNull()
+      if (storageKind === 'per-run') {
+        await vi.waitFor(() => expect(window.localStorage.getItem(key)).toBeNull())
+      }
+    },
+  )
 
   it('keeps valid runs in memory when repairing storage exceeds quota', async () => {
     const valid = createSeedRun('run-syn-1012', '可恢复运行', 'succeeded', 10)
