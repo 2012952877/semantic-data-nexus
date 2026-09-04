@@ -5,7 +5,10 @@ const isLoopback = (url: URL) =>
   || url.hostname === '127.0.0.1'
   || url.hostname === '[::1]'
 
-export const validateProxyTarget = (value: string) => {
+export const validateProxyTarget = (
+  value: string,
+  developmentIdentityConfigured = false,
+) => {
   const url = new URL(value)
   if (!['http:', 'https:'].includes(url.protocol)
     || url.username
@@ -19,6 +22,11 @@ export const validateProxyTarget = (value: string) => {
   if (url.protocol === 'http:' && !isLoopback(url)) {
     throw new Error(
       'NEXUS_PROXY_TARGET requires HTTPS unless the target is localhost, 127.0.0.1, or [::1].',
+    )
+  }
+  if (!isLoopback(url) && developmentIdentityConfigured) {
+    throw new Error(
+      'VITE_NEXUS_DEV_SUBJECT and VITE_NEXUS_DEV_ROLES require a loopback NEXUS_PROXY_TARGET.',
     )
   }
   return value

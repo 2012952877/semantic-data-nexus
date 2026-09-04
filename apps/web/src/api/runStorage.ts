@@ -150,8 +150,32 @@ const isResult = (value: unknown): value is ResultSet =>
 const hasOwn = (value: Record<string, unknown>, key: string) =>
   Object.prototype.hasOwnProperty.call(value, key)
 
+const hasOnlyKeys = (
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+) => Object.keys(value).every((key) => allowedKeys.includes(key))
+
+const isLegacyStage = (value: unknown) =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['key', 'label', 'description', 'state', 'durationMs'])
+  && isEnumValue(value.key, stageKeys)
+  && isString(value.label)
+  && isString(value.description)
+  && isEnumValue(value.state, stageStates)
+  && (value.durationMs === undefined || isNumber(value.durationMs))
+
 const isLegacySqg = (value: unknown) =>
   isRecord(value)
+  && hasOnlyKeys(value, [
+    'version',
+    'intent',
+    'ontology',
+    'resolvedMembers',
+    'metrics',
+    'dimensions',
+    'filters',
+    'policyChecks',
+  ])
   && value.version === '0.1'
   && isString(value.intent)
   && isString(value.ontology)
@@ -161,6 +185,7 @@ const isLegacySqg = (value: unknown) =>
   && Array.isArray(value.filters)
   && value.filters.every((filter) =>
     isRecord(filter)
+    && hasOnlyKeys(filter, ['field', 'operator', 'value'])
     && isString(filter.field)
     && isString(filter.operator)
     && isString(filter.value))
@@ -168,6 +193,7 @@ const isLegacySqg = (value: unknown) =>
 
 const isLegacyPlanNode = (value: unknown) =>
   isRecord(value)
+  && hasOnlyKeys(value, ['id', 'kind', 'label', 'plainLanguage', 'inputs', 'outputFields'])
   && isString(value.id)
   && isEnumValue(value.kind, legacyNodeKinds)
   && isString(value.label)
@@ -177,6 +203,7 @@ const isLegacyPlanNode = (value: unknown) =>
 
 const isLegacyResultColumn = (value: unknown) =>
   isRecord(value)
+  && hasOnlyKeys(value, ['key', 'label', 'format'])
   && isString(value.key)
   && isString(value.label)
   && isEnumValue(value.format, legacyColumnFormats)
@@ -188,6 +215,7 @@ const isLegacyResultRow = (value: unknown) =>
 
 const isLegacyResult = (value: unknown) =>
   isRecord(value)
+  && hasOnlyKeys(value, ['columns', 'rows', 'rowCount', 'coverage'])
   && Array.isArray(value.columns)
   && value.columns.every(isLegacyResultColumn)
   && Array.isArray(value.rows)
@@ -197,8 +225,69 @@ const isLegacyResult = (value: unknown) =>
   && isString(value.coverage)
   && !hasOwn(value, 'truncated')
 
+const isLegacyLineageSource = (value: unknown) =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['id', 'name', 'kind', 'freshness', 'contribution'])
+  && isString(value.id)
+  && isString(value.name)
+  && isString(value.kind)
+  && isString(value.freshness)
+  && isString(value.contribution)
+
+const isLegacyLineage = (value: unknown) =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['sources', 'transformations'])
+  && Array.isArray(value.sources)
+  && value.sources.every(isLegacyLineageSource)
+  && isStringArray(value.transformations)
+
+const isLegacyDiagnostic = (value: unknown) =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['code', 'title', 'message', 'recovery', 'severity'])
+  && isString(value.code)
+  && isString(value.title)
+  && isString(value.message)
+  && isString(value.recovery)
+  && isEnumValue(value.severity, diagnosticSeverities)
+
+const isLegacyManifest = (value: unknown) =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['uri', 'format', 'checksum', 'committedAt'])
+  && isString(value.uri)
+  && isString(value.format)
+  && isString(value.checksum)
+  && isDateString(value.committedAt)
+
+const isLegacyExecutionLease = (value: unknown) =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['ownerId', 'generation', 'heartbeatAt'])
+  && isString(value.ownerId)
+  && isString(value.generation)
+  && isDateString(value.heartbeatAt)
+
 const isLegacyRun = (value: unknown) =>
   isRecord(value)
+  && hasOnlyKeys(value, [
+    'id',
+    'question',
+    'state',
+    'createdAt',
+    'completedAt',
+    'elapsedMs',
+    'model',
+    'executionMode',
+    'outputMode',
+    'tokens',
+    'stages',
+    'sqg',
+    'nodes',
+    'result',
+    'lineage',
+    'diagnostics',
+    'manifest',
+    'scenario',
+    'executionLease',
+  ])
   && isString(value.id)
   && isString(value.question)
   && isEnumValue(value.state, runStates)
@@ -212,25 +301,22 @@ const isLegacyRun = (value: unknown) =>
   && isString(value.executionMode)
   && isString(value.outputMode)
   && isRecord(value.tokens)
+  && hasOnlyKeys(value.tokens, ['input', 'output'])
   && isNumber(value.tokens.input)
   && isNumber(value.tokens.output)
   && Array.isArray(value.stages)
   && value.stages.length === stageKeys.length
-  && value.stages.every(isStage)
+  && value.stages.every(isLegacyStage)
   && isLegacySqg(value.sqg)
   && Array.isArray(value.nodes)
   && value.nodes.every(isLegacyPlanNode)
   && (value.result === undefined || isLegacyResult(value.result))
-  && isLineage(value.lineage)
+  && isLegacyLineage(value.lineage)
   && Array.isArray(value.diagnostics)
-  && value.diagnostics.every(isDiagnostic)
-  && (value.manifest === undefined || isManifest(value.manifest))
+  && value.diagnostics.every(isLegacyDiagnostic)
+  && (value.manifest === undefined || isLegacyManifest(value.manifest))
   && isEnumValue(value.scenario, scenarios)
-  && (value.executionLease === undefined
-    || (isRecord(value.executionLease)
-      && isString(value.executionLease.ownerId)
-      && isString(value.executionLease.generation)
-      && isDateString(value.executionLease.heartbeatAt)))
+  && (value.executionLease === undefined || isLegacyExecutionLease(value.executionLease))
 
 const inferLegacyColumnDataType = (
   column: Record<string, unknown>,

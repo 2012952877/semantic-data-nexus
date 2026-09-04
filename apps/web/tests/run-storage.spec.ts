@@ -219,7 +219,9 @@ describe('run history storage', () => {
     ['aggregate', 'sqg-version'],
     ['aggregate', 'source-node'],
     ['aggregate', 'truncated-row-count'],
-    ['aggregate', 'current-only-fields'],
+    ['aggregate', 'current-workload'],
+    ['aggregate', 'current-ontology'],
+    ['aggregate', 'current-compilation-mode'],
     ['aggregate', 'current-truncated'],
     ['per-run', 'mixed-presence'],
     ['per-run', 'mixed-cells'],
@@ -230,7 +232,9 @@ describe('run history storage', () => {
     ['per-run', 'sqg-version'],
     ['per-run', 'source-node'],
     ['per-run', 'truncated-row-count'],
-    ['per-run', 'current-only-fields'],
+    ['per-run', 'current-workload'],
+    ['per-run', 'current-ontology'],
+    ['per-run', 'current-compilation-mode'],
     ['per-run', 'current-truncated'],
   ] as const)(
     'rejects malformed legacy %s v1 records with %s',
@@ -267,9 +271,11 @@ describe('run history storage', () => {
       } else if (corruption === 'truncated-row-count') {
         legacy.result.rowCount += 1
         legacy.result.truncated = true
-      } else if (corruption === 'current-only-fields') {
+      } else if (corruption === 'current-workload') {
         legacy.workload = 'regional-sales'
+      } else if (corruption === 'current-ontology') {
         legacy.ontology = 'regional-sales@1.4'
+      } else if (corruption === 'current-compilation-mode') {
         legacy.compilationMode = 'mock-controlled'
       } else if (corruption === 'current-truncated') {
         legacy.result.truncated = false

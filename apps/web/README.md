@@ -25,7 +25,7 @@ pnpm dev
 | `VITE_NEXUS_BASE_URL` | HTTP 模式必填；浏览器中必须与 Web 页面同源，可设置为 `/` |
 | `VITE_NEXUS_DEV_SUBJECT` | 可选的本地开发身份，只允许发往 loopback BFF 的 `X-Dev-Subject` |
 | `VITE_NEXUS_DEV_ROLES` | 可选的本地开发角色，只允许发往 loopback BFF 的 `X-Dev-Roles` |
-| `NEXUS_PROXY_TARGET` | 可选的 Vite 本地开发反向代理目标；明文 HTTP 仅允许 `localhost`、`127.0.0.1`、`[::1]`，其他主机必须 HTTPS 且代理会剥离本地开发身份头 |
+| `NEXUS_PROXY_TARGET` | 可选的 Vite 本地开发反向代理目标；明文 HTTP 仅允许 `localhost`、`127.0.0.1`、`[::1]`，其他主机必须 HTTPS；配置本地开发身份时目标也必须是 loopback，代理还会剥离发往非 loopback 目标的意外开发身份头 |
 
 `VITE_*` 值会进入浏览器产物，绝不能放入密钥或令牌。生产宿主应在应用模块加载前提供 `window.semanticNexusTokenProvider(AbortSignal)`；令牌只注入当前请求，不从 Vite 环境变量读取或持久化。测试和其他嵌入方式也可把同一 provider 直接传给 `createSemanticNexusClient` / `HttpSemanticNexusClient`。客户端拒绝把本地开发身份头发往非 loopback 地址，并拒绝包含换行或疑似密钥内容的开发值。
 
