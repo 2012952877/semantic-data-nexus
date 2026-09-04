@@ -180,6 +180,7 @@ const isLegacyResultColumn = (value: unknown) =>
   && isString(value.key)
   && isString(value.label)
   && isEnumValue(value.format, legacyColumnFormats)
+  && !hasOwn(value, 'dataType')
 
 const isLegacyResultRow = (value: unknown) =>
   isRecord(value)
@@ -194,6 +195,7 @@ const isLegacyResult = (value: unknown) =>
   && isNumber(value.rowCount)
   && value.rowCount === value.rows.length
   && isString(value.coverage)
+  && !hasOwn(value, 'truncated')
 
 const isLegacyRun = (value: unknown) =>
   isRecord(value)
@@ -203,6 +205,9 @@ const isLegacyRun = (value: unknown) =>
   && isDateString(value.createdAt)
   && isOptionalString(value.completedAt)
   && isNumber(value.elapsedMs)
+  && !hasOwn(value, 'workload')
+  && !hasOwn(value, 'ontology')
+  && !hasOwn(value, 'compilationMode')
   && isString(value.model)
   && isString(value.executionMode)
   && isString(value.outputMode)

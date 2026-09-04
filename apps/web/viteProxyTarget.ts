@@ -1,3 +1,5 @@
+import type { Plugin } from 'vite'
+
 const isLoopback = (url: URL) =>
   url.hostname === 'localhost'
   || url.hostname === '127.0.0.1'
@@ -24,9 +26,20 @@ export const validateProxyTarget = (value: string) => {
 
 export const stripRemoteDevelopmentIdentityHeaders = (
   target: string,
-  request: { removeHeader: (name: string) => void },
+  headers: Record<string, string | string[] | undefined>,
 ) => {
   if (isLoopback(new URL(target))) return
-  request.removeHeader('X-Dev-Subject')
-  request.removeHeader('X-Dev-Roles')
+  delete headers['x-dev-subject']
+  delete headers['x-dev-roles']
 }
+
+export const developmentIdentityProxyGuard = (target: string): Plugin => ({
+  name: 'semantic-nexus-development-identity-proxy-guard',
+  configureServer(server) {
+    if (isLoopback(new URL(target))) return
+    server.middlewares.use('/api', (request, _response, next) => {
+      stripRemoteDevelopmentIdentityHeaders(target, request.headers)
+      next()
+    })
+  },
+})

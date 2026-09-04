@@ -27,13 +27,92 @@ const store = (runs: unknown[], version = RUN_STORAGE_VERSION) => {
   window.localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify({ version, runs }))
 }
 
-const withoutColumnDataTypes = (run: Run) => {
-  const legacy = JSON.parse(JSON.stringify(run)) as Run
-  legacy.result?.columns.forEach((column) => {
-    delete (column as Partial<typeof column>).dataType
-  })
-  return legacy
+interface LegacyMainRunFixture extends Record<string, unknown> {
+  id: string
+  question: string
+  workload?: string
+  ontology?: string
+  compilationMode?: string
+  sqg: { version: string }
+  nodes: Array<{ kind: string }>
+  result: {
+    columns: Array<{ key: string; label: string; format: string; dataType?: string }>
+    rows: Array<Record<string, unknown>>
+    rowCount: number
+    coverage: string
+    truncated?: boolean
+  }
 }
+
+const originMainV1Run = Object.freeze({
+  id: 'run-syn-origin-main-v1',
+  question: '旧版区域销售记录',
+  state: 'succeeded',
+  createdAt: '2026-08-30T03:00:00.000Z',
+  completedAt: '2026-08-30T03:00:00.010Z',
+  elapsedMs: 10,
+  model: 'Nexus Planner Small',
+  executionMode: '受控执行',
+  outputMode: '表格',
+  tokens: { input: 386, output: 214 },
+  stages: [
+    { key: 'initialize', label: '初始化', description: '确认范围', state: 'succeeded' },
+    { key: 'compile', label: '编译', description: '生成 SQG', state: 'succeeded' },
+    { key: 'optimize', label: '优化', description: '应用策略', state: 'succeeded' },
+    { key: 'execute', label: '执行', description: '运行计划', state: 'succeeded' },
+    { key: 'generate', label: '生成', description: '提交结果', state: 'succeeded' },
+  ],
+  sqg: {
+    version: '0.1',
+    intent: '比较区域销售表现',
+    ontology: 'regional-sales@1.4',
+    resolvedMembers: ['sales.region', 'sales.net_revenue'],
+    metrics: ['net_revenue', 'target_attainment', 'year_over_year'],
+    dimensions: ['sales.region'],
+    filters: [{ field: 'targets.quarter', operator: 'equals', value: '2025-Q2' }],
+    policyChecks: ['governed'],
+  },
+  nodes: [{
+    id: 'node-aggregate',
+    kind: 'AGGREGATE',
+    label: '按区域汇总',
+    plainLanguage: '把每个区域的订单收入分别加总。',
+    inputs: ['sales'],
+    outputFields: ['region', 'revenue', 'attainment', 'year_over_year'],
+  }],
+  result: {
+    columns: [
+      { key: 'region', label: '区域', format: 'text' },
+      { key: 'revenue', label: '净销售额', format: 'currency' },
+      { key: 'attainment', label: '目标达成率', format: 'percent' },
+      { key: 'year_over_year', label: '同比', format: 'percent' },
+    ],
+    rows: [
+      { region: '华东', revenue: 4_286_000, attainment: 1.08, year_over_year: 0.124 },
+      { region: '华南', revenue: 3_512_000, attainment: 0.96, year_over_year: 0.071 },
+    ],
+    rowCount: 2,
+    coverage: '2025-Q2，覆盖两个销售区域。',
+  },
+  lineage: { sources: [], transformations: ['区域汇总'] },
+  diagnostics: [],
+  manifest: {
+    uri: 'mock://result-store/run-syn-origin-main-v1/manifest.json',
+    format: 'Arrow + JSON manifest',
+    checksum: 'sha256:origin-main-v1',
+    committedAt: '2026-08-30T03:00:00.010Z',
+  },
+  scenario: 'success',
+})
+
+const createOriginMainV1Run = (
+  id: string,
+  question: string,
+): LegacyMainRunFixture => ({
+  ...structuredClone(originMainV1Run),
+  id,
+  question,
+})
 
 describe('run history storage', () => {
   it('uses collision-resistant IDs and merges stale cross-tab clients', async () => {
@@ -77,9 +156,11 @@ describe('run history storage', () => {
   })
 
   it('migrates origin/main-shaped aggregate v1 columns before validation', async () => {
-    const legacy = withoutColumnDataTypes(
-      createSeedRun('run-syn-legacy-aggregate', '旧聚合记录', 'succeeded', 10),
-    )
+    const legacy = createOriginMainV1Run('run-syn-legacy-aggregate', '旧聚合记录')
+    expect(legacy).not.toHaveProperty('workload')
+    expect(legacy).not.toHaveProperty('ontology')
+    expect(legacy).not.toHaveProperty('compilationMode')
+    expect(legacy.result).not.toHaveProperty('truncated')
     store([legacy])
 
     const client = new MockSemanticNexusClient(0, false)
@@ -102,9 +183,7 @@ describe('run history storage', () => {
   })
 
   it('migrates and rewrites origin/main-shaped per-run v1 columns', async () => {
-    const legacy = withoutColumnDataTypes(
-      createSeedRun('run-syn-legacy-record', '旧逐运行记录', 'succeeded', 10),
-    )
+    const legacy = createOriginMainV1Run('run-syn-legacy-record', '旧逐运行记录')
     const key = runStorageKey(legacy.id)
     window.localStorage.setItem(key, JSON.stringify({
       version: RUN_STORAGE_VERSION,
@@ -140,6 +219,8 @@ describe('run history storage', () => {
     ['aggregate', 'sqg-version'],
     ['aggregate', 'source-node'],
     ['aggregate', 'truncated-row-count'],
+    ['aggregate', 'current-only-fields'],
+    ['aggregate', 'current-truncated'],
     ['per-run', 'mixed-presence'],
     ['per-run', 'mixed-cells'],
     ['per-run', 'ambiguous-empty'],
@@ -149,31 +230,32 @@ describe('run history storage', () => {
     ['per-run', 'sqg-version'],
     ['per-run', 'source-node'],
     ['per-run', 'truncated-row-count'],
+    ['per-run', 'current-only-fields'],
+    ['per-run', 'current-truncated'],
   ] as const)(
     'rejects malformed legacy %s v1 records with %s',
     async (storageKind, corruption) => {
-      const current = createSeedRun(
+      const legacy = createOriginMainV1Run(
         `run-syn-invalid-${storageKind}-${corruption}`,
         '损坏旧记录',
-        corruption === 'ambiguous-empty' ? 'empty' : 'succeeded',
-        10,
       )
-      const legacy = withoutColumnDataTypes(current)
       if (corruption === 'mixed-presence') {
-        const firstColumn = legacy.result?.columns[0]
-        const currentFirstColumn = current.result?.columns[0]
-        if (!firstColumn || !currentFirstColumn) throw new Error('Column fixture is missing')
-        firstColumn.dataType = currentFirstColumn.dataType
+        const firstColumn = legacy.result.columns[0]
+        if (!firstColumn) throw new Error('Column fixture is missing')
+        firstColumn.dataType = 'string'
       } else if (corruption === 'mixed-cells') {
-        const secondRow = legacy.result?.rows[1]
+        const secondRow = legacy.result.rows[1]
         if (!secondRow) throw new Error('Row fixture is missing')
         secondRow.region = 42
+      } else if (corruption === 'ambiguous-empty') {
+        legacy.result.rows = []
+        legacy.result.rowCount = 0
       } else if (corruption === 'boolean-cell' || corruption === 'null-cell') {
-        const firstRow = legacy.result?.rows[0]
+        const firstRow = legacy.result.rows[0]
         if (!firstRow) throw new Error('Row fixture is missing')
         firstRow.region = corruption === 'boolean-cell' ? true : null
       } else if (corruption === 'date-format') {
-        const firstColumn = legacy.result?.columns[0]
+        const firstColumn = legacy.result.columns[0]
         if (!firstColumn) throw new Error('Column fixture is missing')
         firstColumn.format = 'date'
       } else if (corruption === 'sqg-version') {
@@ -183,9 +265,14 @@ describe('run history storage', () => {
         if (!firstNode) throw new Error('Node fixture is missing')
         firstNode.kind = 'SOURCE'
       } else if (corruption === 'truncated-row-count') {
-        if (!legacy.result) throw new Error('Result fixture is missing')
         legacy.result.rowCount += 1
         legacy.result.truncated = true
+      } else if (corruption === 'current-only-fields') {
+        legacy.workload = 'regional-sales'
+        legacy.ontology = 'regional-sales@1.4'
+        legacy.compilationMode = 'mock-controlled'
+      } else if (corruption === 'current-truncated') {
+        legacy.result.truncated = false
       }
 
       const key = runStorageKey(legacy.id)
