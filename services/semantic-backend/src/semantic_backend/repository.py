@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
+
+from query_runtime.coordinator import QueryCoordinator
+
+from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
+
+
+class RunNotFoundError(LookupError):
+    pass
+
+
+class RunConflictError(ValueError):
+    pass
+
+
+class RunCapacityError(RuntimeError):
+    pass
+
+
+@dataclass
+class RunRecord:
+    request: StartRunRequest
+    status: RunStatus
+    detail: RunDetail
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    task: asyncio.Task[None] | None = None
+    coordinator: QueryCoordinator | None = None
+    cancel_requested: bool = False
+
+
+class RunRepository(Protocol):
+    async def create(
+        self, request: StartRunRequest, status: RunStatus
+    ) -> tuple[RunRecord, bool]: ...
+
+    async def get(self, run_id: str) -> RunRecord: ...
+
+    async def list_records(self) -> tuple[RunRecord, ...]: ...
+
+
+class InMemoryRunRepository:
+    def __init__(
+        self,
+        *,
+        max_runs: int = 100,
+        retention: timedelta = timedelta(hours=1),
+    ) -> None:
+        self._max_runs = max_runs
+        self._retention = retention
+        self._records: dict[str, RunRecord] = {}
+        self._lock = asyncio.Lock()
+
+    async def create(
+        self,
+        request: StartRunRequest,
+        status: RunStatus,
+    ) -> tuple[RunRecord, bool]:
+        async with self._lock:
+            self._prune_locked()
+            existing = self._records.get(request.run_id)
+            if existing is not None:
+                if existing.request != request:
+                    raise RunConflictError("run_id is already bound to a different request")
+                return existing, False
+            if len(self._records) >= self._max_runs:
+                raise RunCapacityError("the in-memory run capacity has been reached")
+            detail = RunDetail(
+                run_id=request.run_id,
+                question=request.question,
+                requested_by=request.requested_by,
+                trace_id=request.trace_id,
+                evaluation_clock=request.evaluation_clock,
+                evaluation_timezone=request.evaluation_timezone,
+                compilation_mode=request.compilation_mode,
+                status=status,
+            )
+            record = RunRecord(request=request, status=status, detail=detail)
+            self._records[request.run_id] = record
+            return record, True
+
+    async def get(self, run_id: str) -> RunRecord:
+        async with self._lock:
+            self._prune_locked()
+            try:
+                return self._records[run_id]
+            except KeyError as exc:
+                raise RunNotFoundError(run_id) from exc
+
+    async def list_records(self) -> tuple[RunRecord, ...]:
+        async with self._lock:
+            self._prune_locked()
+            return tuple(self._records.values())
+
+    def _prune_locked(self) -> None:
+        cutoff = datetime.now(UTC) - self._retention
+        stale = [
+            run_id
+            for run_id, record in self._records.items()
+            if record.status.finalized_at is not None and record.status.finalized_at < cutoff
+        ]
+        for run_id in stale:
+            self._records.pop(run_id, None)

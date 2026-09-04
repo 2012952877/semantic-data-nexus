@@ -1,0 +1,31 @@
+{
+  "version": "synthetic-source-mapping/v0",
+  "source": {
+    "alias": "synthetic_sales",
+    "source_type": "synthetic_csv",
+    "object_name": "commerce_sales_record"
+  },
+  "concepts": {
+    "commerce.sales_record.region": {
+      "column": "region",
+      "data_type": "string"
+    },
+    "commerce.sales_record.period": {
+      "column": "period_quarter",
+      "data_type": "timestamp",
+      "mode_columns": {
+        "monthly_regional_comparison": "period_month"
+      }
+    },
+    "metric.profit": {
+      "column": "profit",
+      "data_type": "float"
+    }
+  },
+  "members": {
+    "commerce.sales_record.region.central_north": "北辰区",
+    "commerce.sales_record.region.central_south": "南港区",
+    "commerce.sales_record.region.east": "东湖区",
+    "commerce.sales_record.region.west": "西岭区"
+  }
+}
