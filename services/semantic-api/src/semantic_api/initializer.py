@@ -455,9 +455,17 @@ class DeterministicInitializer:
     def _has_spanning_exclusion(prefix: str, suffix: str) -> bool:
         normalized_prefix = DeterministicInitializer._normalize_negation_phrase(prefix)
         normalized_suffix = DeterministicInitializer._normalize_negation_phrase(suffix)
+        descriptor = (
+            r"(?:地区|区域|大区|省|市|产品|客户|指标|度量|字段|实体|"
+            r"时间|期间|年度|年份|月份|季度)"
+        )
         return (
             re.search(r"除\s*$", normalized_prefix) is not None
-            and re.match(r"\s*(?:外|以外|之外)", normalized_suffix) is not None
+            and re.match(
+                rf"\s*(?:的?{descriptor}){{0,2}}\s*(?:外|以外|之外)",
+                normalized_suffix,
+            )
+            is not None
         )
 
     @staticmethod

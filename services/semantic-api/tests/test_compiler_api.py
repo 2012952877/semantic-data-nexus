@@ -290,6 +290,14 @@ async def test_problem_details_and_no_raw_exception_leak(
             "NEGATED_MEMBER_UNSUPPORTED",
         ),
         (
+            "Show regional quarterly profit 除华东地区外",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 除华东区域之外",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
             "Show regional quarterly profit 去年 not included",
             "NEGATED_TIME_UNSUPPORTED",
         ),
@@ -339,6 +347,10 @@ async def test_problem_details_and_no_raw_exception_leak(
         ),
         (
             "Show regional quarterly profit 除非去年",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 除去年期间外",
             "NEGATED_TIME_UNSUPPORTED",
         ),
         (
@@ -397,6 +409,10 @@ async def test_problem_details_and_no_raw_exception_leak(
             "显示区域季度\uff0c除非利润",
             "NEGATED_CONCEPT_UNSUPPORTED",
         ),
+        (
+            "显示区域季度\uff0c除利润指标外",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
         ("Show regional quarterly profit where 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional quarterly profit 去年应该被排除", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional 利润应排除", "NEGATED_CONCEPT_UNSUPPORTED"),
@@ -429,6 +445,9 @@ async def test_compile_fails_closed_for_copular_and_modal_negation(
         "Although 去年 is available, show regional quarterly profit",
         "如果华东可用\uff0c显示区域季度利润",
         "Do not show inventory, but show regional quarterly profit for East",
+        "显示华东地区的区域季度利润",
+        "显示去年期间的区域季度利润",
+        "显示利润指标的区域季度结果",
     ],
 )
 async def test_clause_boundaries_do_not_contaminate_positive_request(

@@ -215,6 +215,8 @@ def test_monthly_mode_rejects_explicit_relative_time(registry: OntologyRegistry)
         ("Show regional quarterly profit unless East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show quarterly profit for all regions but East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional quarterly profit 除非华东", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional quarterly profit 除华东地区外", "NEGATED_MEMBER_UNSUPPORTED"),
+        ("Show regional quarterly profit 除华东区域之外", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit shouldn't include East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit don't show East", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional profit don\u2019t include East", "NEGATED_MEMBER_UNSUPPORTED"),
@@ -247,6 +249,7 @@ def test_monthly_mode_rejects_explicit_relative_time(registry: OntologyRegistry)
         ("Show regional quarterly profit unless 去年", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional quarterly profit for periods other than 去年", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional quarterly profit 除非去年", "NEGATED_TIME_UNSUPPORTED"),
+        ("Show regional quarterly profit 除去年期间外", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional profit 去年 is not shown", "NEGATED_TIME_UNSUPPORTED"),
     ],
 )
@@ -282,6 +285,7 @@ def test_negated_constraints_are_explicitly_rejected(
         ("Show regional quarterly results unless profit", ResolvedTermKind.METRIC),
         ("Show all metrics but profit", ResolvedTermKind.METRIC),
         ("显示区域季度\uff0c除非利润", ResolvedTermKind.METRIC),
+        ("显示区域季度\uff0c除利润指标外", ResolvedTermKind.METRIC),
         ("profit is not shown", ResolvedTermKind.METRIC),
         ("利润应排除", ResolvedTermKind.METRIC),
     ],
@@ -304,6 +308,9 @@ def test_negated_semantic_concepts_are_explicitly_rejected(
         ("显示不同地区的季度利润", ResolvedTermKind.FIELD),
         ("显示非常高的区域季度利润", ResolvedTermKind.METRIC),
         ("显示未来的区域季度利润", ResolvedTermKind.METRIC),
+        ("显示华东地区的区域季度利润", ResolvedTermKind.MEMBER),
+        ("显示去年期间的区域季度利润", ResolvedTermKind.TIME_WINDOW),
+        ("显示利润指标的区域季度结果", ResolvedTermKind.METRIC),
     ],
 )
 def test_positive_chinese_words_are_not_negation_markers(
