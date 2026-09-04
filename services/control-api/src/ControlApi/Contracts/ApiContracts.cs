@@ -5,34 +5,49 @@ using ControlApi.Domain;
 
 namespace ControlApi.Contracts;
 
+[JsonConverter(typeof(JsonContractOptions.SnakeCaseCompilationModeJsonConverter))]
 public enum CompilationMode
 {
     RegionalQuarterlyProfit = 1,
     MonthlyRegionalComparison = 2
 }
 
+[JsonConverter(typeof(JsonContractOptions.SnakeCaseExecutionModeJsonConverter))]
 public enum ExecutionMode
 {
     Thread = 1
 }
 
+[JsonConverter(typeof(JsonContractOptions.SnakeCaseOutputModeJsonConverter))]
 public enum OutputMode
 {
     Normal = 1,
     Stream = 2
 }
 
-public sealed record CreateRunRequest(
-    [property: Required] string ClientRequestId,
-    [property: Required] string Workload,
-    [property: Required] string Question,
-    [property: JsonConverter(typeof(OffsetDateTimeJsonConverter))]
-    [property: Required] DateTimeOffset EvaluationClock,
-    [property: Required] string EvaluationTimezone,
-    [property: Required] CompilationMode CompilationMode,
-    [property: Required] ExecutionMode ExecutionMode,
-    [property: Required] OutputMode OutputMode)
+public sealed record CreateRunRequest
 {
+    [JsonConstructor]
+    public CreateRunRequest(
+        string clientRequestId,
+        string workload,
+        string question,
+        DateTimeOffset evaluationClock,
+        string evaluationTimezone,
+        CompilationMode compilationMode,
+        ExecutionMode executionMode,
+        OutputMode outputMode)
+    {
+        ClientRequestId = clientRequestId;
+        Workload = workload;
+        Question = question;
+        EvaluationClock = evaluationClock;
+        EvaluationTimezone = evaluationTimezone;
+        CompilationMode = compilationMode;
+        ExecutionMode = executionMode;
+        OutputMode = outputMode;
+    }
+
     public CreateRunRequest(string clientRequestId, string workload)
         : this(
             clientRequestId,
@@ -45,6 +60,31 @@ public sealed record CreateRunRequest(
             OutputMode.Normal)
     {
     }
+
+    [Required]
+    public string ClientRequestId { get; init; }
+
+    [Required]
+    public string Workload { get; init; }
+
+    [Required]
+    public string Question { get; init; }
+
+    [Required]
+    [JsonConverter(typeof(OffsetDateTimeJsonConverter))]
+    public DateTimeOffset EvaluationClock { get; init; }
+
+    [Required]
+    public string EvaluationTimezone { get; init; }
+
+    [Required]
+    public CompilationMode CompilationMode { get; init; }
+
+    [Required]
+    public ExecutionMode ExecutionMode { get; init; }
+
+    [Required]
+    public OutputMode OutputMode { get; init; }
 }
 
 public sealed record CancelRunRequest(long? ExpectedVersion);
@@ -79,6 +119,21 @@ public static class JsonContractOptions
             allowIntegerValues: false));
         options.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
     }
+
+    public sealed class SnakeCaseCompilationModeJsonConverter()
+        : JsonStringEnumConverter<CompilationMode>(
+            JsonNamingPolicy.SnakeCaseLower,
+            allowIntegerValues: false);
+
+    public sealed class SnakeCaseExecutionModeJsonConverter()
+        : JsonStringEnumConverter<ExecutionMode>(
+            JsonNamingPolicy.SnakeCaseLower,
+            allowIntegerValues: false);
+
+    public sealed class SnakeCaseOutputModeJsonConverter()
+        : JsonStringEnumConverter<OutputMode>(
+            JsonNamingPolicy.SnakeCaseLower,
+            allowIntegerValues: false);
 }
 
 public sealed class OffsetDateTimeJsonConverter : JsonConverter<DateTimeOffset>

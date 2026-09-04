@@ -562,12 +562,6 @@ public static class ControlApiEndpoints
         try
         {
             var zone = TimeZoneInfo.FindSystemTimeZoneById(value);
-            if (OperatingSystem.IsWindows() &&
-                !TimeZoneInfo.TryConvertIanaIdToWindowsId(value, out _))
-            {
-                return false;
-            }
-
             _ = zone.GetUtcOffset(DateTimeOffset.UnixEpoch);
             return true;
         }
