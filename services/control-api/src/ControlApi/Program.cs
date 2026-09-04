@@ -5,6 +5,7 @@ using Azure.Monitor.OpenTelemetry.AspNetCore;
 using ControlApi;
 using ControlApi.Authentication;
 using ControlApi.Contracts;
+using ControlApi.Domain;
 using ControlApi.Endpoints;
 using ControlApi.Infrastructure;
 using ControlApi.Persistence;
@@ -39,6 +40,22 @@ builder.Services.AddSwaggerGen(options =>
         Description = "Microsoft Entra bearer token."
     });
     options.OperationFilter<OpenApiSecurityOperationFilter>();
+    options.MapType<RunId>(() => new OpenApiSchema
+    {
+        Type = "string",
+        Pattern = "^run_[0-9a-f]{32}$"
+    });
+    options.MapType<SemanticScalarValue>(() => new OpenApiSchema
+    {
+        Nullable = true,
+        OneOf =
+        [
+            new OpenApiSchema { Type = "string" },
+            new OpenApiSchema { Type = "integer", Format = "int64" },
+            new OpenApiSchema { Type = "number", Format = "decimal" },
+            new OpenApiSchema { Type = "boolean" }
+        ]
+    });
 });
 builder.Services.ConfigureHttpJsonOptions(options =>
 {

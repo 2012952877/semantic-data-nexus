@@ -299,6 +299,7 @@ public sealed class ApiEndpointTests
     [InlineData("Asia/Shanghai")]
     [InlineData("America/New_York")]
     [InlineData("Etc/UTC")]
+    [InlineData("UTC")]
     public async Task IanaTimeZonesAreAcceptedWithInvariantGlobalization(string timeZone)
     {
         await using var factory = new ControlApiFactory();
@@ -310,6 +311,22 @@ public sealed class ApiEndpointTests
         var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task WindowsTimeZoneIdIsNotAcceptedAsIana()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("windows-timezone")
+            with
+        { EvaluationTimezone = "Eastern Standard Time" };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_evaluation_timezone", Extension(problem!, "code"));
     }
 
     [Theory]
@@ -688,6 +705,27 @@ public sealed class ApiEndpointTests
                 .GetProperty("Bearer")
                 .GetProperty("type")
                 .GetString());
+        var runIdSchema = schemas
+            .GetProperty(nameof(SemanticRunDetail))
+            .GetProperty("properties")
+            .GetProperty("runId");
+        Assert.Equal("string", runIdSchema.GetProperty("type").GetString());
+        Assert.Equal(
+            "^run_[0-9a-f]{32}$",
+            runIdSchema.GetProperty("pattern").GetString());
+        var scalarSchema = schemas
+            .GetProperty(nameof(SemanticResultSet))
+            .GetProperty("properties")
+            .GetProperty("rows")
+            .GetProperty("items")
+            .GetProperty("items");
+        Assert.Equal(
+            ["string", "integer", "number", "boolean"],
+            scalarSchema
+                .GetProperty("oneOf")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("type").GetString())
+                .ToArray());
     }
 
     [Fact]

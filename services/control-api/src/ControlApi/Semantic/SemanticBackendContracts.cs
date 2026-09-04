@@ -316,7 +316,7 @@ public static class SemanticRunDetailValidator
         }
 
         ValidateSqg(detail.Sqg);
-        ValidatePhysicalNodes(detail.PhysicalNodes);
+        var physicalNodeIds = ValidatePhysicalNodes(detail.PhysicalNodes);
         if (detail.Result is not null)
         {
             ValidateResult(detail.Result);
@@ -324,7 +324,7 @@ public static class SemanticRunDetailValidator
 
         if (detail.Manifest is not null)
         {
-            ValidateManifest(detail.Manifest, expectedRunId);
+            ValidateManifest(detail.Manifest, expectedRunId, physicalNodeIds);
         }
 
         if ((detail.Result is null) != (detail.Manifest is null) ||
@@ -368,7 +368,8 @@ public static class SemanticRunDetailValidator
         }
     }
 
-    private static void ValidatePhysicalNodes(IReadOnlyList<SemanticPhysicalNode>? nodes)
+    private static HashSet<string> ValidatePhysicalNodes(
+        IReadOnlyList<SemanticPhysicalNode>? nodes)
     {
         if (nodes is null || nodes.Count > MaximumPhysicalNodes)
         {
@@ -390,6 +391,8 @@ public static class SemanticRunDetailValidator
                 throw Invalid("The semantic backend returned an invalid physical node.");
             }
         }
+
+        return ids;
     }
 
     private static void ValidateResult(SemanticResultSet result)
@@ -476,11 +479,15 @@ public static class SemanticRunDetailValidator
         }
     }
 
-    private static void ValidateManifest(SemanticCommittedManifest manifest, RunId expectedRunId)
+    private static void ValidateManifest(
+        SemanticCommittedManifest manifest,
+        RunId expectedRunId,
+        HashSet<string> physicalNodeIds)
     {
         if (manifest.RunId != expectedRunId ||
             !ValidLabel(manifest.ResultId) ||
             !ValidLabel(manifest.NodeId) ||
+            !physicalNodeIds.Contains(manifest.NodeId) ||
             !Enum.IsDefined(manifest.Storage) ||
             !ValidText(manifest.Uri, 2_048) ||
             manifest.RowCount < 0 ||

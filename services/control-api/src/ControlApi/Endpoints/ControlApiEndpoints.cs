@@ -13,6 +13,17 @@ namespace ControlApi.Endpoints;
 
 public static class ControlApiEndpoints
 {
+    private static readonly HashSet<string> SingleComponentIanaTimeZones =
+        new(StringComparer.Ordinal)
+        {
+            "CET", "CST6CDT", "Cuba", "EET", "Egypt", "Eire", "EST", "EST5EDT",
+            "Factory", "GB", "GB-Eire", "GMT", "GMT+0", "GMT-0", "GMT0", "Greenwich",
+            "HST", "Hongkong", "Iceland", "Iran", "Israel", "Jamaica", "Japan",
+            "Kwajalein", "Libya", "MET", "MST", "MST7MDT", "NZ", "NZ-CHAT", "Navajo",
+            "PRC", "PST8PDT", "Poland", "Portugal", "ROC", "ROK", "Singapore", "Turkey",
+            "UCT", "UTC", "Universal", "W-SU", "WET", "Zulu"
+        };
+
     public static IEndpointRouteBuilder MapControlApi(this IEndpointRouteBuilder endpoints)
     {
         var api = endpoints.MapGroup("/api/v1")
@@ -562,7 +573,7 @@ public static class ControlApiEndpoints
     {
         if (string.IsNullOrWhiteSpace(value) ||
             value.Length > 100 ||
-            !value.Contains('/'))
+            (!value.Contains('/') && !SingleComponentIanaTimeZones.Contains(value)))
         {
             return false;
         }

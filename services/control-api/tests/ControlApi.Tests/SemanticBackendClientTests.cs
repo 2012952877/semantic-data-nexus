@@ -136,6 +136,22 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public void DetailValidatorRejectsManifestForUnknownPhysicalNode()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var invalid = valid with
+        {
+            Manifest = valid.Manifest! with { NodeId = "unknown-node" }
+        };
+
+        var exception = Assert.Throws<SemanticBackendException>(() =>
+            SemanticRunDetailValidator.Validate(invalid, runId));
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
     public async Task DetailRejectsUnknownJsonProperties()
     {
         var runId = RunId.New();
