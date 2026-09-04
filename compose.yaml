@@ -11,6 +11,7 @@ services:
       SEMANTIC_NEXUS_FAKE_DELAY_MS: "${SEMANTIC_NEXUS_FAKE_DELAY_MS:-750}"
       SEMANTIC_NEXUS_RESOLVER: fake
     init: true
+    stop_grace_period: 60s
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

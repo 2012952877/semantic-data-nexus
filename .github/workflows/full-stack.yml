@@ -101,6 +101,15 @@ jobs:
           grep -q "DATABRICKS_WORKSPACE_HOST" live-config-error.txt
           rm live-config-error.txt
 
+      - name: Validate live profile topology
+        run: |
+          export DATABRICKS_WORKSPACE_HOST="https://example.invalid"
+          export DATABRICKS_WAREHOUSE_ID="ci-placeholder"
+          export DATABRICKS_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          docker compose -f compose.yaml -f compose.databricks.yaml --profile databricks config --format json |
+            python scripts/validate_compose_config.py --live
+          unset DATABRICKS_WORKSPACE_HOST DATABRICKS_WAREHOUSE_ID DATABRICKS_TOKEN
+
       - name: Build local images
         run: docker compose build
 

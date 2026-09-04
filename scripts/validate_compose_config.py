@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from typing import Any
@@ -14,7 +15,16 @@ def _require(condition: bool, message: str) -> None:
         raise ComposeValidationError(message)
 
 
-def validate(config: dict[str, Any]) -> None:
+def _network_names(service: dict[str, Any]) -> set[str]:
+    networks = service.get("networks", {})
+    if isinstance(networks, dict):
+        return set(networks)
+    if isinstance(networks, list):
+        return {value for value in networks if isinstance(value, str)}
+    return set()
+
+
+def validate(config: dict[str, Any], *, live: bool = False) -> None:
     services = config.get("services")
     networks = config.get("networks")
     _require(isinstance(services, dict), "Compose services are missing")
@@ -59,20 +69,50 @@ def validate(config: dict[str, Any]) -> None:
     )
     semantic_environment = semantic.get("environment", {})
     _require(
-        semantic_environment.get("SEMANTIC_NEXUS_RESOLVER") == "fake",
-        "base Compose must use the fake resolver",
+        semantic_environment.get("SEMANTIC_NEXUS_RESOLVER")
+        == ("databricks" if live else "fake"),
+        "Compose resolver does not match the selected profile",
     )
-    _require(
-        "DATABRICKS_TOKEN" not in semantic_environment,
-        "base Compose must not inject Databricks credentials",
-    )
+    if live:
+        egress = networks.get("databricks-egress")
+        _require(
+            "databricks-egress" in _network_names(semantic),
+            "live semantic-backend must join the Databricks egress network",
+        )
+        _require(
+            isinstance(egress, dict) and egress.get("internal") is not True,
+            "Databricks egress network must permit outbound traffic",
+        )
+        _require(
+            all(
+                semantic_environment.get(name)
+                for name in (
+                    "DATABRICKS_WORKSPACE_HOST",
+                    "DATABRICKS_WAREHOUSE_ID",
+                    "DATABRICKS_TOKEN",
+                )
+            ),
+            "live Compose must receive all required Databricks settings",
+        )
+    else:
+        _require(
+            "databricks-egress" not in _network_names(semantic),
+            "base semantic-backend must remain on internal networks",
+        )
+        _require(
+            "DATABRICKS_TOKEN" not in semantic_environment,
+            "base Compose must not inject Databricks credentials",
+        )
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate rendered Compose topology.")
+    parser.add_argument("--live", action="store_true")
+    args = parser.parse_args()
     try:
         config = json.load(sys.stdin)
         _require(isinstance(config, dict), "Compose config must be a JSON object")
-        validate(config)
+        validate(config, live=args.live)
     except (ComposeValidationError, json.JSONDecodeError) as error:
         print(f"COMPOSE CONFIG VALIDATION FAILED: {error}", file=sys.stderr)
         return 1

@@ -40,6 +40,25 @@ def compose_config(host_ip: str = "127.0.0.1") -> dict[str, object]:
     }
 
 
+def live_compose_config() -> dict[str, object]:
+    config = compose_config()
+    services = config["services"]
+    assert isinstance(services, dict)
+    semantic = services["semantic-backend"]
+    assert isinstance(semantic, dict)
+    semantic["environment"] = {
+        "SEMANTIC_NEXUS_RESOLVER": "databricks",
+        "DATABRICKS_WORKSPACE_HOST": "https://example.invalid",
+        "DATABRICKS_WAREHOUSE_ID": "ci-placeholder",
+        "DATABRICKS_TOKEN": "runtime-placeholder",
+    }
+    semantic["networks"] = {"backend": None, "databricks-egress": None}
+    networks = config["networks"]
+    assert isinstance(networks, dict)
+    networks["databricks-egress"] = {}
+    return config
+
+
 def result(data_type: str, value: object) -> dict[str, object]:
     return {
         "columns": [
@@ -62,6 +81,17 @@ class ComposeConfigTests(unittest.TestCase):
     def test_rejects_development_identity_on_all_interfaces(self) -> None:
         with self.assertRaisesRegex(ComposeValidationError, "bind only to loopback"):
             validate(compose_config("0.0.0.0"))
+
+    def test_live_profile_requires_egress_and_explicit_configuration(self) -> None:
+        validate(live_compose_config(), live=True)
+        config = live_compose_config()
+        services = config["services"]
+        assert isinstance(services, dict)
+        semantic = services["semantic-backend"]
+        assert isinstance(semantic, dict)
+        semantic["networks"] = {"backend": None}
+        with self.assertRaisesRegex(ComposeValidationError, "egress network"):
+            validate(config, live=True)
 
 
 class ResultSchemaTests(unittest.TestCase):

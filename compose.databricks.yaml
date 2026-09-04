@@ -2,6 +2,9 @@ services:
   semantic-backend:
     profiles:
       - databricks
+    networks:
+      - backend
+      - databricks-egress
     environment:
       SEMANTIC_NEXUS_RESOLVER: databricks
       SEMANTIC_NEXUS_FAKE_DELAY_MS: "0"
@@ -10,3 +13,6 @@ services:
       DATABRICKS_CATALOG: "${DATABRICKS_CATALOG:-synthetic_demo}"
       DATABRICKS_SCHEMA: "${DATABRICKS_SCHEMA:-analytics}"
       DATABRICKS_TOKEN: "${DATABRICKS_TOKEN:?Set DATABRICKS_TOKEN in the current shell}"
+
+networks:
+  databricks-egress:

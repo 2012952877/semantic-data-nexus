@@ -61,7 +61,10 @@ Live execution is not part of CI and cannot be selected through
 `compose.yaml` alone. It requires both the `compose.databricks.yaml` override
 and the `databricks` profile. The override uses required Compose interpolation,
 so configuration fails closed before containers start when host, warehouse, or
-token is absent.
+token is absent. It also adds a dedicated egress-capable network for provider
+HTTPS traffic; the fake-resolver stack remains isolated on the internal backend
+network. Backend shutdown has a 60-second grace period so provider cancellation
+and cleanup can finish before the container is killed.
 
 Set credentials only in the current shell; do not put them in `.env`, command
 arguments, Compose files, image layers, or captured logs:
