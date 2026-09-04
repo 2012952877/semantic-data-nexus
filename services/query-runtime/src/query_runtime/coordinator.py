@@ -804,6 +804,8 @@ class QueryCoordinator:
             self._claiming_run_ids.add(run_id)
         claim = asyncio.create_task(self.event_store.claim(run_id))
         registered = False
+        was_cancelled = False
+        pending_error: BaseException | None = None
         try:
             was_cancelled = await _wait_for_task_completion(claim)
             if claim.cancelled():
@@ -832,13 +834,22 @@ class QueryCoordinator:
             registered = True
             if was_cancelled:
                 raise asyncio.CancelledError
+        except BaseException as exc:
+            pending_error = exc
         finally:
             if not registered:
                 settlement = asyncio.create_task(
                     self._settle_claim(run_id, cancel_event, register=False)
                 )
-                await _wait_for_task_completion(settlement)
+                was_cancelled = (
+                    await _wait_for_task_completion(settlement)
+                    or was_cancelled
+                )
                 settlement.result()
+        if was_cancelled:
+            raise asyncio.CancelledError from None
+        if pending_error is not None:
+            raise pending_error
 
     async def _settle_claim(
         self,

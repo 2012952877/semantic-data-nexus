@@ -663,6 +663,45 @@ async def test_cancellation_wins_over_delayed_claim_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_failed_claim_settlement_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = simple_profit_fixture()
+    events = _FailingOnceClaimStore()
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+    )
+    settlement_started = asyncio.Event()
+    release_settlement = asyncio.Event()
+    settle_claim = coordinator._settle_claim
+
+    async def paused_settle_claim(
+        run_id: str,
+        cancel_event: asyncio.Event,
+        *,
+        register: bool,
+    ) -> None:
+        if not register:
+            settlement_started.set()
+            await release_settlement.wait()
+        await settle_claim(run_id, cancel_event, register=register)
+
+    monkeypatch.setattr(coordinator, "_settle_claim", paused_settle_claim)
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-failed-claim-settlement")
+    )
+    await settlement_started.wait()
+
+    task.cancel()
+    release_settlement.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "run-failed-claim-settlement" not in coordinator._claiming_run_ids
+
+
+@pytest.mark.asyncio
 async def test_slow_claim_does_not_block_unrelated_run_cancellation() -> None:
     events = _PausingClaimStore()
     active_fixture = delayed_fixture()
