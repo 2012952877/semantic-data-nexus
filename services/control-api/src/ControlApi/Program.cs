@@ -48,7 +48,7 @@ builder.Services.AddSwaggerGen(options =>
     });
     options.MapType<SemanticScalarValue>(() => new OpenApiSchema
     {
-        Description = "A typed result cell. Decimal columns use canonical fixed-point strings; float columns use finite JSON numbers.",
+        Description = "A typed result cell. Decimal columns use canonical fixed-point strings with absolute value at most 10^28; float columns use finite JSON numbers.",
         AnyOf =
         [
             new OpenApiSchema { Type = "string", Nullable = true },

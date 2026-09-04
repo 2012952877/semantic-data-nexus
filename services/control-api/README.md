@@ -131,8 +131,9 @@ identity. Do not place tokens, connection strings, or credentials in files.
   the interoperable range -9,007,199,254,740,991 through
   9,007,199,254,740,991. Float cells are finite JSON numbers with absolute
   values at or below 10^28. Decimal cells are canonical fixed-point JSON
-  strings with at most 29 significant digits and scale 28 so precision and
-  trailing scale survive the Python/.NET boundary.
+  strings with absolute values at or below 10^28, at most 29 significant
+  digits, and scale 28 so precision and trailing scale survive the Python/.NET
+  boundary.
 - `ForwardedHeaders:KnownProxies`: explicit single-hop proxy IP allowlist.
   Unknown forwarders are ignored; header symmetry is required.
 - `OpenTelemetry:Otlp:Endpoint`: optional OTLP traces, metrics, and logs.

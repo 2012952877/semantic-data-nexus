@@ -102,9 +102,10 @@ finite number, or boolean values. Integers use the interoperable range
 `[-9007199254740991, 9007199254740991]`. Float cells are finite JSON numbers
 with absolute value at most `10^28`. Decimal cells are canonical fixed-point
 JSON strings with no exponent or leading zero, at most 29 significant digits,
-and scale at most 28; the string representation preserves trailing scale.
-Booleans are not integers. Dates are `yyyy-MM-dd` strings and timestamps
-require an explicit UTC offset. Objects and arrays are rejected.
+scale at most 28, and absolute value at most `10^28`; the string representation
+preserves trailing scale. Booleans are not integers. Dates are `yyyy-MM-dd`
+strings and timestamps require an explicit UTC offset. Objects and arrays are
+rejected.
 
 The BFF accepts at most 100 result columns, 1,000 inline rows, 1,000 physical
 nodes, 5,000 lineage nodes, 10,000 lineage edges, and 1,000 diagnostics. It
