@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import hashlib
+
+from sqlglot import Dialect, TokenType, exp, parse
+from sqlglot.errors import SqlglotError
+
+from .client import StatementExecutionClient
+from .exceptions import ProtocolError, UnsafeStatementError
+from .models import (
+    CapabilityDeclaration,
+    LineageMetadata,
+    PhysicalSourceFragment,
+    ResultFormat,
+    TabularResult,
+)
+
+_SAFE_SOURCE_FUNCTIONS = frozenset(
+    {
+        "ABS",
+        "AVG",
+        "CAST",
+        "COALESCE",
+        "COUNT",
+        "CURRENT_DATE",
+        "DATE_ADD",
+        "DATE_SUB",
+        "DATE_TRUNC",
+        "DATEDIFF",
+        "DAY",
+        "LOWER",
+        "MAX",
+        "MIN",
+        "MONTH",
+        "ROUND",
+        "SUM",
+        "TO_DATE",
+        "UPPER",
+        "YEAR",
+    }
+)
+
+
+def _validate_function_calls(sql: str, statement: exp.Query) -> None:
+    dialect = Dialect.get_or_raise("databricks")
+    tokens = dialect.tokenizer_class().tokenize(sql)
+    parser = dialect.parser_class
+    known_function_names = parser.FUNCTIONS.keys() | parser.FUNCTION_PARSERS.keys()
+    no_paren_function_types = parser.NO_PAREN_FUNCTIONS.keys()
+    identifier_spans = {
+        (identifier.meta.get("start"), identifier.meta.get("end"))
+        for identifier in statement.find_all(exp.Identifier)
+    }
+    alias_column_list_spans = {
+        (alias.this.meta.get("start"), alias.this.meta.get("end"))
+        for alias in statement.find_all(exp.TableAlias)
+        if alias.args.get("columns") and isinstance(alias.this, exp.Identifier)
+    }
+    datatype_call_indexes: set[int] = set()
+    for cast_index, cast_token in enumerate(tokens[:-1]):
+        if (
+            cast_token.text.upper() != "CAST"
+            or tokens[cast_index + 1].token_type is not TokenType.L_PAREN
+        ):
+            continue
+        depth = 0
+        for token_index in range(cast_index + 1, len(tokens)):
+            current = tokens[token_index]
+            if current.token_type is TokenType.L_PAREN:
+                depth += 1
+            elif current.token_type is TokenType.R_PAREN:
+                depth -= 1
+                if depth == 0:
+                    break
+            elif current.token_type is TokenType.ALIAS and depth == 1:
+                datatype_index = token_index + 1
+                if (
+                    datatype_index + 1 < len(tokens)
+                    and tokens[datatype_index].token_type in parser.TYPE_TOKENS
+                    and tokens[datatype_index + 1].token_type is TokenType.L_PAREN
+                ):
+                    datatype_call_indexes.add(datatype_index)
+                break
+
+    for index, token in enumerate(tokens):
+        source_name = token.text.upper()
+        has_parentheses = (
+            index + 1 < len(tokens)
+            and tokens[index + 1].token_type is TokenType.L_PAREN
+        )
+        is_bare_function = (
+            not has_parentheses
+            and (
+                token.token_type in no_paren_function_types
+                or (
+                    token.token_type in {TokenType.VAR, TokenType.IDENTIFIER}
+                    and source_name in known_function_names
+                    and (token.start, token.end) not in identifier_spans
+                )
+            )
+        )
+        if is_bare_function:
+            if (
+                source_name not in _SAFE_SOURCE_FUNCTIONS
+                or token.token_type is TokenType.IDENTIFIER
+                or (index > 0 and tokens[index - 1].token_type is TokenType.DOT)
+            ):
+                raise UnsafeStatementError("Query contains a function outside the M0 allowlist")
+            continue
+        if not has_parentheses:
+            continue
+        if (token.start, token.end) in alias_column_list_spans:
+            continue
+        if index in datatype_call_indexes:
+            continue
+        if token.token_type not in parser.FUNC_TOKENS:
+            continue
+        if (
+            source_name not in _SAFE_SOURCE_FUNCTIONS
+            or token.token_type is TokenType.IDENTIFIER
+            or (index > 0 and tokens[index - 1].token_type is TokenType.DOT)
+        ):
+            raise UnsafeStatementError("Query contains a function outside the M0 allowlist")
+
+
+def validate_fragment(fragment: PhysicalSourceFragment) -> None:
+    if not fragment.source_name.strip():
+        raise UnsafeStatementError("source_name is required")
+    if not fragment.sql.strip():
+        raise UnsafeStatementError("SQL statement is empty")
+    try:
+        parsed = parse(fragment.sql, read="databricks")
+    except SqlglotError as error:
+        raise UnsafeStatementError("SQL is not valid Databricks syntax") from error
+    statements = [
+        statement
+        for statement in parsed
+        if statement is not None and not isinstance(statement, exp.Semicolon)
+    ]
+    if len(statements) != 1:
+        raise UnsafeStatementError("Exactly one SQL statement is required")
+    statement = statements[0]
+    if statement is None or not isinstance(statement, exp.Query):
+        raise UnsafeStatementError("M0 accepts only a read-only query")
+    if any(
+        isinstance(node, (exp.DML, exp.DDL, exp.Command))
+        for node in statement.walk()
+    ):
+        raise UnsafeStatementError("Query AST contains a non-read-only operation")
+    if statement.find(exp.Into) is not None:
+        raise UnsafeStatementError("SELECT INTO is not read-only")
+    if any(not isinstance(cte.this, exp.Query) for cte in statement.find_all(exp.CTE)):
+        raise UnsafeStatementError("Every CTE body must be a read-only query")
+    if statement.find(exp.Parameter) is not None:
+        raise UnsafeStatementError("Only named parameter markers are supported")
+    _validate_function_calls(fragment.sql, statement)
+
+    placeholders = tuple(statement.find_all(exp.Placeholder))
+    if any(placeholder.name == "?" or not placeholder.this for placeholder in placeholders):
+        raise UnsafeStatementError("Positional parameters are not supported")
+    markers = {placeholder.name for placeholder in placeholders}
+    names = [parameter.name for parameter in fragment.parameters]
+    if len(names) != len(set(names)):
+        raise UnsafeStatementError("Parameter names must be unique")
+    supplied = set(names)
+    if markers != supplied:
+        raise UnsafeStatementError("Named SQL markers and supplied parameters must match")
+
+
+class DatabricksResolver:
+    def __init__(self, client: StatementExecutionClient) -> None:
+        self._client = client
+
+    @staticmethod
+    def capabilities() -> CapabilityDeclaration:
+        return CapabilityDeclaration.databricks_sql()
+
+    async def resolve(self, fragment: PhysicalSourceFragment) -> TabularResult:
+        validate_fragment(fragment)
+        result = await self._client.execute(fragment.sql, fragment.parameters)
+        if result.result_format is not ResultFormat.JSON_ARRAY:
+            raise ProtocolError("Normalized tabular resolution requires JSON_ARRAY format")
+        return TabularResult(
+            columns=result.columns,
+            rows=result.rows,
+            lineage=LineageMetadata(
+                resolver="azure_databricks_statement_execution",
+                source_name=fragment.source_name,
+                statement_id=result.statement_id,
+                physical_fragment_sha256=hashlib.sha256(fragment.sql.encode()).hexdigest(),
+            ),
+            elapsed_ms=result.elapsed_ms,
+        )
