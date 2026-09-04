@@ -214,11 +214,47 @@ async def test_problem_details_and_no_raw_exception_leak(
             "NEGATED_MEMBER_UNSUPPORTED",
         ),
         (
+            "Show regional quarterly profit where East hasn't been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East has not been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East hasn\u2019t been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East shouldn't have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East should not have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit where East shouldn\u2019t have been included",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
             "Show regional quarterly profit 去年 not included",
             "NEGATED_TIME_UNSUPPORTED",
         ),
         (
             "Show regional quarterly profit 去年 couldn't be shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 hasn't been included",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 hasn\u2019t been shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 去年 should not have been included",
             "NEGATED_TIME_UNSUPPORTED",
         ),
         (
@@ -231,6 +267,22 @@ async def test_problem_details_and_no_raw_exception_leak(
         ),
         (
             "Show regional profit oughtn't to be shown",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit hasn't been used",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit hasn\u2019t been shown",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit shouldn't have been included",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show regional profit should not have been used",
             "NEGATED_CONCEPT_UNSUPPORTED",
         ),
         ("Show regional quarterly profit where 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),

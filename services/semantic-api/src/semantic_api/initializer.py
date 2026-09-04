@@ -336,8 +336,14 @@ class DeterministicInitializer:
             r"(?:do|does|did|is|are|was|were|have|has|had|should|would|could|might|may|"
             r"must|will|shall|can|need|dare|ought)"
         )
+        modal = r"(?:should|would|could|might|may|must|will|shall|can|need|dare|ought)"
         governed_verb = r"(?:include|use|show)"
         governed_participle = r"(?:included|used|shown)"
+        negative_passive_chain = (
+            rf"(?:(?:has|have|had)\s+not\s+been\s+|"
+            rf"{modal}\s+not\s+have\s+been\s+|"
+            rf"(?:{auxiliary}\s+not|cannot|not)\s+(?:to\s+)?(?:be\s+)?)"
+        )
         return (
             re.search(
                 (
@@ -367,8 +373,7 @@ class DeterministicInitializer:
                     r"(?:excluded|omitted|left\s+out)|"
                     rf"(?:should|would|could|might|must|will|shall|can)\s+be\s+"
                     r"(?:excluded|omitted|left\s+out)|"
-                    rf"(?:{auxiliary}\s+not|cannot|not)\s+"
-                    rf"(?:to\s+)?(?:be\s+)?{governed_participle})\b"
+                    rf"{negative_passive_chain}{governed_participle})\b"
                 ),
                 suffix,
             )
