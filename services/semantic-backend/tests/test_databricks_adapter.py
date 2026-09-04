@@ -26,6 +26,7 @@ from query_runtime.resolver import ExecutionContext, FakeResolver
 from semantic_data_nexus_databricks import (
     DatabricksResolverError,
     StatementCanceledError,
+    StatementTimeoutError,
 )
 from semantic_data_nexus_databricks.models import (
     DecimalType,
@@ -238,6 +239,31 @@ async def test_live_adapter_converts_typed_result_to_arrow() -> None:
     )
     assert isinstance(table, pa.Table)
     assert table.to_pylist() == [{"region": "北辰区", "profit": 2334.0}]
+
+
+@dataclass
+class CompletedTimeoutConnector:
+    async def resolve(self, fragment):
+        raise StatementTimeoutError("statement-synthetic")
+
+
+async def test_completed_statement_timeout_is_unconfirmed_cancellation() -> None:
+    adapter = DatabricksSourceAdapter(
+        CompletedTimeoutConnector(),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+    )
+    with pytest.raises(ResolverFailure) as captured:
+        await adapter.execute(
+            ExecutionContext(
+                run_id="run_00000000000000000000000000000125",
+                node_id="source",
+                attempt=1,
+                cancellation_handle="opaque-completed-timeout",
+            ),
+            validated_fragment(),
+            asyncio.Event(),
+        )
+    assert captured.value.code == "DATABRICKS_CANCELLATION_UNCONFIRMED"
 
 
 async def test_resolver_run_reuse_clears_stale_metadata_and_bounds_retention() -> None:

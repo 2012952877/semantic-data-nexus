@@ -436,7 +436,20 @@ class DatabricksSourceAdapter:
                 raise asyncio.CancelledError
             if resolution in done:
                 cancellation.cancel()
-                result = resolution.result()
+                try:
+                    result = resolution.result()
+                except StatementCanceledError as exc:
+                    raise asyncio.CancelledError from exc
+                except StatementTimeoutError as exc:
+                    raise ResolverFailure(
+                        "DATABRICKS_CANCELLATION_UNCONFIRMED",
+                        "The connector timed out before a terminal state was confirmed.",
+                    ) from exc
+                except DatabricksResolverError as exc:
+                    raise ResolverFailure(
+                        "DATABRICKS_RESOLUTION_FAILED",
+                        "The connector could not resolve the validated source fragment.",
+                    ) from exc
                 await self._record_provenance(context, result)
                 table = self._to_arrow(result)
                 if table.num_rows > self._translator.row_limit:

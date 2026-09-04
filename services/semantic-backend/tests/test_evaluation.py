@@ -6,7 +6,14 @@ from pathlib import Path
 
 from conftest import request_for, wait_for_terminal
 from query_runtime.domain import PhysicalPlan
-from semantic_api.models import CompilationMode
+from semantic_api.models import (
+    CompilationMode,
+    Diagnostic,
+    DiagnosticStage,
+)
+from semantic_api.models import (
+    DiagnosticSeverity as CompilerDiagnosticSeverity,
+)
 from semantic_eval.evaluator import evaluate_bundle, load_document
 
 from semantic_backend.eval_adapter import candidate_bundle, candidate_from_run
@@ -237,6 +244,33 @@ async def test_integrated_evaluation_detects_artifact_mutations(service) -> None
         candidate_bundle({case_id: replace(artifact, detail=info_diagnostic_detail)}),
     )
     assert diagnostic_report.dimension_scores["governance"] < 100
+
+    compiler_response = artifact.compile_response.model_copy(deep=True)
+    compiler_response.diagnostics.append(
+        Diagnostic(
+            code="REPAIR_APPLIED",
+            severity=CompilerDiagnosticSeverity.INFO,
+            stage=DiagnosticStage.REPAIR,
+            message="Synthetic repair evidence.",
+        )
+    )
+    compiler_diagnostic_report = evaluate_bundle(
+        golden,
+        candidate_bundle(
+            {
+                case_id: replace(
+                    artifact,
+                    compile_response=compiler_response,
+                )
+            }
+        ),
+    )
+    assert compiler_diagnostic_report.dimension_scores["governance"] < 100
+
+    missing_diagnostics = candidate_bundle({case_id: artifact})
+    missing_diagnostics["cases"][case_id].pop("diagnostics")
+    missing_diagnostic_report = evaluate_bundle(golden, missing_diagnostics)
+    assert missing_diagnostic_report.dimension_scores["governance"] < 100
 
     type_corrupted = candidate_bundle({case_id: artifact})
     candidate = type_corrupted["cases"][case_id]

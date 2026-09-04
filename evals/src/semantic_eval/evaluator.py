@@ -848,15 +848,27 @@ def evaluate_case(
         ),
     ]
     if "diagnostics" in expected:
-        governance_checks.append(
-            _compare_exact(
+        diagnostics_present = "diagnostics" in actual
+        governance_checks.append(diagnostics_present)
+        if not diagnostics_present:
+            _difference(
+                differences,
                 "governance",
                 "diagnostics",
-                expected.get("diagnostics", []),
-                actual.get("diagnostics", []),
-                differences,
+                expected["diagnostics"],
+                "<missing>",
+                "required candidate diagnostics are missing",
             )
-        )
+        else:
+            governance_checks.append(
+                _compare_exact(
+                    "governance",
+                    "diagnostics",
+                    expected["diagnostics"],
+                    actual["diagnostics"],
+                    differences,
+                )
+            )
 
     lineage_required = expected.get("observability", {}).get("lineage_required", False)
     actual_lineage_value = actual.get("lineage")

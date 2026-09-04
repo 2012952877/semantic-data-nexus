@@ -174,12 +174,24 @@ def candidate_from_run(case_id: str, artifact: IntegratedRunArtifact) -> dict[st
             "result_identity_valid": result_identity_valid,
         },
         "diagnostics": [
-            {
-                "code": diagnostic.code,
-                "severity": diagnostic.severity.value,
-                "scope": diagnostic.scope.value,
-            }
-            for diagnostic in detail.diagnostics
+            *(
+                {
+                    "code": diagnostic.code,
+                    "severity": diagnostic.severity.value,
+                    "scope": diagnostic.stage.value,
+                    "source": "compiler",
+                }
+                for diagnostic in response.diagnostics
+            ),
+            *(
+                {
+                    "code": diagnostic.code,
+                    "severity": diagnostic.severity.value,
+                    "scope": diagnostic.scope.value,
+                    "source": "runtime",
+                }
+                for diagnostic in detail.diagnostics
+            ),
         ],
     }
 

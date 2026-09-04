@@ -200,13 +200,18 @@ class OrchestrationService:
         finishing = False
         if coordinator is not None:
             accepted = await coordinator.cancel(run_id)
+            if accepted:
+                async with record.lock:
+                    record.cancel_accepted = True
             if not accepted:
-                events = await coordinator.event_store.list(run_id)
+                async with record.lock:
+                    accepted = record.cancel_accepted
+                events = () if accepted else await coordinator.event_store.list(run_id)
                 if events:
                     finishing = True
                     await self._apply_runtime_events(record, events)
                     async with record.lock:
-                        record.cancel_requested = False
+                        record.terminal_observed = True
         current = asyncio.current_task()
         if (
             not accepted
@@ -792,7 +797,9 @@ class OrchestrationService:
 
     async def _ensure_active(self, record: RunRecord) -> None:
         async with record.lock:
-            if record.cancel_requested or record.status.state is RunState.CANCELLED:
+            if (
+                record.cancel_requested and not record.terminal_observed
+            ) or record.status.state is RunState.CANCELLED:
                 raise asyncio.CancelledError
 
     async def _apply_runtime_events(

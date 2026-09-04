@@ -39,6 +39,8 @@ class RunRecord:
     task: asyncio.Task[None] | None = None
     coordinator: QueryCoordinator | None = None
     cancel_requested: bool = False
+    cancel_accepted: bool = False
+    terminal_observed: bool = False
     compile_response: CompileResponse | None = None
     physical_plan: PhysicalPlan | None = None
 

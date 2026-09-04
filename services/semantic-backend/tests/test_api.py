@@ -120,6 +120,51 @@ async def test_cancellation_before_runtime_registration_cannot_publish(
     assert detail.manifest is None
 
 
+async def test_concurrent_cancellation_keeps_intent_monotonic(
+    service,
+    monkeypatch,
+) -> None:
+    service.resolver._delays["synthetic_sales"] = 0.2
+    original_cancel = QueryCoordinator.cancel
+    first_returned = asyncio.Event()
+    calls = 0
+
+    async def sequenced_cancel(self, run_id):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            result = await original_cancel(self, run_id)
+            first_returned.set()
+            return result
+        await first_returned.wait()
+        return False
+
+    monkeypatch.setattr(QueryCoordinator, "cancel", sequenced_cancel)
+    request = request_for("run_00000000000000000000000000000124")
+    await service.start(request)
+    for _ in range(200):
+        if service.resolver.active:
+            break
+        await asyncio.sleep(0.01)
+    assert service.resolver.active == 1
+
+    first_task = asyncio.create_task(service.cancel(request.run_id))
+    await first_returned.wait()
+    await asyncio.sleep(0)
+    record = await service.repository.get(request.run_id)
+    assert record.cancel_accepted
+    second_task = asyncio.create_task(service.cancel(request.run_id))
+    first, second = await asyncio.gather(first_task, second_task)
+
+    assert first.state is RunState.CANCELLED
+    assert second.state is RunState.CANCELLED
+    assert calls == 2
+    assert record.cancel_requested
+    assert record.cancel_accepted
+    assert not record.terminal_observed
+    assert (await service.get_detail(request.run_id)).result is None
+
+
 async def test_shutdown_never_waits_for_current_task(service) -> None:
     request = request_for("run_00000000000000000000000000000010")
     await service.start(request)
