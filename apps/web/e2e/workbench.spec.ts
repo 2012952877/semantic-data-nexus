@@ -17,6 +17,8 @@ test('stable routes render their primary surfaces', async ({ page }) => {
   await page.goto('/settings')
   await expect(page.getByText('未知', { exact: true })).toBeVisible()
   await expect(page.getByText('未探测或推断后端健康度', { exact: false })).toBeVisible()
+  await page.goto('/runs/run_00000000000000000000000000000001')
+  await expect(page.locator('.run-id')).not.toContainText('合成数据')
 
   await page.goto('/runs')
   await expect(page.getByRole('table', { name: '运行列表' })).toBeVisible()

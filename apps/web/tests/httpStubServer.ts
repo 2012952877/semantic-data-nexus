@@ -142,9 +142,9 @@ const detailDiagnostics = (run: StubRun) => {
       scope: 'run',
       scopeId: run.id,
       code: 'DATA_COVERAGE_GAP',
-      title: '该期间没有可用数据',
-      message: '所选期间早于当前合成数据覆盖范围。',
-      recovery: '将期间调整为 2024 年之后再试。',
+      title: '查询完成，但没有匹配行',
+      message: '当前筛选条件没有返回数据。',
+      recovery: '请检查筛选条件或选择其他期间。',
       severity: 'info',
       occurredAt: completedAt,
     }]
@@ -310,6 +310,7 @@ export const startHttpStubServer = async (port = 4310) => {
   const ambiguousPollFailures = new Set<string>()
   const ambiguousDetailFailures = new Set<string>()
   const heldPollResponses = new Map<string, ServerResponse>()
+  const heldCancellationReleases = new Map<string, () => void>()
   let sequence = 2
   const seed: StubRun = {
     id: runId(1),
@@ -430,8 +431,19 @@ export const startHttpStubServer = async (port = 4310) => {
       return
     }
     if (request.method === 'POST' && match?.[2] === '/cancel') {
+      const question = String(run.request.question)
+      if (question.includes('[mismatch-cancel]')) {
+        send(response, 200, { ...summaryFor(run), id: runId(999_999) })
+        return
+      }
+      if (question.includes('[poll-fails-before-cancel-terminal]')) {
+        heldPollResponses.get(run.id)?.destroy()
+        heldPollResponses.delete(run.id)
+        await new Promise<void>((resolve) => heldCancellationReleases.set(run.id, resolve))
+        heldCancellationReleases.delete(run.id)
+      }
       run.version += 1
-      if (String(run.request.question).includes('[delayed-cancel]')) {
+      if (question.includes('[delayed-cancel]')) {
         run.state = 'CancelRequested'
         run.cancellationRequested = true
       } else {
@@ -467,6 +479,8 @@ export const startHttpStubServer = async (port = 4310) => {
       if (decimal !== undefined && detail.result?.rows[0]) detail.result.rows[0][1] = decimal
       if (String(run.request.question).includes('[decimal-number]')
         && detail.result?.rows[0]) detail.result.rows[0][1] = 1250.5
+      const float = String(run.request.question).match(/\[float:([^\]]+)\]/)?.[1]
+      if (float !== undefined && detail.result?.rows[0]) detail.result.rows[0][2] = Number(float)
       send(response, 200, detail)
       return
     }
@@ -474,9 +488,14 @@ export const startHttpStubServer = async (port = 4310) => {
       if (!terminal.has(run.state)) {
         const requestKey = String(run.request.clientRequestId)
         const question = String(run.request.question)
-        if (question.includes('[poll-fails-after-cancel]')
+        if ((question.includes('[poll-fails-after-cancel]')
+          || question.includes('[poll-fails-before-cancel-terminal]'))
           && !heldPollResponses.has(run.id)) {
           heldPollResponses.set(run.id, response)
+          return
+        }
+        if (question.includes('[mismatch-status]')) {
+          send(response, 200, { ...summaryFor(run), id: runId(999_999) })
           return
         }
         if (question.includes('[held-running-until-cancel]')) {
@@ -518,7 +537,9 @@ export const startHttpStubServer = async (port = 4310) => {
       return
     }
     if (request.method === 'GET' && match?.[2] === undefined) {
-      send(response, 200, summaryFor(run))
+      send(response, 200, String(run.request.question).includes('[mismatch-lookup]')
+        ? { ...summaryFor(run), id: runId(999_999) }
+        : summaryFor(run))
       return
     }
     send(response, 405, { title: 'Method not allowed', status: 405 })
@@ -533,6 +554,8 @@ export const startHttpStubServer = async (port = 4310) => {
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     requests,
+    isCancellationHeld: (id: string) => heldCancellationReleases.has(id),
+    releaseCancellation: (id: string) => heldCancellationReleases.get(id)?.(),
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve())
       server.closeAllConnections()

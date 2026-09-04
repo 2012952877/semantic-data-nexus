@@ -87,6 +87,11 @@ describe('HttpSemanticNexusClient', () => {
     const empty = await client.startRun({ ...request, question: '查询 2022 年的 0 行结果' })
     expect(empty.state).toBe('empty')
     expect(empty.result?.rows).toEqual([])
+    expect(empty.diagnostics[0]).toMatchObject({
+      title: '查询完成，但没有匹配行',
+      recovery: '请检查筛选条件或选择其他期间。',
+    })
+    expect(JSON.stringify(empty.diagnostics)).not.toMatch(/2024|合成数据/)
 
     const failed = await client.startRun({ ...request, question: '触发执行失败' })
     expect(failed.state).toBe('failed')
@@ -168,6 +173,7 @@ describe('HttpSemanticNexusClient', () => {
         ...request,
         question: `decimal precision [decimal:${value}]`,
       })
+
       expect(run.result?.rows[0]?.revenue).toBe(value)
     }
 
@@ -194,6 +200,25 @@ describe('HttpSemanticNexusClient', () => {
     })).rejects.toMatchObject(
       { code: 'invalid-response' } satisfies Partial<NexusClientError>,
     )
+  })
+
+  it('enforces the BFF float magnitude and safe-integer rules', async () => {
+    for (const value of ['123.5', '9007199254740991']) {
+      const run = await createClient().startRun({
+        ...request,
+        question: `valid float [float:${value}]`,
+      })
+      expect(run.result?.rows[0]?.attainment).toBe(Number(value))
+    }
+
+    for (const value of ['9007199254740992', '1e28', '1.1e28', '-1.1e28']) {
+      await expect(createClient().startRun({
+        ...request,
+        question: `invalid float [float:${value}]`,
+      })).rejects.toMatchObject(
+        { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+      )
+    }
   })
 
   it('renders definitively rejected runs from their persisted failed summary', async () => {
@@ -229,14 +254,26 @@ describe('HttpSemanticNexusClient', () => {
     expect((await active).state).toBe('canceled')
   })
 
-  it('returns a shared terminal cancellation when the in-flight poll fails', async () => {
-    const client = createClient()
+  it('awaits an in-flight cancellation when its poll fails before terminal persistence', async () => {
+    let observePollRejection: (() => void) | undefined
+    const pollRejected = new Promise<void>((resolve) => {
+      observePollRejection = resolve
+    })
+    const observedFetch: typeof fetch = async (input, init) => {
+      try {
+        return await fetch(input, init)
+      } catch (error) {
+        if (String(input).includes('/semantic-status')) observePollRejection?.()
+        throw error
+      }
+    }
+    const client = createClient({ fetch: observedFetch })
     let releaseId: ((id: string) => void) | undefined
     const id = new Promise<string>((resolve) => {
       releaseId = resolve
     })
     const active = client.startRun(
-      { ...request, question: 'cancel during failed poll [poll-fails-after-cancel]' },
+      { ...request, question: 'cancel during failed poll [poll-fails-before-cancel-terminal]' },
       (run) => releaseId?.(run.id),
     )
     const runId = await id
@@ -244,9 +281,52 @@ describe('HttpSemanticNexusClient', () => {
       expect(latest(`/api/v1/runs/${runId}/semantic-status`)).toBeDefined()
     })
 
-    expect((await client.cancelRun(runId)).state).toBe('canceled')
+    const cancellation = client.cancelRun(runId)
+    expect(client.cancelRun(runId)).toBe(cancellation)
+    await pollRejected
+    await vi.waitFor(() => expect(stub.isCancellationHeld(runId)).toBe(true))
+    let activeSettled = false
+    void active.then(
+      () => { activeSettled = true },
+      () => { activeSettled = true },
+    )
+    try {
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(activeSettled).toBe(false)
+    } finally {
+      stub.releaseCancellation(runId)
+    }
+    expect((await cancellation).state).toBe('canceled')
     await expect(active).resolves.toMatchObject({ state: 'canceled' })
     expect(latest(`/api/v1/runs/${runId}/detail`)).toBeUndefined()
+  })
+
+  it('rejects path-bound summaries that identify a different run', async () => {
+    await expect(createClient().startRun({
+      ...request,
+      question: 'mismatched status [mismatch-status]',
+    })).rejects.toMatchObject(
+      { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+    )
+
+    const lookupClient = createClient()
+    const lookup = await lookupClient.startRun({
+      ...request,
+      question: 'mismatched lookup [mismatch-lookup]',
+    })
+    await expect(lookupClient.getRun(lookup.id)).rejects.toMatchObject(
+      { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+    )
+
+    const cancelClient = createClient()
+    const cancel = await cancelClient.startRun({
+      ...request,
+      question: 'mismatched cancel [mismatch-cancel]',
+    })
+    await expect(cancelClient.cancelRun(cancel.id)).rejects.toMatchObject(
+      { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+    )
   })
 
   it('keeps terminal cancellation absorbing when a delayed poll returns an older version', async () => {

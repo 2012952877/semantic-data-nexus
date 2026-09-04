@@ -4,8 +4,9 @@ import { vi } from 'vitest'
 import AskView from '@/views/AskView.vue'
 import { nexusClientKey } from '@/api/clientContext'
 import { MockSemanticNexusClient } from '@/api/mockSemanticNexusClient'
+import { createSeedRun } from '@/api/mockFixtures'
 import type { SemanticNexusClient } from '@/api/semanticNexusClient'
-import type { Run } from '@/domain'
+import type { AskRequest, Run } from '@/domain'
 
 const mountAsk = (
   client: SemanticNexusClient = new MockSemanticNexusClient(20, false),
@@ -72,7 +73,7 @@ describe('ask workflow', () => {
     await flushPromises()
 
     const outcome = wrapper.get('[role="status"][tabindex="-1"]')
-    expect(outcome.text()).toContain('超出合成数据覆盖范围')
+    expect(outcome.text()).toContain('合成数据覆盖范围')
     expect(document.activeElement).toBe(outcome.element)
   })
 
@@ -152,5 +153,84 @@ describe('ask workflow', () => {
 
     expect(wrapper.text()).toContain('正在编排')
     expect(wrapper.find('button.secondary-button').exists()).toBe(false)
+  })
+
+  it('keeps a known HTTP run actionable and resumes it after status loss', async () => {
+    const question = '比较各区域第二季度净销售额与目标'
+    const active: Run = {
+      ...createSeedRun('run_known_active', question, 'succeeded', 0),
+      state: 'running',
+      completedAt: undefined,
+      result: undefined,
+      manifest: undefined,
+    }
+    const completed = createSeedRun('run_known_active', question, 'succeeded', 0)
+    let calls = 0
+    const startRun: SemanticNexusClient['startRun'] = vi.fn(async (
+      _request: AskRequest,
+      onProgress?: (run: Run) => void,
+    ) => {
+      calls += 1
+      if (calls === 1) {
+        onProgress?.(active)
+        throw new Error('轮询连接中断。')
+      }
+      return completed
+    })
+    const client: SemanticNexusClient = {
+      mode: 'http',
+      listRuns: vi.fn(),
+      getRun: vi.fn(),
+      startRun,
+      cancelRun: vi.fn(),
+      getOntology: vi.fn(),
+      getComponentStatus: vi.fn(),
+    }
+    const wrapper = mountAsk(client)
+    await askQuestion(wrapper)
+
+    expect(wrapper.text()).toContain(active.id)
+    expect(wrapper.text()).toContain('状态暂不可用')
+    expect(wrapper.text()).toContain('运行可能继续')
+    expect(wrapper.get('button.secondary-button').text()).toContain('取消运行')
+    await wrapper.get('.inline-outcome button').trigger('click')
+    await flushPromises()
+
+    expect(startRun).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('结果已提交')
+  })
+
+  it('uses BFF zero-row diagnostics without Mock coverage claims', async () => {
+    const empty: Run = {
+      ...createSeedRun('run_http_empty', '比较各区域第二季度净销售额与目标', 'empty', 0),
+      diagnostics: [{
+        code: 'NO_MATCHES',
+        title: '查询完成，但没有匹配行',
+        message: '当前筛选条件没有返回数据。',
+        recovery: '请检查筛选条件或选择其他期间。',
+        severity: 'info',
+      }],
+      result: {
+        columns: [],
+        rows: [],
+        rowCount: 0,
+        coverage: '已返回全部 0 行。',
+      },
+    }
+    const client: SemanticNexusClient = {
+      mode: 'http',
+      listRuns: vi.fn(),
+      getRun: vi.fn(),
+      startRun: vi.fn().mockResolvedValue(empty),
+      cancelRun: vi.fn(),
+      getOntology: vi.fn(),
+      getComponentStatus: vi.fn(),
+    }
+    const wrapper = mountAsk(client)
+    await askQuestion(wrapper)
+
+    expect(wrapper.text()).toContain('当前筛选条件没有返回数据')
+    expect(wrapper.text()).not.toContain('2024')
+    expect(wrapper.text()).not.toContain('合成数据')
   })
 })

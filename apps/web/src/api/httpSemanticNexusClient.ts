@@ -383,6 +383,7 @@ const isIsoDate = (value: unknown): value is string => {
 }
 
 const maximumDecimalMagnitude = `1${'0'.repeat(28)}`
+const maximumNumberMagnitude = 1e28
 const isCanonicalDecimal = (value: unknown): value is string => {
   if (!isString(value) || !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,28})?$/.test(value)) {
     return false
@@ -500,7 +501,12 @@ const isCellForColumn = (value: unknown, column: BffResultColumn) => {
   if (value === null) return column.nullable
   if (column.dataType === 'string') return isString(value) && [...value].length <= 4_000
   if (column.dataType === 'integer') return typeof value === 'number' && Number.isSafeInteger(value)
-  if (column.dataType === 'float') return typeof value === 'number' && Number.isFinite(value)
+  if (column.dataType === 'float') {
+    return typeof value === 'number'
+      && Number.isFinite(value)
+      && Math.abs(value) <= maximumNumberMagnitude
+      && (!Number.isInteger(value) || Number.isSafeInteger(value))
+  }
   if (column.dataType === 'decimal') return isCanonicalDecimal(value)
   if (column.dataType === 'boolean') return typeof value === 'boolean'
   if (column.dataType === 'date') {
@@ -916,6 +922,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
   >()
   private readonly snapshots = new Map<string, BffRunSummary>()
   private readonly pendingAttempts = new Map<string, PendingCreateAttempt>()
+  private readonly cancellations = new Map<string, Promise<Run>>()
 
   constructor(options: HttpSemanticNexusClientOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl)
@@ -949,8 +956,10 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     const path = `/api/v1/runs/${encodeURIComponent(id)}`
     const summaryResponse = await this.request(path, {}, true)
     if (summaryResponse.status === 404) return undefined
-    const summary = this.acceptSummary(
+    const summary = this.acceptPathSummary(
+      id,
       await this.validatedJson(summaryResponse, isBffRunSummary, 'run summary'),
+      'run lookup',
     )
     if (summary.state !== 'Succeeded') return mapSummary(summary)
     const detailResponse = await this.request(`${path}/detail`)
@@ -990,15 +999,17 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     }
     let summary: BffRunSummary
     if (attempt.runId) {
-      const cached = this.terminalSnapshot(attempt.runId)
+      const cached = await this.terminalSnapshotAfterCancellation(attempt.runId)
       if (cached) {
         summary = cached
       } else {
         const resumed = await this.request(
           `/api/v1/runs/${encodeURIComponent(attempt.runId)}/semantic-status`,
         )
-        summary = this.acceptSummary(
+        summary = this.acceptPathSummary(
+          attempt.runId,
           await this.validatedJson(resumed, isBffRunSummary, 'resumed run'),
+          'resumed run',
         )
       }
     } else {
@@ -1028,13 +1039,19 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
         break
       }
       if (Date.now() + delayMs > deadline) {
+        const terminal = await this.terminalSnapshotAfterCancellation(summary.id)
+        if (terminal) {
+          summary = terminal
+          onProgress?.(mapSummary(summary))
+          break
+        }
         throw new NexusClientError(
           'timeout',
           `Run ${summary.id} did not reach a terminal state within ${this.deadlineMs}ms.`,
         )
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs))
-      const cached = this.terminalSnapshot(summary.id)
+      const cached = await this.terminalSnapshotAfterCancellation(summary.id)
       if (cached) {
         summary = cached
       } else {
@@ -1045,11 +1062,13 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
             false,
             deadline,
           )
-          summary = this.acceptSummary(
+          summary = this.acceptPathSummary(
+            summary.id,
             await this.validatedJson(polled, isBffRunSummary, 'polled run'),
+            'polled run',
           )
         } catch (error) {
-          const terminal = this.terminalSnapshot(summary.id)
+          const terminal = await this.terminalSnapshotAfterCancellation(summary.id)
           if (!terminal) throw error
           summary = terminal
         }
@@ -1075,13 +1094,26 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     return mapped
   }
 
-  async cancelRun(id: string): Promise<Run> {
+  cancelRun(id: string): Promise<Run> {
+    const existing = this.cancellations.get(id)
+    if (existing) return existing
+    const cancellation = this.performCancellation(id)
+    this.cancellations.set(id, cancellation)
+    void cancellation.finally(() => {
+      if (this.cancellations.get(id) === cancellation) this.cancellations.delete(id)
+    }).catch(() => undefined)
+    return cancellation
+  }
+
+  private async performCancellation(id: string): Promise<Run> {
     const response = await this.request(
       `/api/v1/runs/${encodeURIComponent(id)}/cancel`,
       { method: 'POST' },
     )
-    const summary = this.acceptSummary(
+    const summary = this.acceptPathSummary(
+      id,
       await this.validatedJson(response, isBffRunSummary, 'cancelled run'),
+      'cancelled run',
     )
     if (summary.state !== 'Succeeded') {
       if (terminalStates.has(summary.state)) this.clearAttemptByRunId(summary.id)
@@ -1138,6 +1170,20 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     return candidate
   }
 
+  private acceptPathSummary(
+    expectedRunId: string,
+    candidate: BffRunSummary,
+    responseName: string,
+  ) {
+    if (candidate.id !== expectedRunId) {
+      throw new NexusClientError(
+        'invalid-response',
+        `The BFF returned a ${responseName} for a different run.`,
+      )
+    }
+    return this.acceptSummary(candidate)
+  }
+
   private statePrecedence(state: BffRunState) {
     return runStates.indexOf(state)
   }
@@ -1145,6 +1191,13 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
   private terminalSnapshot(runId: string) {
     const snapshot = this.snapshots.get(runId)
     return snapshot && terminalStates.has(snapshot.state) ? snapshot : undefined
+  }
+
+  private async terminalSnapshotAfterCancellation(runId: string) {
+    const current = this.terminalSnapshot(runId)
+    if (current) return current
+    await this.cancellations.get(runId)?.catch(() => undefined)
+    return this.terminalSnapshot(runId)
   }
 
   private clearAttempt(requestKey: string, attempt: PendingCreateAttempt) {

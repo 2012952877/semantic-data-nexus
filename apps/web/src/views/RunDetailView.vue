@@ -60,7 +60,7 @@ watch(() => route.params.id, () => load())
 
 <template>
   <div v-if="loading" class="page-shell" aria-live="polite">正在读取运行记录…</div>
-  <RunDetailContent v-else-if="run" :run="run" />
+  <RunDetailContent v-else-if="run" :run="run" :synthetic="client.mode === 'mock'" />
   <div v-else class="page-shell not-found" role="alert">
     <h1>{{ errorMessage ? '无法读取运行详情' : '找不到这条运行记录' }}</h1>
     <p>{{ errorMessage || '这条运行记录可能不存在或已经被清除。' }}</p>
