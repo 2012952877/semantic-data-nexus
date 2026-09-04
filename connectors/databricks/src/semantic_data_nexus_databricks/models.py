@@ -256,11 +256,7 @@ class CapabilityDeclaration:
             external_links=True,
             disposition_formats={
                 FetchDisposition.INLINE.value: (ResultFormat.JSON_ARRAY.value,),
-                FetchDisposition.EXTERNAL_LINKS.value: (
-                    ResultFormat.JSON_ARRAY.value,
-                    ResultFormat.ARROW_STREAM.value,
-                    ResultFormat.CSV.value,
-                ),
+                FetchDisposition.EXTERNAL_LINKS.value: (ResultFormat.JSON_ARRAY.value,),
             },
         )
 

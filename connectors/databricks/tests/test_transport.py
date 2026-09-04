@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
+import pytest
 
 from semantic_data_nexus_databricks.transport import HttpxTransport
 
@@ -41,6 +44,36 @@ async def test_httpx_transport_drops_inherited_credentials() -> None:
     assert "X-Default-Secret" not in observed_headers
     assert observed_headers["X-Requested"] == "synthetic-value"
     assert observed_url == "https://results.example.invalid/chunk?sig=a%2Bb%3D&sp=r"
+
+
+async def test_httpx_transport_redacts_signed_query_from_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    observed_url: str | None = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observed_url
+        observed_url = str(request.url)
+        return httpx.Response(200, content=b"synthetic")
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = HttpxTransport(client)
+        await transport.request(
+            "GET",
+            "https://results.example.invalid/chunk?sig=synthetic-signature&token=synthetic-token",
+            headers={},
+            json_body=None,
+            timeout_seconds=1,
+        )
+
+    assert observed_url is not None
+    assert "sig=synthetic-signature" in observed_url
+    assert "token=synthetic-token" in observed_url
+    log_text = caplog.text
+    assert "https://results.example.invalid/chunk" in log_text
+    assert "synthetic-signature" not in log_text
+    assert "synthetic-token" not in log_text
 
 
 async def test_httpx_transport_preserves_explicit_authorization() -> None:

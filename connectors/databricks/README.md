@@ -156,9 +156,11 @@ host, parameters, rows, or response payload.
 - Parameter values are sent through API parameter markers and never logged.
 - External links are short-lived credentials. The client never logs them and fetches them
   without the Databricks authorization header. API-supplied external headers are treated as
-  sensitive, and an external `Authorization` header is rejected.
-- `INLINE` supports `JSON_ARRAY` and is limited by the service to 25 MiB. `EXTERNAL_LINKS`
-  supports `JSON_ARRAY`, `ARROW_STREAM`, and `CSV`; external results can be chunked.
+  sensitive, an external `Authorization` header is rejected, and HTTPX request logging strips
+  URL query strings before records reach handlers.
+- M0 supports `JSON_ARRAY` for both `INLINE` and `EXTERNAL_LINKS`; incompatible formats are
+  rejected during configuration, before a statement can be submitted. External results can be
+  chunked.
 - Request IDs may be emitted for support correlation. SQL, rows, workspace configuration,
   authorization values, external URLs, and external headers are excluded from diagnostics.
 - Decimal parameters use `DecimalType(precision, scale)` (or

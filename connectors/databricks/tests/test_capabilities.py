@@ -12,7 +12,7 @@ def test_capability_serialization_is_deterministic() -> None:
         "LIMIT",
     ]
     assert serialized["disposition_formats"] == {
-        "EXTERNAL_LINKS": ["JSON_ARRAY", "ARROW_STREAM", "CSV"],
+        "EXTERNAL_LINKS": ["JSON_ARRAY"],
         "INLINE": ["JSON_ARRAY"],
     }
     assert serialized["named_parameterization"] is True

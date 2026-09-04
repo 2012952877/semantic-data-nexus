@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -8,6 +9,22 @@ from typing import Protocol, cast
 import httpx
 
 from .exceptions import TransportError, TransportTimeoutError
+
+
+class _RedactHttpxQueryFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not isinstance(record.args, tuple):
+            return True
+        record.args = tuple(
+            value.copy_with(query=None)
+            if isinstance(value, httpx.URL) and value.query
+            else value
+            for value in record.args
+        )
+        return True
+
+
+_HTTPX_QUERY_FILTER = _RedactHttpxQueryFilter()
 
 
 @dataclass(frozen=True)
@@ -34,6 +51,9 @@ class AsyncHttpTransport(Protocol):
 
 class HttpxTransport:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+        httpx_logger = logging.getLogger("httpx")
+        if _HTTPX_QUERY_FILTER not in httpx_logger.filters:
+            httpx_logger.addFilter(_HTTPX_QUERY_FILTER)
         self._client = client or httpx.AsyncClient(follow_redirects=False)
         self._owns_client = client is None
 

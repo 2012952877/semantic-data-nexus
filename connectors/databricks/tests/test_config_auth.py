@@ -36,13 +36,16 @@ def test_invalid_configuration_is_rejected(host: str, warehouse_id: str) -> None
         ResolverConfig(workspace_host=host, warehouse_id=warehouse_id)
 
 
-def test_inline_arrow_combination_is_rejected() -> None:
+@pytest.mark.parametrize("result_format", [ResultFormat.ARROW_STREAM, ResultFormat.CSV])
+def test_non_json_result_format_is_rejected_before_transport(
+    result_format: ResultFormat,
+) -> None:
     with pytest.raises(ConfigurationError):
         ResolverConfig(
             workspace_host="workspace.example.invalid",
             warehouse_id="warehouse-test",
-            disposition=FetchDisposition.INLINE,
-            result_format=ResultFormat.ARROW_STREAM,
+            disposition=FetchDisposition.EXTERNAL_LINKS,
+            result_format=result_format,
         )
 
 

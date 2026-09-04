@@ -56,6 +56,31 @@ def _validate_function_calls(sql: str, statement: exp.Query) -> None:
         for alias in statement.find_all(exp.TableAlias)
         if alias.args.get("columns") and isinstance(alias.this, exp.Identifier)
     }
+    datatype_call_indexes: set[int] = set()
+    for cast_index, cast_token in enumerate(tokens[:-1]):
+        if (
+            cast_token.text.upper() != "CAST"
+            or tokens[cast_index + 1].token_type is not TokenType.L_PAREN
+        ):
+            continue
+        depth = 0
+        for token_index in range(cast_index + 1, len(tokens)):
+            current = tokens[token_index]
+            if current.token_type is TokenType.L_PAREN:
+                depth += 1
+            elif current.token_type is TokenType.R_PAREN:
+                depth -= 1
+                if depth == 0:
+                    break
+            elif current.token_type is TokenType.ALIAS and depth == 1:
+                datatype_index = token_index + 1
+                if (
+                    datatype_index + 1 < len(tokens)
+                    and tokens[datatype_index].token_type in parser.TYPE_TOKENS
+                    and tokens[datatype_index + 1].token_type is TokenType.L_PAREN
+                ):
+                    datatype_call_indexes.add(datatype_index)
+                break
 
     for index, token in enumerate(tokens):
         source_name = token.text.upper()
@@ -85,6 +110,8 @@ def _validate_function_calls(sql: str, statement: exp.Query) -> None:
         if not has_parentheses:
             continue
         if (token.start, token.end) in alias_column_list_spans:
+            continue
+        if index in datatype_call_indexes:
             continue
         if token.token_type not in parser.FUNC_TOKENS:
             continue

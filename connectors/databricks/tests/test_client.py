@@ -598,38 +598,6 @@ async def test_external_link_batch_continues_after_highest_consumed_chunk() -> N
     transport.assert_drained()
 
 
-async def test_arrow_external_payload_is_exposed_without_interpretation() -> None:
-    transport = FakeTransport()
-    succeeded = response(
-        "SUCCEEDED",
-        result={
-            "external_links": [
-                {"external_link": "https://results.example.invalid/chunk-arrow"}
-            ]
-        },
-    )
-    manifest = succeeded["manifest"]
-    assert isinstance(manifest, dict)
-    manifest["format"] = "ARROW_STREAM"
-    transport.enqueue("POST", f"{BASE}/api/2.0/sql/statements", json_body=succeeded)
-    transport.enqueue(
-        "GET",
-        "https://results.example.invalid/chunk-arrow",
-        content=b"synthetic-arrow-stream",
-    )
-    client = StatementExecutionClient(
-        config(
-            disposition=FetchDisposition.EXTERNAL_LINKS,
-            result_format=ResultFormat.ARROW_STREAM,
-        ),
-        SyntheticTokenProvider(),
-        transport=transport,
-    )
-    result = await client.execute("SELECT region, amount FROM orders")
-    assert result.payloads == (b"synthetic-arrow-stream",)
-    assert result.rows == ()
-
-
 async def test_manifest_truncation_fails_closed() -> None:
     transport = FakeTransport()
     transport.enqueue(

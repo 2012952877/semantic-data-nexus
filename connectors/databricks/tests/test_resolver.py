@@ -56,6 +56,11 @@ BASE = "https://workspace.example.invalid"
         "SELECT catalog.synthetic.CURRENT_DATE()",
         "SELECT CURDATE",
         "SELECT ABS(CURDATE)",
+        "SELECT CAST(amount AS DECIMAL(http_request(12), 2)) FROM orders",
+        "SELECT CAST(amount AS DECIMAL(synthetic_udf(12), 2)) FROM orders",
+        "SELECT CAST(amount AS DECIMAL(synthetic.http_request(12), 2)) FROM orders",
+        "SELECT CAST(amount AS DECIMAL(`http_request`(12), 2)) FROM orders",
+        "SELECT CAST(amount AS DECIMAL(synthetic.DECIMAL(12), 2)) FROM orders",
     ],
 )
 def test_unsafe_or_multi_statement_sql_is_rejected(sql: str) -> None:
@@ -97,6 +102,7 @@ def test_literals_comments_and_read_only_ctes_are_safe(sql: str) -> None:
             "SELECT LOWER(region), UPPER(region), COALESCE(region, 'unknown'), "
             "ABS(amount), ROUND(amount, 2), CAST(amount AS STRING) FROM orders"
         ),
+        "SELECT CAST(amount AS DECIMAL(12, 2)) FROM orders",
     ],
 )
 def test_safe_m0_functions_are_allowed(sql: str) -> None:

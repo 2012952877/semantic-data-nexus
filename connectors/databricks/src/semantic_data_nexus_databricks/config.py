@@ -106,11 +106,8 @@ class ResolverConfig:
             )
         if self.row_limit <= 0 or self.byte_limit <= 0:
             raise ConfigurationError("row_limit and byte_limit must be positive")
-        if (
-            self.disposition is FetchDisposition.INLINE
-            and self.result_format is not ResultFormat.JSON_ARRAY
-        ):
-            raise ConfigurationError("INLINE disposition supports only JSON_ARRAY")
+        if self.result_format is not ResultFormat.JSON_ARRAY:
+            raise ConfigurationError("M0 resolver supports only JSON_ARRAY results")
 
     @property
     def api_wait_timeout(self) -> str:
