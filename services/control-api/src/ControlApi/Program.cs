@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Net;
 using System.Threading.RateLimiting;
-using System.Text.Json.Serialization;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
 using ControlApi;
 using ControlApi.Authentication;
+using ControlApi.Contracts;
 using ControlApi.Endpoints;
 using ControlApi.Persistence;
 using ControlApi.Semantic;
@@ -29,8 +29,10 @@ builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.ConfigureHttpJsonOptions(options =>
-    options.SerializerOptions.Converters.Add(
-        new JsonStringEnumConverter(allowIntegerValues: false)));
+{
+    JsonContractOptions.Configure(options.SerializerOptions);
+    SemanticJsonContractOptions.Configure(options.SerializerOptions);
+});
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IRunRepository, InMemoryRunRepository>();
 builder.Services.AddSingleton<IRunDispatchCoordinator, RunDispatchCoordinator>();

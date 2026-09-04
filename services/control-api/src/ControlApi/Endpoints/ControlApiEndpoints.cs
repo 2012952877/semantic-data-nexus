@@ -29,6 +29,8 @@ public static class ControlApiEndpoints
             .RequireAuthorization(Policies.Reader);
         runs.MapGet("/{runId}", GetRun)
             .RequireAuthorization(Policies.Reader);
+        runs.MapGet("/{runId}/detail", GetRunDetail)
+            .RequireAuthorization(Policies.Reader);
         runs.MapPost("/{runId}/cancel", CancelRun)
             .RequireAuthorization(Policies.Contributor);
         runs.MapGet("/{runId}/semantic-status", GetSemanticStatus)
@@ -161,7 +163,14 @@ public static class ControlApiEndpoints
         semanticBackend.StartAsync(
             new SemanticRunStart(
                 run.Id,
+                run.ClientRequestId,
                 run.Workload,
+                run.Question,
+                run.EvaluationClock,
+                run.EvaluationTimezone,
+                run.CompilationMode,
+                run.ExecutionMode,
+                run.OutputMode,
                 subject,
                 Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier),
             cancellationToken);
@@ -320,6 +329,34 @@ public static class ControlApiEndpoints
         return TypedResults.Accepted($"/api/v1/runs/{id}", responseRun);
     }
 
+    private static async Task<IResult> GetRunDetail(
+        string runId,
+        HttpContext context,
+        IRunRepository repository,
+        ISemanticBackendClient semanticBackend,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRunId(runId, context, out var id, out var problem))
+        {
+            return problem;
+        }
+
+        var run = await repository.GetAsync(id, cancellationToken);
+        if (run is null)
+        {
+            return NotFound(context);
+        }
+
+        var detail = await semanticBackend.GetDetailAsync(id, cancellationToken);
+        if (!string.Equals(detail.Question, run.Question, StringComparison.Ordinal))
+        {
+            throw SemanticRunDetailValidator.Invalid(
+                "The semantic backend returned a question that does not match the run.");
+        }
+
+        return TypedResults.Ok(detail);
+    }
+
     private static async Task<RunMetadata> ReconcileMissingCancellation(
         RunId id,
         MutationResult cancellation,
@@ -475,7 +512,66 @@ public static class ControlApiEndpoints
                 "Workload must contain 1-64 ASCII letters, digits, '.', '-', or '_'.");
         }
 
+        if (string.IsNullOrWhiteSpace(request.Question) ||
+            request.Question.Length > 4_000)
+        {
+            return Invalid(
+                context,
+                "invalid_question",
+                "Question must contain between 1 and 4000 characters.");
+        }
+
+        if (request.EvaluationClock == default)
+        {
+            return Invalid(
+                context,
+                "invalid_evaluation_clock",
+                "EvaluationClock must be a timezone-aware timestamp.");
+        }
+
+        if (!IsIanaTimeZone(request.EvaluationTimezone))
+        {
+            return Invalid(
+                context,
+                "invalid_evaluation_timezone",
+                "EvaluationTimezone must be a valid IANA time zone name.");
+        }
+
+        if (!Enum.IsDefined(request.CompilationMode) ||
+            !Enum.IsDefined(request.ExecutionMode) ||
+            !Enum.IsDefined(request.OutputMode))
+        {
+            return Invalid(
+                context,
+                "invalid_run_options",
+                "CompilationMode, ExecutionMode, and OutputMode must use supported values.");
+        }
+
         return null;
+    }
+
+    private static bool IsIanaTimeZone(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length > 100 ||
+            !TimeZoneInfo.TryConvertIanaIdToWindowsId(value, out _))
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = TimeZoneInfo.FindSystemTimeZoneById(value);
+            return true;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return false;
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return false;
+        }
     }
 
     private static ProblemHttpResult? Validate(SubmitFeedbackRequest request, HttpContext context)

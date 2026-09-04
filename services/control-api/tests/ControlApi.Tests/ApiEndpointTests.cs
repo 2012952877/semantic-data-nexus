@@ -125,6 +125,84 @@ public sealed class ApiEndpointTests
     }
 
     [Fact]
+    public async Task ReaderCanGetTypedRunDetail()
+    {
+        var backend = new StubSemanticBackendClient();
+        await using var factory = new ControlApiFactory(backend);
+        using var contributor = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("detail-success") with
+        {
+            Question = "Compare synthetic regional revenue"
+        };
+        var create = await contributor.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var run = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+
+        using var reader = factory.CreateAuthenticatedClient("reader");
+        var response = await reader.GetAsync($"/api/v1/runs/{run!.Id}/detail");
+        var detail = await response.Content.ReadFromJsonAsync<SemanticRunDetail>(JsonOptions);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(run.Id, detail!.RunId);
+        Assert.Equal(request.Question, detail.Question);
+        Assert.Equal(1, backend.DetailCalls);
+    }
+
+    [Fact]
+    public async Task DetailRequiresAuthentication()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/v1/runs/{RunId.New()}/detail");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("semantic_backend_timeout", HttpStatusCode.GatewayTimeout)]
+    [InlineData("semantic_backend_detail_failed", HttpStatusCode.BadGateway)]
+    public async Task DetailFailuresMapToStableProblems(
+        string code,
+        HttpStatusCode expectedStatus)
+    {
+        var backend = new StubSemanticBackendClient();
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var create = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            ValidCreateRequest($"detail-{code}"),
+            JsonOptions);
+        var run = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        backend.DetailException = new SemanticBackendException(code, "Synthetic detail failure.");
+
+        var response = await client.GetAsync($"/api/v1/runs/{run!.Id}/detail");
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        Assert.Equal(code, Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task DetailQuestionMismatchIsRejected()
+    {
+        var backend = new StubSemanticBackendClient();
+        await using var factory = new ControlApiFactory(backend);
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var create = await client.PostAsJsonAsync(
+            "/api/v1/runs",
+            ValidCreateRequest("detail-question"),
+            JsonOptions);
+        var run = await create.Content.ReadFromJsonAsync<RunMetadata>(JsonOptions);
+        backend.DetailResult = StubSemanticBackendClient.Detail(run!.Id, "Different question");
+
+        var response = await client.GetAsync($"/api/v1/runs/{run.Id}/detail");
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("semantic_backend_invalid_response", Extension(problem!, "code"));
+    }
+
+    [Fact]
     public async Task InvalidRunIdReturnsStableProblemDetailsAndTraceId()
     {
         await using var factory = new ControlApiFactory();
@@ -139,6 +217,59 @@ public sealed class ApiEndpointTests
         Assert.Equal("invalid_run_id", Extension(problem, "code"));
         Assert.False(string.IsNullOrWhiteSpace(Extension(problem, "traceId")));
         Assert.Equal("test-correlation-001", Extension(problem, "correlationId"));
+    }
+
+    [Theory]
+    [InlineData("question", " ", "invalid_question")]
+    [InlineData("evaluationTimezone", "Not/AZone", "invalid_evaluation_timezone")]
+    public async Task InvalidRunRequestFieldsReturnStableProblems(
+        string field,
+        string value,
+        string expectedCode)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest($"invalid-{field}");
+        request = field switch
+        {
+            "question" => request with { Question = value },
+            "evaluationTimezone" => request with { EvaluationTimezone = value },
+            _ => throw new InvalidOperationException("Unsupported test field.")
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(expectedCode, Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task EvaluationClockWithoutOffsetIsRejected()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using var content = new StringContent(
+            """
+            {
+              "clientRequestId": "invalid-clock",
+              "workload": "synthetic-workload",
+              "question": "Compare synthetic regional revenue",
+              "evaluationClock": "2026-08-15T09:00:00",
+              "evaluationTimezone": "Asia/Shanghai",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """,
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
     }
 
     [Theory]
@@ -457,23 +588,44 @@ public sealed class ApiEndpointTests
     }
 
     [Fact]
-    public async Task OpenApiRequiresFeedbackOutcome()
+    public async Task OpenApiDescribesRequiredRunOptionsFeedbackAndDetail()
     {
         await using var factory = new ControlApiFactory();
         using var client = factory.CreateClient();
 
         using var document = JsonDocument.Parse(
             await client.GetStringAsync("/swagger/v1/swagger.json"));
-        var required = document.RootElement
+        var schemas = document.RootElement
             .GetProperty("components")
-            .GetProperty("schemas")
+            .GetProperty("schemas");
+        var feedbackRequired = schemas
             .GetProperty(nameof(SubmitFeedbackRequest))
             .GetProperty("required")
             .EnumerateArray()
             .Select(item => item.GetString())
             .ToArray();
+        var createSchema = schemas.GetProperty(nameof(CreateRunRequest));
+        var createRequired = createSchema
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        var createProperties = createSchema.GetProperty("properties");
+        var detailOperation = document.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/v1/runs/{runId}/detail")
+            .GetProperty("get");
 
-        Assert.Contains("outcome", required);
+        Assert.Contains("outcome", feedbackRequired);
+        Assert.Contains("question", createRequired);
+        Assert.Contains("evaluationClock", createRequired);
+        Assert.Contains("evaluationTimezone", createRequired);
+        Assert.Contains("compilationMode", createRequired);
+        Assert.Contains("executionMode", createRequired);
+        Assert.Contains("outputMode", createRequired);
+        Assert.True(createProperties.TryGetProperty("question", out _));
+        Assert.True(createProperties.TryGetProperty("evaluationClock", out _));
+        Assert.True(detailOperation.TryGetProperty("security", out _));
     }
 
     [Fact]
@@ -897,9 +1049,21 @@ public sealed class ApiEndpointTests
     private static JsonSerializerOptions CreateJsonOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-        options.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
+        JsonContractOptions.Configure(options);
+        SemanticJsonContractOptions.Configure(options);
         return options;
     }
+
+    private static CreateRunRequest ValidCreateRequest(string clientRequestId) =>
+        new(
+            clientRequestId,
+            "synthetic-workload",
+            "Compare synthetic regional revenue",
+            new DateTimeOffset(2026, 8, 15, 9, 0, 0, TimeSpan.FromHours(8)),
+            "Asia/Shanghai",
+            CompilationMode.RegionalQuarterlyProfit,
+            ExecutionMode.Thread,
+            OutputMode.Normal);
 
     private static TaskCompletionSource<bool> NewGate() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - "services/control-api/**"
+      - "docs/architecture/http-contracts.md"
       - ".github/workflows/control-api.yml"
   push:
     branches:
       - main
     paths:
       - "services/control-api/**"
+      - "docs/architecture/http-contracts.md"
       - ".github/workflows/control-api.yml"
 
 permissions:

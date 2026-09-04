@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
+using ControlApi.Contracts;
 using ControlApi.Domain;
 using ControlApi.Semantic;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -13,6 +16,18 @@ public sealed class SemanticBackendClientTests
     public async Task StartUsesTypedBoundaryAndDoesNotRetry()
     {
         var runId = RunId.New();
+        var start = new SemanticRunStart(
+            runId,
+            "request-typed",
+            "synthetic-workload",
+            "Compare synthetic regional revenue",
+            DateTimeOffset.Parse("2026-08-15T09:00:00+08:00"),
+            "Asia/Shanghai",
+            CompilationMode.MonthlyRegionalComparison,
+            ExecutionMode.Thread,
+            OutputMode.Stream,
+            "synthetic-user",
+            "trace");
         var calls = 0;
         var handler = new DelegateHandler(async (request, cancellationToken) =>
         {
@@ -20,7 +35,26 @@ public sealed class SemanticBackendClientTests
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Equal("/v1/runs", request.RequestUri!.AbsolutePath);
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            Assert.Contains(runId.Value, body, StringComparison.Ordinal);
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            Assert.Equal(runId.Value, root.GetProperty("runId").GetString());
+            Assert.Equal("request-typed", root.GetProperty("clientRequestId").GetString());
+            Assert.Equal("synthetic-workload", root.GetProperty("workload").GetString());
+            Assert.Equal(
+                "Compare synthetic regional revenue",
+                root.GetProperty("question").GetString());
+            Assert.Equal(
+                "2026-08-15T09:00:00+08:00",
+                root.GetProperty("evaluationClock").GetString());
+            Assert.Equal("Asia/Shanghai", root.GetProperty("evaluationTimezone").GetString());
+            Assert.Equal(
+                "monthly_regional_comparison",
+                root.GetProperty("compilationMode").GetString());
+            Assert.Equal("thread", root.GetProperty("executionMode").GetString());
+            Assert.Equal("stream", root.GetProperty("outputMode").GetString());
+            Assert.Equal("synthetic-user", root.GetProperty("requestedBy").GetString());
+            Assert.Equal("trace", root.GetProperty("traceId").GetString());
+            Assert.Equal(11, root.EnumerateObject().Count());
             return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
         });
         using var httpClient = new HttpClient(handler)
@@ -33,11 +67,91 @@ public sealed class SemanticBackendClientTests
 
         var exception = await Assert.ThrowsAsync<SemanticBackendException>(() =>
             client.StartAsync(
-                new SemanticRunStart(runId, "synthetic-workload", "synthetic-user", "trace"),
+                start,
                 default));
 
         Assert.Equal("semantic_backend_start_failed", exception.DiagnosticCode);
         Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task DetailUsesTypedBoundaryAndRejectsMismatchedRunId()
+    {
+        var requested = RunId.New();
+        var options = JsonOptions();
+        var handler = new DelegateHandler((request, _) =>
+        {
+            Assert.Equal(
+                $"/v1/runs/{requested.Value}/detail",
+                request.RequestUri!.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(
+                    StubSemanticBackendClient.Detail(RunId.New()),
+                    options: options)
+            });
+        });
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/")
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        var exception = await Assert.ThrowsAsync<SemanticBackendException>(() =>
+            client.GetDetailAsync(requested, default));
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
+    public void DetailValidatorRejectsUnboundedRowsAndNonScalarCells()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var unbounded = valid with
+        {
+            Result = valid.Result! with
+            {
+                Rows = Enumerable.Repeat(valid.Result.Rows[0], 1_001).ToArray(),
+                RowCount = 1_001,
+                Truncated = false
+            }
+        };
+
+        var exception = Assert.Throws<SemanticBackendException>(() =>
+            SemanticRunDetailValidator.Validate(unbounded, runId));
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize<SemanticScalarValue>("{\"unsafe\":true}"));
+    }
+
+    [Fact]
+    public async Task DetailRejectsUnknownJsonProperties()
+    {
+        var runId = RunId.New();
+        var payload = JsonSerializer.Serialize(
+            StubSemanticBackendClient.Detail(runId),
+            JsonOptions());
+        payload = payload[..^1] + ",\"unbounded\":{}}";
+        var handler = new DelegateHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            }));
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/")
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        var exception = await Assert.ThrowsAsync<SemanticBackendException>(() =>
+            client.GetDetailAsync(runId, default));
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
     }
 
     [Fact]
@@ -127,6 +241,14 @@ public sealed class SemanticBackendClientTests
                 SemanticRunStatusValidator.Validate(status, runId));
             Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
             Assert.Equal(SemanticFailureKind.InvalidResponse, exception.FailureKind);
+        }
+
+        private static JsonSerializerOptions JsonOptions()
+        {
+            var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            JsonContractOptions.Configure(options);
+            SemanticJsonContractOptions.Configure(options);
+            return options;
         }
     }
 }
