@@ -273,6 +273,46 @@ public sealed class ApiEndpointTests
     }
 
     [Theory]
+    [InlineData("clientRequestId")]
+    [InlineData("workload")]
+    [InlineData("question")]
+    [InlineData("evaluationClock")]
+    [InlineData("evaluationTimezone")]
+    [InlineData("compilationMode")]
+    [InlineData("executionMode")]
+    [InlineData("outputMode")]
+    public async Task MissingCreateFieldsAreRejected(string missingField)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = JsonSerializer.SerializeToNode(
+            ValidCreateRequest("missing-field"),
+            JsonOptions)!.AsObject();
+        Assert.True(request.Remove(missingField));
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("Asia/Shanghai")]
+    [InlineData("America/New_York")]
+    [InlineData("Etc/UTC")]
+    public async Task IanaTimeZonesAreAcceptedWithInvariantGlobalization(string timeZone)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest($"iana-{timeZone.Replace('/', '-')}")
+            with
+        { EvaluationTimezone = timeZone };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Theory]
     [InlineData("semantic_backend_timeout", HttpStatusCode.GatewayTimeout)]
     [InlineData("semantic_backend_unavailable", HttpStatusCode.BadGateway)]
     public async Task SemanticFailuresMapToStableProblems(string code, HttpStatusCode expectedStatus)
@@ -625,7 +665,29 @@ public sealed class ApiEndpointTests
         Assert.Contains("outputMode", createRequired);
         Assert.True(createProperties.TryGetProperty("question", out _));
         Assert.True(createProperties.TryGetProperty("evaluationClock", out _));
-        Assert.True(detailOperation.GetProperty("responses").TryGetProperty("200", out _));
+        var detailResponses = detailOperation.GetProperty("responses");
+        Assert.True(detailResponses.TryGetProperty("200", out var detailResponse));
+        Assert.Equal(
+            "#/components/schemas/SemanticRunDetail",
+            detailResponse
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema")
+                .GetProperty("$ref")
+                .GetString());
+        Assert.True(
+            detailOperation
+                .GetProperty("security")[0]
+                .TryGetProperty("Bearer", out var scopes));
+        Assert.Equal(JsonValueKind.Array, scopes.ValueKind);
+        Assert.Equal(
+            "http",
+            document.RootElement
+                .GetProperty("components")
+                .GetProperty("securitySchemes")
+                .GetProperty("Bearer")
+                .GetProperty("type")
+                .GetString());
     }
 
     [Fact]

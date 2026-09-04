@@ -327,6 +327,15 @@ public static class SemanticRunDetailValidator
             ValidateManifest(detail.Manifest, expectedRunId);
         }
 
+        if ((detail.Result is null) != (detail.Manifest is null) ||
+            detail.Result is not null &&
+            detail.Manifest is not null &&
+            detail.Result.RowCount != detail.Manifest.RowCount)
+        {
+            throw Invalid(
+                "The semantic backend returned inconsistent result and manifest details.");
+        }
+
         ValidateLineage(detail.Lineage, expectedRunId);
         ValidateDiagnostics(detail.Diagnostics, expectedRunId);
     }

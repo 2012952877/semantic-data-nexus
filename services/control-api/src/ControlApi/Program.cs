@@ -6,11 +6,13 @@ using ControlApi;
 using ControlApi.Authentication;
 using ControlApi.Contracts;
 using ControlApi.Endpoints;
+using ControlApi.Infrastructure;
 using ControlApi.Persistence;
 using ControlApi.Semantic;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.OpenApi.Models;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -27,7 +29,17 @@ builder.Logging.Configure(options =>
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        Description = "Microsoft Entra bearer token."
+    });
+    options.OperationFilter<OpenApiSecurityOperationFilter>();
+});
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     JsonContractOptions.Configure(options.SerializerOptions);

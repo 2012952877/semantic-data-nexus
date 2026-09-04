@@ -30,6 +30,14 @@ public static class ControlApiEndpoints
         runs.MapGet("/{runId}", GetRun)
             .RequireAuthorization(Policies.Reader);
         runs.MapGet("/{runId}/detail", GetRunDetail)
+            .Produces<SemanticRunDetail>()
+            .Produces<ProblemDetails>(StatusCodes.Status400BadRequest)
+            .Produces<ProblemDetails>(StatusCodes.Status401Unauthorized)
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden)
+            .Produces<ProblemDetails>(StatusCodes.Status404NotFound)
+            .Produces<ProblemDetails>(StatusCodes.Status429TooManyRequests)
+            .Produces<ProblemDetails>(StatusCodes.Status502BadGateway)
+            .Produces<ProblemDetails>(StatusCodes.Status504GatewayTimeout)
             .RequireAuthorization(Policies.Reader);
         runs.MapPost("/{runId}/cancel", CancelRun)
             .RequireAuthorization(Policies.Contributor);
