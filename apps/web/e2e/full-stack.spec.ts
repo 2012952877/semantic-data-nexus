@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 test('deployed workbench uses the real same-origin BFF client', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2024-04-15T09:00:00Z'))
   await page.goto('/ask')
   await expect(page.getByText('Mock 场景与执行设置')).toHaveCount(0)
 

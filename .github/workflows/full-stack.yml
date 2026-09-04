@@ -139,6 +139,9 @@ jobs:
           mkdir -p full-stack-diagnostics
           docker compose ps --all > full-stack-diagnostics/compose-ps.txt 2>&1 || true
           docker compose logs --no-color --timestamps > full-stack-diagnostics/compose.log 2>&1 || true
+          if [ -d apps/web/test-results ]; then
+            cp -R apps/web/test-results full-stack-diagnostics/playwright-test-results
+          fi
 
       - name: Upload Compose diagnostics
         if: failure()
