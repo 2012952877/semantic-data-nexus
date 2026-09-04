@@ -55,6 +55,8 @@ const nodeKinds = [
   'JOIN',
 ] as const
 const columnFormats = ['text', 'currency', 'percent', 'number', 'date', 'timestamp'] as const
+const legacyNodeKinds = ['AGGREGATE', 'PIVOT', 'DERIVE', 'PROJECT'] as const
+const legacyColumnFormats = ['text', 'currency', 'percent', 'number'] as const
 const scalarTypes = [
   'string',
   'integer',
@@ -148,34 +150,88 @@ const isResult = (value: unknown): value is ResultSet =>
 const hasOwn = (value: Record<string, unknown>, key: string) =>
   Object.prototype.hasOwnProperty.call(value, key)
 
-const isGregorianDate = (value: unknown): value is string => {
-  if (!isString(value) || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
-  const [year, month, day] = value.split('-').map(Number)
-  if (year === undefined || month === undefined || day === undefined
-    || year < 1 || month < 1 || month > 12 || day < 1) return false
-  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-  const daysInMonth = [
-    31,
-    leapYear ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ]
-  return day <= (daysInMonth[month - 1] ?? 0)
-}
+const isLegacySqg = (value: unknown) =>
+  isRecord(value)
+  && value.version === '0.1'
+  && isString(value.intent)
+  && isString(value.ontology)
+  && isStringArray(value.resolvedMembers)
+  && isStringArray(value.metrics)
+  && isStringArray(value.dimensions)
+  && Array.isArray(value.filters)
+  && value.filters.every((filter) =>
+    isRecord(filter)
+    && isString(filter.field)
+    && isString(filter.operator)
+    && isString(filter.value))
+  && isStringArray(value.policyChecks)
+
+const isLegacyPlanNode = (value: unknown) =>
+  isRecord(value)
+  && isString(value.id)
+  && isEnumValue(value.kind, legacyNodeKinds)
+  && isString(value.label)
+  && isString(value.plainLanguage)
+  && isStringArray(value.inputs)
+  && isStringArray(value.outputFields)
+
+const isLegacyResultColumn = (value: unknown) =>
+  isRecord(value)
+  && isString(value.key)
+  && isString(value.label)
+  && isEnumValue(value.format, legacyColumnFormats)
+
+const isLegacyResultRow = (value: unknown) =>
+  isRecord(value)
+  && Object.values(value).every((cell) => isString(cell) || isFiniteNumber(cell))
+
+const isLegacyResult = (value: unknown) =>
+  isRecord(value)
+  && Array.isArray(value.columns)
+  && value.columns.every(isLegacyResultColumn)
+  && Array.isArray(value.rows)
+  && value.rows.every(isLegacyResultRow)
+  && isNumber(value.rowCount)
+  && value.rowCount === value.rows.length
+  && isString(value.coverage)
+
+const isLegacyRun = (value: unknown) =>
+  isRecord(value)
+  && isString(value.id)
+  && isString(value.question)
+  && isEnumValue(value.state, runStates)
+  && isDateString(value.createdAt)
+  && isOptionalString(value.completedAt)
+  && isNumber(value.elapsedMs)
+  && isString(value.model)
+  && isString(value.executionMode)
+  && isString(value.outputMode)
+  && isRecord(value.tokens)
+  && isNumber(value.tokens.input)
+  && isNumber(value.tokens.output)
+  && Array.isArray(value.stages)
+  && value.stages.length === stageKeys.length
+  && value.stages.every(isStage)
+  && isLegacySqg(value.sqg)
+  && Array.isArray(value.nodes)
+  && value.nodes.every(isLegacyPlanNode)
+  && (value.result === undefined || isLegacyResult(value.result))
+  && isLineage(value.lineage)
+  && Array.isArray(value.diagnostics)
+  && value.diagnostics.every(isDiagnostic)
+  && (value.manifest === undefined || isManifest(value.manifest))
+  && isEnumValue(value.scenario, scenarios)
+  && (value.executionLease === undefined
+    || (isRecord(value.executionLease)
+      && isString(value.executionLease.ownerId)
+      && isString(value.executionLease.generation)
+      && isDateString(value.executionLease.heartbeatAt)))
 
 const inferLegacyColumnDataType = (
   column: Record<string, unknown>,
   rows: unknown[],
 ): ResultColumn['dataType'] | undefined => {
-  if (!isString(column.key) || !isEnumValue(column.format, columnFormats)) return undefined
+  if (!isString(column.key) || !isEnumValue(column.format, legacyColumnFormats)) return undefined
   const values: unknown[] = []
   for (const row of rows) {
     if (!isRecord(row) || !hasOwn(row, column.key)) return undefined
@@ -185,25 +241,14 @@ const inferLegacyColumnDataType = (
   if (values.length === 0) return undefined
   if (column.format === 'text') {
     if (values.every(isString)) return 'string'
-    if (values.every((value) => typeof value === 'boolean')) return 'boolean'
     return undefined
   }
-  if (column.format === 'currency'
-    || column.format === 'percent'
-    || column.format === 'number') {
-    if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) {
-      return undefined
-    }
-    if (values.every(Number.isSafeInteger)) return 'integer'
-    return values.every((value) => !Number.isInteger(value) || Number.isSafeInteger(value))
-      ? 'float'
-      : undefined
+  if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+    return undefined
   }
-  if (column.format === 'date') {
-    return values.every(isGregorianDate) ? 'date' : undefined
-  }
-  return values.every((value) => isString(value) && isDateString(value))
-    ? 'timestamp'
+  if (values.every(Number.isSafeInteger)) return 'integer'
+  return values.every((value) => !Number.isInteger(value) || Number.isSafeInteger(value))
+    ? 'float'
     : undefined
 }
 
@@ -221,6 +266,7 @@ const migrateLegacyResultColumns = (value: unknown) => {
     isRecord(column) && !hasOwn(column, 'dataType'))) {
     return { value, migrated: false }
   }
+  if (!isLegacyRun(value)) return { value, migrated: false }
   const columns = result.columns.map((column) => {
     if (!isRecord(column)) return column
     const dataType = inferLegacyColumnDataType(column, rows)

@@ -25,7 +25,7 @@ pnpm dev
 | `VITE_NEXUS_BASE_URL` | HTTP 模式必填；浏览器中必须与 Web 页面同源，可设置为 `/` |
 | `VITE_NEXUS_DEV_SUBJECT` | 可选的本地开发身份，只允许发往 loopback BFF 的 `X-Dev-Subject` |
 | `VITE_NEXUS_DEV_ROLES` | 可选的本地开发角色，只允许发往 loopback BFF 的 `X-Dev-Roles` |
-| `NEXUS_PROXY_TARGET` | 可选的 Vite 本地开发反向代理目标；明文 HTTP 仅允许 `localhost`、`127.0.0.1`、`[::1]`，其他主机必须 HTTPS |
+| `NEXUS_PROXY_TARGET` | 可选的 Vite 本地开发反向代理目标；明文 HTTP 仅允许 `localhost`、`127.0.0.1`、`[::1]`，其他主机必须 HTTPS 且代理会剥离本地开发身份头 |
 
 `VITE_*` 值会进入浏览器产物，绝不能放入密钥或令牌。生产宿主应在应用模块加载前提供 `window.semanticNexusTokenProvider(AbortSignal)`；令牌只注入当前请求，不从 Vite 环境变量读取或持久化。测试和其他嵌入方式也可把同一 provider 直接传给 `createSemanticNexusClient` / `HttpSemanticNexusClient`。客户端拒绝把本地开发身份头发往非 loopback 地址，并拒绝包含换行或疑似密钥内容的开发值。
 
@@ -62,7 +62,7 @@ Vue Router 使用浏览器历史模式，部署静态产物时需要将未知路
 - `src/views/`：路由级页面；技术细节通过 `details` 渐进展示。
 - `src/components/`：应用壳、阶段账本、结果表与运行详情。
 
-Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus:run:v1:`），只保存在当前浏览器。每条记录的 compare-and-write 都在该运行专属的 Web Lock 内完成；浏览器不提供 Web Locks 时写入会失败关闭，而不会降级为非原子更新。逐记录事务和 storage event 同步避免不同标签页覆盖彼此，运行 ID 使用 UUID。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic、Manifest 与执行租约。早期 v1 结果列没有 `dataType`；只有所有结果列都缺该字段、format 与每个非空 cell 类型一致且可唯一推断时才会升级，并在 Web Lock 内重写。字段混合存在、异构 cell 或没有 cell 可供推断的记录仍按损坏数据隔离，不会被兼容逻辑修成合法载荷。租约包含 owner、稳定 generation 和可续期 heartbeat；每次异步阶段提交前都会在锁内重新读取记录并核对 active 状态及完整租约，旧 owner 无法覆盖已经终止的运行。观察者会按 heartbeat 安排并重排到期计时器，因此 owner 页面关闭后无需刷新也能将过期运行转为可重试的中断诊断。真正损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略，旧版聚合键 `semantic-nexus:runs` 会在同一锁协议下安全迁移。
+Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus:run:v1:`），只保存在当前浏览器。每条记录的 compare-and-write 都在该运行专属的 Web Lock 内完成；浏览器不提供 Web Locks 时写入会失败关闭，而不会降级为非原子更新。逐记录事务和 storage event 同步避免不同标签页覆盖彼此，运行 ID 使用 UUID。读取时会校验每个 Run 及其嵌套 Stage、SQG、Node、Result、Lineage、Diagnostic、Manifest 与执行租约。早期 v1 结果列没有 `dataType`；只有完整通过 origin/main v1 契约（SQG `0.1`、旧四类节点与格式、仅 string/number cell、精确 row count 等）、所有结果列都缺该字段且每列可唯一推断时才会升级，并在 Web Lock 内重写。字段混合存在、扩展 schema 值、异构 cell 或没有 cell 可供推断的记录仍按损坏数据隔离，不会被兼容逻辑修成合法载荷。租约包含 owner、稳定 generation 和可续期 heartbeat；每次异步阶段提交前都会在锁内重新读取记录并核对 active 状态及完整租约，旧 owner 无法覆盖已经终止的运行。观察者会按 heartbeat 安排并重排到期计时器，因此 owner 页面关闭后无需刷新也能将过期运行转为可重试的中断诊断。真正损坏或不同版本的载荷会移到 `semantic-nexus:runs:quarantine` 并忽略，旧版聚合键 `semantic-nexus:runs` 会在同一锁协议下安全迁移。
 
 ## Mock 场景
 

@@ -134,9 +134,21 @@ describe('run history storage', () => {
     ['aggregate', 'mixed-presence'],
     ['aggregate', 'mixed-cells'],
     ['aggregate', 'ambiguous-empty'],
+    ['aggregate', 'boolean-cell'],
+    ['aggregate', 'null-cell'],
+    ['aggregate', 'date-format'],
+    ['aggregate', 'sqg-version'],
+    ['aggregate', 'source-node'],
+    ['aggregate', 'truncated-row-count'],
     ['per-run', 'mixed-presence'],
     ['per-run', 'mixed-cells'],
     ['per-run', 'ambiguous-empty'],
+    ['per-run', 'boolean-cell'],
+    ['per-run', 'null-cell'],
+    ['per-run', 'date-format'],
+    ['per-run', 'sqg-version'],
+    ['per-run', 'source-node'],
+    ['per-run', 'truncated-row-count'],
   ] as const)(
     'rejects malformed legacy %s v1 records with %s',
     async (storageKind, corruption) => {
@@ -155,7 +167,25 @@ describe('run history storage', () => {
       } else if (corruption === 'mixed-cells') {
         const secondRow = legacy.result?.rows[1]
         if (!secondRow) throw new Error('Row fixture is missing')
-        secondRow.region = true
+        secondRow.region = 42
+      } else if (corruption === 'boolean-cell' || corruption === 'null-cell') {
+        const firstRow = legacy.result?.rows[0]
+        if (!firstRow) throw new Error('Row fixture is missing')
+        firstRow.region = corruption === 'boolean-cell' ? true : null
+      } else if (corruption === 'date-format') {
+        const firstColumn = legacy.result?.columns[0]
+        if (!firstColumn) throw new Error('Column fixture is missing')
+        firstColumn.format = 'date'
+      } else if (corruption === 'sqg-version') {
+        legacy.sqg.version = 'sqg.v0'
+      } else if (corruption === 'source-node') {
+        const firstNode = legacy.nodes[0]
+        if (!firstNode) throw new Error('Node fixture is missing')
+        firstNode.kind = 'SOURCE'
+      } else if (corruption === 'truncated-row-count') {
+        if (!legacy.result) throw new Error('Result fixture is missing')
+        legacy.result.rowCount += 1
+        legacy.result.truncated = true
       }
 
       const key = runStorageKey(legacy.id)

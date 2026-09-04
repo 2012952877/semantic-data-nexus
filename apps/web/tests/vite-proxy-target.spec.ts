@@ -1,6 +1,9 @@
 // @vitest-environment node
 
-import { validateProxyTarget } from '../viteProxyTarget'
+import {
+  stripRemoteDevelopmentIdentityHeaders,
+  validateProxyTarget,
+} from '../viteProxyTarget'
 
 describe('Vite BFF proxy target', () => {
   it.each([
@@ -15,5 +18,24 @@ describe('Vite BFF proxy target', () => {
   it('rejects remote plaintext targets before credentials can be forwarded', () => {
     expect(() => validateProxyTarget('http://bff.example.test'))
       .toThrow(/requires HTTPS/)
+  })
+
+  it('strips local development identity headers from remote HTTPS proxy requests', () => {
+    const removeHeader = vi.fn()
+
+    stripRemoteDevelopmentIdentityHeaders('https://bff.example.test', { removeHeader })
+
+    expect(removeHeader.mock.calls).toEqual([
+      ['X-Dev-Subject'],
+      ['X-Dev-Roles'],
+    ])
+  })
+
+  it('retains local development identity headers for loopback proxy requests', () => {
+    const removeHeader = vi.fn()
+
+    stripRemoteDevelopmentIdentityHeaders('http://127.0.0.1:4310', { removeHeader })
+
+    expect(removeHeader).not.toHaveBeenCalled()
   })
 })
