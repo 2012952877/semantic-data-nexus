@@ -130,11 +130,14 @@ class StateMachine:
     def __init__(self, initial: ExecutionState = ExecutionState.PENDING) -> None:
         self.state = initial
 
-    def transition(self, target: ExecutionState) -> None:
+    def validate_transition(self, target: ExecutionState) -> None:
         if target not in STATE_TRANSITIONS[self.state]:
             raise RuntimeFailure(
                 "STATE_TRANSITION_INVALID",
                 f"Cannot transition from {self.state} to {target}",
                 details={"from": self.state.value, "to": target.value},
             )
+
+    def transition(self, target: ExecutionState) -> None:
+        self.validate_transition(target)
         self.state = target

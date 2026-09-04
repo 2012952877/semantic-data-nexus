@@ -204,7 +204,6 @@ class _Emitter:
         was_cancelled = False
         async with self._lock:
             sequence = self._sequence
-            self._sequence += 1
             persistence = asyncio.create_task(
                 self.store.append(
                     DiagnosticEvent(
@@ -222,6 +221,7 @@ class _Emitter:
             )
             was_cancelled = await _wait_for_task_completion(persistence)
             persistence.result()
+            self._sequence += 1
         if was_cancelled:
             raise asyncio.CancelledError
 
@@ -715,7 +715,7 @@ class QueryCoordinator:
         duration_ms: int | None = None,
         metadata: dict[str, str | int | bool | None] | None = None,
     ) -> None:
-        machine.transition(state)
+        machine.validate_transition(state)
         emission = asyncio.create_task(
             emitter.emit(
                 scope=scope,
@@ -728,7 +728,14 @@ class QueryCoordinator:
             )
         )
         was_cancelled = await _wait_for_task_completion(emission)
-        emission.result()
+        try:
+            emission.result()
+        except Exception as exc:
+            raise RuntimeFailure(
+                "EVENT_STORE_WRITE_FAILED",
+                "Node terminal event could not be persisted",
+            ) from exc
+        machine.transition(state)
         if was_cancelled:
             raise asyncio.CancelledError
 
