@@ -53,6 +53,7 @@ A nonzero exit code means clarification or compilation failure.
 ```powershell
 cd services\semantic-api
 .\.venv\Scripts\pytest
+.\.venv\Scripts\ruff format --check .
 .\.venv\Scripts\ruff check .
 .\.venv\Scripts\mypy
 .\.venv\Scripts\python -m build

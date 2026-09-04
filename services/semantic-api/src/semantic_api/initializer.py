@@ -332,12 +332,17 @@ class DeterministicInitializer:
         suffix = DeterministicInitializer._normalize_negation_phrase(
             question[mention_end : mention_end + 40]
         )
+        auxiliary = (
+            r"(?:do|does|did|is|are|was|were|have|has|had|should|would|could|might|may|"
+            r"must|will|shall|can|need|dare|ought)"
+        )
+        governed_verb = r"(?:include|use|show)"
+        governed_participle = r"(?:included|used|shown)"
         return (
             re.search(
                 (
-                    r"(?:(?:do|does|did|should|must|will|can)\s+not\s+"
-                    r"(?:include|use|show)|"
-                    r"cannot\s+(?:include|use|show)|"
+                    rf"(?:{auxiliary}\s+not\s+(?:to\s+)?{governed_verb}|"
+                    rf"cannot\s+{governed_verb}|"
                     r"(?:is|was)\s+not\s+(?:including|using|showing)|"
                     r"not\s+(?:including|using|showing)|"
                     r"exclude|excluding|except(?:\s+for)?|"
@@ -360,10 +365,10 @@ class DeterministicInitializer:
                 (
                     r"[\s,]*(?:(?:(?:is|was)\s+)?"
                     r"(?:excluded|omitted|left\s+out)|"
-                    r"(?:should|must|will|can)\s+be\s+"
+                    rf"(?:should|would|could|might|must|will|shall|can)\s+be\s+"
                     r"(?:excluded|omitted|left\s+out)|"
-                    r"(?:(?:is|was|should|must|will|can)\s+not|cannot)\s+"
-                    r"(?:be\s+)?(?:included|used|shown))\b"
+                    rf"(?:{auxiliary}\s+not|cannot|not)\s+"
+                    rf"(?:to\s+)?(?:be\s+)?{governed_participle})\b"
                 ),
                 suffix,
             )
@@ -373,20 +378,13 @@ class DeterministicInitializer:
     @staticmethod
     def _normalize_negation_phrase(value: str) -> str:
         normalized = value.casefold().replace("\u2018", "'").replace("\u2019", "'")
-        contractions = {
-            "don't": "do not",
-            "doesn't": "does not",
-            "didn't": "did not",
-            "isn't": "is not",
-            "wasn't": "was not",
-            "shouldn't": "should not",
-            "mustn't": "must not",
+        for contraction, expanded in {
             "can't": "cannot",
             "won't": "will not",
-        }
-        for contraction, expanded in contractions.items():
-            normalized = normalized.replace(contraction, expanded)
-        return normalized
+            "shan't": "shall not",
+        }.items():
+            normalized = re.sub(rf"\b{re.escape(contraction)}\b", expanded, normalized)
+        return re.sub(r"\b([a-z]+)n't\b", r"\1 not", normalized)
 
     def _normalize_time(
         self,

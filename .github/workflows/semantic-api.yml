@@ -1,0 +1,41 @@
+name: Semantic API
+
+on:
+  pull_request:
+    paths:
+      - "services/semantic-api/**"
+      - ".github/workflows/semantic-api.yml"
+  push:
+    paths:
+      - "services/semantic-api/**"
+      - ".github/workflows/semantic-api.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/semantic-api
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/semantic-api/pyproject.toml
+      - name: Install package and tools
+        run: python -m pip install -e ".[dev]" build
+      - name: Check formatting
+        run: ruff format --check .
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy
+      - name: Test
+        run: pytest
+      - name: Build packages
+        run: python -m build
