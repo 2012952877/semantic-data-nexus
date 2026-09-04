@@ -46,7 +46,7 @@ async def wait_for_terminal(
     service: OrchestrationService,
     run_id: str,
     *,
-    attempts: int = 200,
+    attempts: int = 1_000,
 ):
     for _ in range(attempts):
         status = await service.get_status(run_id)

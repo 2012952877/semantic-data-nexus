@@ -7,7 +7,6 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from math import isfinite
 from typing import Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     BaseModel,
@@ -22,8 +21,10 @@ from semantic_api.models import CompilationMode
 
 _RUN_ID = re.compile(r"^run_[0-9a-f]{32}$")
 _SAFE_METADATA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_IANA_TIMEZONE = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z][A-Za-z0-9._+-]*)+$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+_DECIMAL_TEXT = re.compile(r"^-?(0|[1-9][0-9]*)(?:\.([0-9]+))?$")
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _MAX_DECIMAL = Decimal("1e28")
 
@@ -111,12 +112,8 @@ class StartRunRequest(ApiModel):
     @field_validator("evaluation_timezone")
     @classmethod
     def iana_timezone(cls, value: str) -> str:
-        if not value.strip() or (value != "UTC" and "/" not in value):
+        if value != "UTC" and _IANA_TIMEZONE.fullmatch(value) is None:
             raise ValueError("evaluation_timezone must be an IANA time zone name")
-        try:
-            ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError("evaluation_timezone must be an IANA time zone name") from exc
         return value
 
 
@@ -296,13 +293,35 @@ class ResultSet(ApiModel):
                 and not isinstance(value, bool)
                 and -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER
             )
-        elif column.data_type in {ScalarType.FLOAT, ScalarType.DECIMAL}:
+        elif column.data_type is ScalarType.FLOAT:
             if isinstance(value, int) and not isinstance(value, bool):
                 valid = -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER
             elif isinstance(value, float):
                 try:
                     number = Decimal(str(value))
-                    valid = isfinite(value) and number.is_finite() and abs(number) <= _MAX_DECIMAL
+                    valid = (
+                        isfinite(value)
+                        and number.is_finite()
+                        and abs(number) <= _MAX_DECIMAL
+                        and (not value.is_integer() or abs(value) <= _MAX_SAFE_INTEGER)
+                    )
+                except InvalidOperation:
+                    valid = False
+        elif column.data_type is ScalarType.DECIMAL and isinstance(value, str):
+            match = _DECIMAL_TEXT.fullmatch(value)
+            if match is not None:
+                integer, fraction = match.groups()
+                digits = f"{integer}{fraction or ''}".lstrip("0")
+                significant_digits = len(digits) if digits else 1
+                scale = len(fraction or "")
+                try:
+                    number = Decimal(value)
+                    valid = (
+                        not (number == 0 and value.startswith("-"))
+                        and significant_digits <= 29
+                        and scale <= 28
+                        and number.copy_abs() <= _MAX_DECIMAL
+                    )
                 except InvalidOperation:
                     valid = False
         elif column.data_type is ScalarType.BOOLEAN:

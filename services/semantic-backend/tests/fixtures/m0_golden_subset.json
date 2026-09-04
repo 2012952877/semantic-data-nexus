@@ -31,44 +31,44 @@
         "plan": {
           "operators": ["SCAN", "FILTER", "AGGREGATE", "SORT", "PROJECT"],
           "edges": [
-            ["select_sales", "filter_period_1"],
-            ["filter_period_1", "aggregate_profit"],
-            ["aggregate_profit", "sort_profit"],
-            ["sort_profit", "project_result"]
+            ["physical-sort_profit:select_sales", "physical-sort_profit:filter_period_1"],
+            ["physical-sort_profit:filter_period_1", "physical-sort_profit:aggregate_profit"],
+            ["physical-sort_profit:aggregate_profit", "physical-sort_profit:sort_profit"],
+            ["physical-sort_profit:sort_profit", "physical-project_result:project_result"]
           ],
           "nodes": [
             {
-              "id": "select_sales",
+              "id": "physical-sort_profit:select_sales",
               "operator": "SCAN",
               "depends_on": [],
               "inputs": [],
               "outputs": ["rows"]
             },
             {
-              "id": "filter_period_1",
+              "id": "physical-sort_profit:filter_period_1",
               "operator": "FILTER",
-              "depends_on": ["select_sales"],
+              "depends_on": ["physical-sort_profit:select_sales"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "aggregate_profit",
+              "id": "physical-sort_profit:aggregate_profit",
               "operator": "AGGREGATE",
-              "depends_on": ["filter_period_1"],
+              "depends_on": ["physical-sort_profit:filter_period_1"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "sort_profit",
+              "id": "physical-sort_profit:sort_profit",
               "operator": "SORT",
-              "depends_on": ["aggregate_profit"],
+              "depends_on": ["physical-sort_profit:aggregate_profit"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "project_result",
+              "id": "physical-project_result:project_result",
               "operator": "PROJECT",
-              "depends_on": ["sort_profit"],
+              "depends_on": ["physical-sort_profit:sort_profit"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             }
@@ -77,12 +77,12 @@
         "result": {
           "schema": [
             {"name": "region", "type": "string"},
-            {"name": "period", "type": "datetime"},
-            {"name": "profit", "type": "number"}
+            {"name": "period", "type": "timestamp"},
+            {"name": "profit", "type": "float"}
           ],
           "grain": [
-            "commerce.sales_record.region",
-            "commerce.sales_record.period"
+            "region",
+            "period_quarter"
           ],
           "order_by": ["profit desc"],
           "rows": [
@@ -111,7 +111,26 @@
         },
         "behavior": {"class": "success"},
         "governance": {"decision": "allow"},
-        "observability": {"lineage_required": true}
+        "diagnostics": [],
+        "observability": {
+          "lineage_required": true,
+          "lineage_fields": [
+            "commerce.sales_record.period",
+            "commerce.sales_record.region"
+          ],
+          "artifact": "sha256:122b18ea86d0a71affdcc96b6745a514129cefc80e2cd1ffeaa17c465a0ef692",
+          "runtime_node_count": 10,
+          "runtime_edge_count": 9,
+          "connector_provenance": [],
+          "relations": [
+            "depends_on",
+            "produces",
+            "reads_from",
+            "realized_as"
+          ],
+          "edge_semantics_valid": true,
+          "topology_sha256": "8bb96a56112767c866cb0d02efe7f408e8d82fd05f535671b18cff892d8613e1"
+        }
       }
     },
     {
@@ -143,52 +162,52 @@
             "PROJECT"
           ],
           "edges": [
-            ["select_sales", "filter_comparison_periods"],
-            ["filter_comparison_periods", "aggregate_profit"],
-            ["aggregate_profit", "pivot_period"],
-            ["pivot_period", "derive_change"],
-            ["derive_change", "project_result"]
+            ["physical-aggregate_profit:select_sales", "physical-aggregate_profit:filter_comparison_periods"],
+            ["physical-aggregate_profit:filter_comparison_periods", "physical-aggregate_profit:aggregate_profit"],
+            ["physical-aggregate_profit:aggregate_profit", "physical-pivot_period:pivot_period"],
+            ["physical-pivot_period:pivot_period", "physical-derive_change:derive_change"],
+            ["physical-derive_change:derive_change", "physical-project_result:project_result"]
           ],
           "nodes": [
             {
-              "id": "select_sales",
+              "id": "physical-aggregate_profit:select_sales",
               "operator": "SCAN",
               "depends_on": [],
               "inputs": [],
               "outputs": ["rows"]
             },
             {
-              "id": "filter_comparison_periods",
+              "id": "physical-aggregate_profit:filter_comparison_periods",
               "operator": "FILTER",
-              "depends_on": ["select_sales"],
+              "depends_on": ["physical-aggregate_profit:select_sales"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "aggregate_profit",
+              "id": "physical-aggregate_profit:aggregate_profit",
               "operator": "AGGREGATE",
-              "depends_on": ["filter_comparison_periods"],
+              "depends_on": ["physical-aggregate_profit:filter_comparison_periods"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "pivot_period",
+              "id": "physical-pivot_period:pivot_period",
               "operator": "PIVOT",
-              "depends_on": ["aggregate_profit"],
+              "depends_on": ["physical-aggregate_profit:aggregate_profit"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "derive_change",
+              "id": "physical-derive_change:derive_change",
               "operator": "DERIVE",
-              "depends_on": ["pivot_period"],
+              "depends_on": ["physical-pivot_period:pivot_period"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             },
             {
-              "id": "project_result",
+              "id": "physical-project_result:project_result",
               "operator": "PROJECT",
-              "depends_on": ["derive_change"],
+              "depends_on": ["physical-derive_change:derive_change"],
               "inputs": ["rows"],
               "outputs": ["rows"]
             }
@@ -197,11 +216,11 @@
         "result": {
           "schema": [
             {"name": "region", "type": "string"},
-            {"name": "profit_current", "type": "number"},
-            {"name": "profit_previous", "type": "number"},
-            {"name": "profit_change", "type": "number"}
+            {"name": "profit_current", "type": "float"},
+            {"name": "profit_previous", "type": "float"},
+            {"name": "profit_change", "type": "float"}
           ],
-          "grain": ["commerce.sales_record.region"],
+          "grain": ["region"],
           "order_by": [],
           "rows": [
             {
@@ -233,7 +252,26 @@
         },
         "behavior": {"class": "success"},
         "governance": {"decision": "allow"},
-        "observability": {"lineage_required": true}
+        "diagnostics": [],
+        "observability": {
+          "lineage_required": true,
+          "lineage_fields": [
+            "commerce.sales_record.period",
+            "commerce.sales_record.region"
+          ],
+          "artifact": "sha256:0f37f2f7c27f2b79deaec7c4b98a21edfdc8f1795c891d36a8574d1208556e24",
+          "runtime_node_count": 15,
+          "runtime_edge_count": 14,
+          "connector_provenance": [],
+          "relations": [
+            "depends_on",
+            "produces",
+            "reads_from",
+            "realized_as"
+          ],
+          "edge_semantics_valid": true,
+          "topology_sha256": "2fc294d15a614a1c03582d7ad060fb6029871a8af0f1bbf3bcd8d52336592990"
+        }
       }
     }
   ]

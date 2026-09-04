@@ -23,9 +23,9 @@
     }
   },
   "members": {
-    "commerce.sales_record.region.central_north": "北辰区",
-    "commerce.sales_record.region.central_south": "南港区",
-    "commerce.sales_record.region.east": "东湖区",
-    "commerce.sales_record.region.west": "西岭区"
+    "region.central_north": "北辰区",
+    "region.central_south": "南港区",
+    "region.east": "东湖区",
+    "region.west": "西岭区"
   }
 }

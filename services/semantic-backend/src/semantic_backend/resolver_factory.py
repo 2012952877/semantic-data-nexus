@@ -57,8 +57,9 @@ def resolver_from_environment(
         )
     try:
         from semantic_data_nexus_databricks import (
+            BearerToken,
+            BearerTokenProvider,
             DatabricksResolver,
-            EnvironmentPatProvider,
             ResolverConfig,
             StatementExecutionClient,
         )
@@ -82,7 +83,21 @@ def resolver_from_environment(
         statement_timeout_seconds=30,
         cancel_on_timeout=True,
     )
-    client = StatementExecutionClient(config, EnvironmentPatProvider())
+
+    class ConfiguredTokenProvider(BearerTokenProvider):
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        async def get_token(self) -> BearerToken:
+            return BearerToken(self._value)
+
+        def __repr__(self) -> str:
+            return "ConfiguredTokenProvider(<redacted>)"
+
+    client = StatementExecutionClient(
+        config,
+        ConfiguredTokenProvider(values["DATABRICKS_TOKEN"]),
+    )
     connector = DatabricksResolver(client)
     return DatabricksSourceAdapter(
         connector,
@@ -92,4 +107,5 @@ def resolver_from_environment(
             row_limit=config.row_limit,
         ),
         timeout_seconds=config.statement_timeout_seconds + 2,
+        close=client.aclose,
     )

@@ -83,7 +83,9 @@ Required live settings are `DATABRICKS_WORKSPACE_HOST`,
 `DATABRICKS_CATALOG` and `DATABRICKS_SCHEMA` default to synthetic identifiers.
 Live execution is bounded to 1,000 rows, 10 MiB, and a 30-second connector
 timeout. The connector owns provider cancellation when that timeout expires;
-the adapter drains cancellation rather than orphaning an HTTP task.
+the adapter drains cancellation rather than orphaning an HTTP task. A run is
+not reported `Cancelled` until resolver acknowledgement/cleanup completes; an
+unconfirmed provider cancellation is surfaced as a safe failure instead.
 
 ## Container
 
@@ -108,4 +110,7 @@ python -m build services/semantic-backend
 
 The integrated evaluator gates only two supported cases—regional quarterly
 profit and monthly `AGGREGATE -> PIVOT -> DERIVE -> PROJECT`—at 100 in every
-dimension. It does not claim coverage of the full reference suite.
+dimension. Candidates are emitted from the actual physical plan, committed
+result metadata, runtime/connector lineage, and diagnostics. Mutation tests
+prove plan, result, governance, and observability regressions are detected. It
+does not claim coverage of the full reference suite.

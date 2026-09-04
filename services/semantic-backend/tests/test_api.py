@@ -5,6 +5,8 @@ import asyncio
 from conftest import request_for, wait_for_terminal
 from httpx import ASGITransport, AsyncClient
 from query_runtime.coordinator import QueryCoordinator
+from query_runtime.domain import ExecutionState
+from query_runtime.events import InMemoryEventStore
 
 from semantic_backend.api import create_app
 from semantic_backend.models import RunState
@@ -85,3 +87,76 @@ async def test_cancellation_before_runtime_registration_cannot_publish(
     assert status.state is RunState.CANCELLED
     assert detail.result is None
     assert detail.manifest is None
+
+
+async def test_shutdown_never_waits_for_current_task(service) -> None:
+    request = request_for("run_00000000000000000000000000000010")
+    await service.start(request)
+    await wait_for_terminal(service, request.run_id)
+    record = await service.repository.get(request.run_id)
+    original_status = record.status
+    original_task = record.task
+    record.status = record.status.model_copy(
+        update={"state": RunState.RUNNING, "finalized_at": None}
+    )
+    record.task = asyncio.current_task()
+    try:
+        await asyncio.wait_for(service.shutdown(), timeout=1)
+    finally:
+        record.status = original_status
+        record.task = original_task
+
+
+async def test_late_cancellation_preserves_completed_coordinator_outcomes(
+    service,
+    monkeypatch,
+) -> None:
+    completed = asyncio.Event()
+    release = asyncio.Event()
+    original_run = QueryCoordinator.run
+
+    async def delayed_return(self, plan, *, run_id=None):
+        outcome = await original_run(self, plan, run_id=run_id)
+        completed.set()
+        await release.wait()
+        return outcome
+
+    monkeypatch.setattr(QueryCoordinator, "run", delayed_return)
+    request = request_for("run_00000000000000000000000000000011")
+    await service.start(request)
+    await asyncio.wait_for(completed.wait(), timeout=3)
+    cancellation = asyncio.create_task(service.cancel(request.run_id))
+    await asyncio.sleep(0)
+    assert not cancellation.done()
+    release.set()
+    status = await cancellation
+    assert status.state is RunState.SUCCEEDED
+    execute = next(stage for stage in status.stages if stage.name == "Execute")
+    assert all(node.state is RunState.SUCCEEDED for node in execute.nodes)
+
+
+async def test_cancellation_during_terminal_event_persistence_keeps_success(
+    service,
+    monkeypatch,
+) -> None:
+    terminal_append = asyncio.Event()
+    release = asyncio.Event()
+    original_append = InMemoryEventStore.append
+
+    async def delayed_terminal_append(self, event):
+        if event.scope == "run" and event.state is ExecutionState.SUCCEEDED:
+            terminal_append.set()
+            await release.wait()
+        await original_append(self, event)
+
+    monkeypatch.setattr(InMemoryEventStore, "append", delayed_terminal_append)
+    request = request_for("run_00000000000000000000000000000012")
+    await service.start(request)
+    await asyncio.wait_for(terminal_append.wait(), timeout=3)
+    cancellation = asyncio.create_task(service.cancel(request.run_id))
+    await asyncio.sleep(0)
+    assert not cancellation.done()
+    release.set()
+    status = await cancellation
+    assert status.state is RunState.SUCCEEDED
+    assert (await service.get_detail(request.run_id)).result is not None

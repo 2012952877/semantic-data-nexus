@@ -46,6 +46,26 @@ async def test_simple_compiler_adapter_runtime_commits_profit_result(service) ->
     ]
     assert any(node.kind == "source" for node in detail.lineage.nodes)
     assert any(edge.relation == "produces" for edge in detail.lineage.edges)
+    lineage_kinds = {node.id: node.kind.value for node in detail.lineage.nodes}
+    reads_from = next(edge for edge in detail.lineage.edges if edge.relation == "reads_from")
+    assert lineage_kinds[reads_from.source] == "physical"
+    assert lineage_kinds[reads_from.target] == "source"
+
+
+async def test_governed_member_id_maps_to_synthetic_source_value(service) -> None:
+    request = request_for("run_00000000000000000000000000000008").model_copy(
+        update={"question": "上季度 region.central_north 区域利润是多少?"}
+    )
+    await service.start(request)
+    terminal = await wait_for_terminal(service, request.run_id)
+    assert terminal.state.value == "Succeeded"
+    detail = await service.get_detail(request.run_id)
+    assert detail.result is not None
+    rows = [
+        {column.key: value for column, value in zip(detail.result.columns, row, strict=True)}
+        for row in detail.result.rows
+    ]
+    assert [row["region"] for row in rows] == ["北辰区"]
 
 
 async def test_complex_compiler_path_runs_pivot_derive_project(service) -> None:
@@ -68,6 +88,17 @@ async def test_complex_compiler_path_runs_pivot_derive_project(service) -> None:
 
     operations = [node.kind.value for node in detail.physical_nodes]
     assert operations[-3:] == ["PIVOT", "DERIVE", "PROJECT"]
+    execute = next(stage for stage in terminal.stages if stage.name == "Execute")
+    assert all(node.state.value == "Succeeded" for node in execute.nodes)
+    started = [node.started_at for node in execute.nodes]
+    assert all(value is not None for value in started)
+    assert len(set(started)) > 1
+    assert all(
+        node.completed_at is not None
+        and node.started_at is not None
+        and node.completed_at >= node.started_at
+        for node in execute.nodes
+    )
     assert detail.result is not None
     assert detail.result.row_count == 4
     assert {column.key for column in detail.result.columns} == {

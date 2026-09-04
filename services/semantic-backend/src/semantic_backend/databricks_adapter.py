@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 import pyarrow as pa
@@ -22,14 +23,18 @@ from query_runtime.errors import ResolverFailure
 from query_runtime.resolver import ExecutionContext
 from semantic_data_nexus_databricks import (
     DatabricksResolverError,
+    DecimalType,
     ParameterType,
     PhysicalSourceFragment,
+    StatementCanceledError,
     StatementParameter,
+    StatementTimeoutError,
     TabularResult,
 )
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DECIMAL = re.compile(r"^DECIMAL\((\d+),(\d+)\)$")
+_DECIMAL_VALUE = re.compile(r"^-?(0|[1-9][0-9]*)(?:\.([0-9]+))?$")
 
 _BINARY_SQL = {
     ExpressionKind.ADD: "+",
@@ -45,12 +50,25 @@ _BINARY_SQL = {
     ExpressionKind.AND: "AND",
     ExpressionKind.OR: "OR",
 }
+_PRECEDENCE = {
+    ExpressionKind.OR: 1,
+    ExpressionKind.AND: 2,
+    ExpressionKind.EQUAL: 3,
+    ExpressionKind.NOT_EQUAL: 3,
+    ExpressionKind.LESS_THAN: 3,
+    ExpressionKind.LESS_EQUAL: 3,
+    ExpressionKind.GREATER_THAN: 3,
+    ExpressionKind.GREATER_EQUAL: 3,
+    ExpressionKind.ADD: 4,
+    ExpressionKind.SUBTRACT: 4,
+    ExpressionKind.MULTIPLY: 5,
+    ExpressionKind.DIVIDE: 5,
+}
 
 _PARAMETER_TYPES = {
     ScalarType.STRING: ParameterType.STRING,
     ScalarType.INTEGER: ParameterType.LONG,
     ScalarType.FLOAT: ParameterType.DOUBLE,
-    ScalarType.DECIMAL: ParameterType.DOUBLE,
     ScalarType.BOOLEAN: ParameterType.BOOLEAN,
     ScalarType.DATE: ParameterType.DATE,
     ScalarType.TIMESTAMP: ParameterType.TIMESTAMP,
@@ -59,6 +77,16 @@ _PARAMETER_TYPES = {
 
 class ConnectorResolver(Protocol):
     async def resolve(self, fragment: PhysicalSourceFragment) -> TabularResult: ...
+
+
+@dataclass(frozen=True)
+class ConnectorProvenance:
+    run_id: str
+    node_id: str
+    resolver: str
+    source_name: str
+    statement_id: str
+    physical_fragment_sha256: str
 
 
 class DatabricksFragmentTranslator:
@@ -168,7 +196,11 @@ class DatabricksFragmentTranslator:
             f"Operator '{spec.kind.value}' cannot cross the live source boundary.",
         )
 
-    def _expression(self, expression: TypedExpression) -> str:
+    def _expression(
+        self,
+        expression: TypedExpression,
+        parent_precedence: int = 0,
+    ) -> str:
         if expression.kind is ExpressionKind.COLUMN:
             assert expression.column is not None
             return self._quote(self._identifier(expression.column))
@@ -177,14 +209,26 @@ class DatabricksFragmentTranslator:
             return f":{parameter.name}"
         if expression.kind in _BINARY_SQL and len(expression.args) == 2:
             left, right = expression.args
-            left_sql = self._expression(left)
-            right_sql = self._expression(right)
-            if expression.kind in {ExpressionKind.AND, ExpressionKind.OR}:
-                left_sql = self._ungroup(left_sql)
-                right_sql = self._ungroup(right_sql)
-            return f"({left_sql} {_BINARY_SQL[expression.kind]} {right_sql})"
+            precedence = _PRECEDENCE[expression.kind]
+            left_sql = self._expression(left, precedence)
+            right_precedence = (
+                precedence + 1
+                if expression.kind
+                in {
+                    ExpressionKind.ADD,
+                    ExpressionKind.SUBTRACT,
+                    ExpressionKind.MULTIPLY,
+                    ExpressionKind.DIVIDE,
+                }
+                else precedence
+            )
+            right_sql = self._expression(right, right_precedence)
+            if expression.kind is ExpressionKind.AND and right_sql.startswith("("):
+                right_sql = f"COALESCE({right_sql}, FALSE)"
+            rendered = f"{left_sql} {_BINARY_SQL[expression.kind]} {right_sql}"
+            return f"({rendered})" if precedence < parent_precedence else rendered
         if expression.kind is ExpressionKind.NOT and len(expression.args) == 1:
-            return f"(NOT {self._expression(expression.args[0])})"
+            return f"NOT COALESCE({self._expression(expression.args[0])}, TRUE)"
         if expression.kind is ExpressionKind.IS_NULL and len(expression.args) == 1:
             return f"({self._expression(expression.args[0])} IS NULL)"
         if expression.kind is ExpressionKind.COALESCE and expression.args:
@@ -200,11 +244,51 @@ class DatabricksFragmentTranslator:
         value: str | int | float | bool | None,
     ) -> StatementParameter:
         name = f"p{len(self._parameters)}"
-        parameter = StatementParameter(
-            name=name,
-            type=_PARAMETER_TYPES[data_type],
-            value=value,
-        )
+        if data_type is ScalarType.DECIMAL:
+            if not isinstance(value, str):
+                raise ResolverFailure(
+                    "DATABRICKS_DECIMAL_PARAMETER_INVALID",
+                    "Decimal parameters require canonical fixed-point text.",
+                )
+            match = _DECIMAL_VALUE.fullmatch(value)
+            if match is None:
+                raise ResolverFailure(
+                    "DATABRICKS_DECIMAL_PARAMETER_INVALID",
+                    "A decimal parameter is not canonical fixed-point text.",
+                )
+            integer, fraction = match.groups()
+            scale = len(fraction or "")
+            integer_digits = len(integer.lstrip("0"))
+            precision = max(1, integer_digits + scale)
+            significant = len(f"{integer}{fraction or ''}".lstrip("0")) or 1
+            try:
+                decimal_value = Decimal(value)
+            except InvalidOperation as exc:
+                raise ResolverFailure(
+                    "DATABRICKS_DECIMAL_PARAMETER_INVALID",
+                    "A decimal parameter could not be represented exactly.",
+                ) from exc
+            if (
+                (decimal_value == 0 and value.startswith("-"))
+                or significant > 29
+                or scale > 28
+                or decimal_value.copy_abs() > Decimal("1e28")
+            ):
+                raise ResolverFailure(
+                    "DATABRICKS_DECIMAL_PARAMETER_INVALID",
+                    "A decimal parameter is outside the governed precision or scale.",
+                )
+            parameter = StatementParameter(
+                name=name,
+                type=DecimalType(precision=precision, scale=scale),
+                value=decimal_value,
+            )
+        else:
+            parameter = StatementParameter(
+                name=name,
+                type=_PARAMETER_TYPES[data_type],
+                value=value,
+            )
         self._parameters.append(parameter)
         return parameter
 
@@ -221,10 +305,6 @@ class DatabricksFragmentTranslator:
     def _quote(value: str) -> str:
         return f"`{value}`"
 
-    @staticmethod
-    def _ungroup(value: str) -> str:
-        return value[1:-1] if value.startswith("(") and value.endswith(")") else value
-
 
 class DatabricksSourceAdapter:
     source_type = "azure_databricks_statement_execution"
@@ -235,11 +315,17 @@ class DatabricksSourceAdapter:
         translator: DatabricksFragmentTranslator,
         *,
         timeout_seconds: float = 30.0,
+        close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._resolver = resolver
         self._translator = translator
         self._timeout_seconds = timeout_seconds
+        self._close = close
         self._active_cancellations: dict[str, asyncio.Event] = {}
+        self._active_contexts: dict[str, ExecutionContext] = {}
+        self._run_idle: dict[str, asyncio.Event] = {}
+        self._run_failures: dict[str, ResolverFailure] = {}
+        self._provenance: dict[tuple[str, str], ConnectorProvenance] = {}
         self._lock = asyncio.Lock()
 
     async def execute(
@@ -257,6 +343,8 @@ class DatabricksSourceAdapter:
                     "The opaque cancellation handle is already active.",
                 )
             self._active_cancellations[context.cancellation_handle] = local_cancel
+            self._active_contexts[context.cancellation_handle] = context
+            self._run_idle.setdefault(context.run_id, asyncio.Event()).clear()
 
         resolution = asyncio.create_task(self._resolver.resolve(connector_fragment))
         cancellation = asyncio.create_task(self._wait_for_cancellation(cancel_event, local_cancel))
@@ -266,32 +354,40 @@ class DatabricksSourceAdapter:
                 timeout=self._timeout_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            if local_cancel.is_set() or cancel_event.is_set():
+                await self._drain_cancelled_resolution(context, resolution)
+                raise asyncio.CancelledError
             if resolution in done:
                 cancellation.cancel()
                 result = resolution.result()
+                await self._record_provenance(context, result)
                 return self._to_arrow(result)
-            if cancellation in done:
-                # The connector owns provider cancellation on its bounded timeout.
-                # Drain it so no remote statement or HTTP task is orphaned.
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(resolution),
-                        timeout=self._timeout_seconds,
-                    )
-                except (TimeoutError, DatabricksResolverError):
-                    pass
-                raise asyncio.CancelledError
             resolution.cancel()
             await asyncio.gather(resolution, return_exceptions=True)
             raise ResolverFailure(
                 "DATABRICKS_ADAPTER_TIMEOUT",
                 "The live resolver exceeded the bounded adapter timeout.",
             )
+        except ResolverFailure as exc:
+            async with self._lock:
+                self._run_failures[context.run_id] = exc
+            raise
+        except asyncio.CancelledError:
+            local_cancel.set()
+            try:
+                await self._drain_uninterruptibly(context, resolution)
+            except ResolverFailure as exc:
+                async with self._lock:
+                    self._run_failures[context.run_id] = exc
+                raise
+            raise
         finally:
+            self._active_cancellations.pop(context.cancellation_handle, None)
+            self._active_contexts.pop(context.cancellation_handle, None)
+            if not any(item.run_id == context.run_id for item in self._active_contexts.values()):
+                self._run_idle[context.run_id].set()
             cancellation.cancel()
             await asyncio.gather(cancellation, return_exceptions=True)
-            async with self._lock:
-                self._active_cancellations.pop(context.cancellation_handle, None)
 
     async def cancel(self, cancellation_handle: str) -> None:
         async with self._lock:
@@ -301,6 +397,99 @@ class DatabricksSourceAdapter:
 
     async def health(self) -> bool:
         return True
+
+    def provenance(self, run_id: str) -> tuple[ConnectorProvenance, ...]:
+        return tuple(item for key, item in sorted(self._provenance.items()) if key[0] == run_id)
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            if self._active_cancellations:
+                raise ResolverFailure(
+                    "DATABRICKS_CLOSE_ACTIVE",
+                    "The live resolver cannot close while executions are active.",
+                )
+        if self._close is not None:
+            await self._close()
+
+    async def wait_for_run_cleanup(self, run_id: str) -> None:
+        async with self._lock:
+            event = self._run_idle.get(run_id)
+            active = any(item.run_id == run_id for item in self._active_contexts.values())
+            failure = self._run_failures.pop(run_id, None) if not active else None
+        if active and event is not None:
+            try:
+                await asyncio.wait_for(
+                    event.wait(),
+                    timeout=self._timeout_seconds + 1,
+                )
+            except TimeoutError as exc:
+                raise ResolverFailure(
+                    "DATABRICKS_CLEANUP_TIMEOUT",
+                    "The live resolver did not reach an idle state after cancellation.",
+                ) from exc
+            async with self._lock:
+                failure = self._run_failures.pop(run_id, None)
+        if failure is not None:
+            raise failure
+
+    async def _drain_cancelled_resolution(
+        self,
+        context: ExecutionContext,
+        resolution: asyncio.Task[TabularResult],
+    ) -> None:
+        try:
+            result = await asyncio.wait_for(resolution, timeout=self._timeout_seconds)
+        except StatementCanceledError:
+            return
+        except StatementTimeoutError as exc:
+            raise ResolverFailure(
+                "DATABRICKS_CANCELLATION_UNCONFIRMED",
+                "The connector timed out before cancellation could be confirmed.",
+            ) from exc
+        except DatabricksResolverError as exc:
+            raise ResolverFailure(
+                "DATABRICKS_CANCELLATION_FAILED",
+                "The connector could not confirm a clean cancellation.",
+            ) from exc
+        except TimeoutError as exc:
+            resolution.cancel()
+            await asyncio.gather(resolution, return_exceptions=True)
+            raise ResolverFailure(
+                "DATABRICKS_CANCELLATION_UNCONFIRMED",
+                "The connector did not finish cancellation cleanup in time.",
+            ) from exc
+        else:
+            await self._record_provenance(context, result)
+
+    async def _drain_uninterruptibly(
+        self,
+        context: ExecutionContext,
+        resolution: asyncio.Task[TabularResult],
+    ) -> None:
+        cleanup = asyncio.create_task(self._drain_cancelled_resolution(context, resolution))
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        cleanup.result()
+
+    async def _record_provenance(
+        self,
+        context: ExecutionContext,
+        result: TabularResult,
+    ) -> None:
+        lineage = result.lineage
+        provenance = ConnectorProvenance(
+            run_id=context.run_id,
+            node_id=context.node_id,
+            resolver=lineage.resolver,
+            source_name=lineage.source_name,
+            statement_id=lineage.statement_id,
+            physical_fragment_sha256=lineage.physical_fragment_sha256,
+        )
+        async with self._lock:
+            self._provenance[(context.run_id, context.node_id)] = provenance
 
     async def capabilities(self, source_alias: str) -> CapabilityCatalog:
         return CapabilityCatalog(

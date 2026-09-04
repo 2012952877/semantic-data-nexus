@@ -410,16 +410,25 @@ class CompilerRuntimeAdapter:
             expression = self._comparison(kind, left, value)
         return BoundPredicate(expression=expression)
 
-    @staticmethod
     def _comparison(
+        self,
         kind: ExpressionKind,
         left: TypedExpression,
         value: str | int | float | bool | None,
     ) -> TypedExpression:
+        if left.column == "commerce.sales_record.region":
+            if not isinstance(value, str) or value not in self.mapping.members:
+                raise AdapterFailure(
+                    "ADAPTER_MEMBER_UNMAPPED",
+                    "No reviewed source value mapping exists for the governed region member.",
+                )
+            source_value: str | int | float | bool | None = self.mapping.members[value]
+        else:
+            source_value = value
         return TypedExpression(
             kind=kind,
             data_type=ScalarType.BOOLEAN,
-            args=(left, TypedExpression.literal(value, left.data_type)),
+            args=(left, TypedExpression.literal(source_value, left.data_type)),
         )
 
     def _expression(

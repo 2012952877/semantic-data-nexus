@@ -292,10 +292,14 @@ def validate_plan(plan: Any) -> list[str]:
     if len(valid_nodes) != len(nodes):
         errors.append("every node must be an object")
     node_ids = [node.get("id") for node in valid_nodes]
-    invalid_ids = [node_id for node_id in node_ids if not isinstance(node_id, str) or not node_id]
+    invalid_ids = [
+        node_id for node_id in node_ids if not isinstance(node_id, str) or not node_id
+    ]
     if invalid_ids:
         errors.append("every node must have a non-empty string ID")
-    string_ids = [node_id for node_id in node_ids if isinstance(node_id, str) and node_id]
+    string_ids = [
+        node_id for node_id in node_ids if isinstance(node_id, str) and node_id
+    ]
     duplicates = sorted(
         {node_id for node_id in string_ids if string_ids.count(node_id) > 1}
     )
@@ -341,11 +345,7 @@ def validate_plan(plan: Any) -> list[str]:
             if not isinstance(raw_values, list):
                 errors.append(f"{node_id} {field_name} must be a list")
                 raw_values = []
-            values = [
-                value
-                for value in raw_values
-                if isinstance(value, str) and value
-            ]
+            values = [value for value in raw_values if isinstance(value, str) and value]
             if len(values) != len(raw_values):
                 errors.append(f"{node_id} has invalid {field_name}")
             if len(set(values)) != len(values):
@@ -377,7 +377,9 @@ def validate_plan(plan: Any) -> list[str]:
         if string_dependencies and not data["inputs"]:
             errors.append(f"{node_id} must declare inputs from its dependencies")
         elif string_dependencies and missing_inputs:
-            errors.append(f"{node_id} has unavailable inputs: {', '.join(missing_inputs)}")
+            errors.append(
+                f"{node_id} has unavailable inputs: {', '.join(missing_inputs)}"
+            )
 
     if declared_edges != dependency_edges:
         errors.append("plan edges do not match node dependencies")
@@ -477,7 +479,9 @@ def _numbers_equal(expected: Any, actual: Any, tolerance: Any) -> bool:
             return expected == actual
         try:
             expected_number = (
-                Decimal(expected) if isinstance(expected, int) else Decimal(str(expected))
+                Decimal(expected)
+                if isinstance(expected, int)
+                else Decimal(str(expected))
             )
             actual_number = (
                 Decimal(actual) if isinstance(actual, int) else Decimal(str(actual))
@@ -586,8 +590,7 @@ def _resolve_weights(golden_suite: dict[str, Any]) -> dict[str, float]:
     expected_dimensions = set(DEFAULT_WEIGHTS)
     if set(declared) != expected_dimensions:
         raise ValueError(
-            "suite weights must declare exactly: "
-            + ", ".join(DEFAULT_WEIGHTS)
+            "suite weights must declare exactly: " + ", ".join(DEFAULT_WEIGHTS)
         )
     weights: dict[str, float] = {}
     for dimension in DEFAULT_WEIGHTS:
@@ -662,6 +665,7 @@ def evaluate_case(
         "result": "execution_result",
         "behavior": "governance",
         "governance": "governance",
+        "diagnostics": "governance",
         "lineage": "observability",
     }
     shape_checks: dict[str, list[bool]] = {
@@ -681,7 +685,11 @@ def evaluate_case(
         if errors:
             shape_checks[dimension].append(False)
         for error in errors:
-            code = "INVALID_PLAN_SHAPE" if dimension == "plan" else "INVALID_CANDIDATE_SHAPE"
+            code = (
+                "INVALID_PLAN_SHAPE"
+                if dimension == "plan"
+                else "INVALID_CANDIDATE_SHAPE"
+            )
             _difference(
                 differences,
                 dimension,
@@ -803,6 +811,16 @@ def evaluate_case(
             differences,
         ),
     ]
+    if "diagnostics" in expected:
+        governance_checks.append(
+            _compare_exact(
+                "governance",
+                "diagnostics",
+                expected.get("diagnostics", []),
+                actual.get("diagnostics", []),
+                differences,
+            )
+        )
 
     lineage_required = expected.get("observability", {}).get("lineage_required", False)
     actual_lineage_value = actual.get("lineage")
@@ -831,6 +849,29 @@ def evaluate_case(
                 unordered=True,
             )
         )
+        observability_fields = {
+            "lineage_fields": "fields",
+            "artifact": "artifact",
+            "runtime_node_count": "runtime_node_count",
+            "runtime_edge_count": "runtime_edge_count",
+            "connector_provenance": "connector_provenance",
+            "relations": "relations",
+            "edge_semantics_valid": "edge_semantics_valid",
+            "topology": "topology",
+            "topology_sha256": "topology_sha256",
+        }
+        expected_observability = expected.get("observability", {})
+        for expected_key, actual_key in observability_fields.items():
+            if expected_key in expected_observability:
+                observability_checks.append(
+                    _compare_exact(
+                        "observability",
+                        f"lineage.{actual_key}",
+                        expected_observability[expected_key],
+                        actual_lineage.get(actual_key),
+                        differences,
+                    )
+                )
 
     dimension_scores = {
         "semantic": _dimension_score(semantic_checks),
@@ -848,7 +889,9 @@ def evaluate_case(
     return CaseReport(
         case_id=case_id,
         score=round(score, 2),
-        dimension_scores={key: round(value, 2) for key, value in dimension_scores.items()},
+        dimension_scores={
+            key: round(value, 2) for key, value in dimension_scores.items()
+        },
         differences=differences,
     )
 
@@ -925,9 +968,7 @@ def evaluate_bundle(
         valid_entries: list[tuple[str, dict[str, Any]]] = []
         for index, candidate in enumerate(raw_candidates):
             if not isinstance(candidate, dict):
-                validation_errors.append(
-                    f"candidate cases[{index}] must be an object"
-                )
+                validation_errors.append(f"candidate cases[{index}] must be an object")
                 continue
             candidate_id = candidate.get("id")
             if not isinstance(candidate_id, str) or not candidate_id.strip():

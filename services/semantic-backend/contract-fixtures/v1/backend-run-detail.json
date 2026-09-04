@@ -42,12 +42,12 @@
       {
         "key": "profit",
         "label": "Profit",
-        "dataType": "float",
+        "dataType": "decimal",
         "format": "currency",
         "nullable": false
       }
     ],
-    "rows": [["北辰区", 2334.0]],
+    "rows": [["北辰区", "2334.00"]],
     "rowCount": 1,
     "truncated": false
   },

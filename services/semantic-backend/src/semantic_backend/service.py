@@ -13,6 +13,7 @@ from query_runtime.coordinator import QueryCoordinator, RunOutcome
 from query_runtime.domain import (
     AggregateFunction,
     CapabilityCatalog,
+    DiagnosticEvent,
     ExecutionState,
     PhysicalNode,
     PhysicalPlan,
@@ -80,6 +81,8 @@ class IntegratedRunArtifact:
     detail: RunDetail
     compile_response: CompileResponse
     physical_plan: PhysicalPlan
+    connector_provenance: tuple[dict[str, str], ...] = ()
+    member_normalization: dict[str, str] | None = None
 
 
 class OrchestrationService:
@@ -175,6 +178,12 @@ class OrchestrationService:
                 detail=record.detail.model_copy(deep=True),
                 compile_response=record.compile_response.model_copy(deep=True),
                 physical_plan=record.physical_plan.model_copy(deep=True),
+                connector_provenance=self._connector_provenance(run_id),
+                member_normalization={
+                    term.machine_id: self.adapter.mapping.members[term.machine_id]
+                    for term in record.compile_response.resolved_terms
+                    if term.kind is ResolvedTermKind.MEMBER
+                },
             )
 
     async def cancel(self, run_id: str) -> RunStatus:
@@ -183,50 +192,52 @@ class OrchestrationService:
             if record.status.state.terminal:
                 return record.status.model_copy(deep=True)
             record.cancel_requested = True
-            now = datetime.now(UTC)
-            stages = []
-            for stage in record.status.stages:
-                if stage.state in {RunState.STARTING, RunState.RUNNING}:
-                    nodes = [
-                        node.model_copy(update={"state": RunState.CANCELLED, "completed_at": now})
-                        for node in stage.nodes
-                    ]
-                    stage = stage.model_copy(
-                        update={
-                            "state": RunState.CANCELLED,
-                            "completed_at": now,
-                            "nodes": nodes,
-                        }
-                    )
-                stages.append(stage)
-            record.status = record.status.model_copy(
-                update={
-                    "state": RunState.CANCELLED,
-                    "finalized_at": now,
-                    "stages": stages,
-                }
-            )
             task = record.task
             coordinator = record.coordinator
+        accepted = False
+        finishing = False
         if coordinator is not None:
             accepted = await coordinator.cancel(run_id)
-            if not accepted and task is not None and not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-        elif task is not None and not task.done():
+            if not accepted:
+                events = await coordinator.event_store.list(run_id)
+                if events:
+                    finishing = True
+                    await self._apply_runtime_events(record, events)
+                    async with record.lock:
+                        record.cancel_requested = False
+        current = asyncio.current_task()
+        if (
+            not accepted
+            and not finishing
+            and task is not None
+            and task is not current
+            and not task.done()
+        ):
             task.cancel()
+        if task is not None and task is not current and not task.done():
             await asyncio.gather(task, return_exceptions=True)
+        await self._finalize_cancelled(record)
         return record.status.model_copy(deep=True)
 
     async def shutdown(self) -> None:
         records = await self.repository.list_records()
-        tasks = [
-            record.task for record in records if record.task is not None and not record.task.done()
-        ]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        current = asyncio.current_task()
+        results = await asyncio.gather(
+            *(
+                self.cancel(record.request.run_id)
+                for record in records
+                if not record.status.state.terminal and record.task is not current
+            ),
+            return_exceptions=True,
+        )
+        close = getattr(self.resolver, "aclose", None)
+        if close is not None:
+            await close()
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if failures:
+            raise RuntimeError(
+                "One or more run cancellations failed during shutdown."
+            ) from failures[0]
 
     async def _run(self, record: RunRecord) -> None:
         request = record.request
@@ -302,6 +313,9 @@ class OrchestrationService:
                     record.coordinator = coordinator
                 async with asyncio.timeout(_RUN_TIMEOUT_SECONDS):
                     outcome = await coordinator.run(plan, run_id=request.run_id)
+                await self._apply_runtime_events(record, outcome.events)
+                if outcome.summary.state is ExecutionState.CANCELLED and record.cancel_requested:
+                    raise asyncio.CancelledError
                 if (
                     outcome.summary.state is not ExecutionState.SUCCEEDED
                     or outcome.manifest is None
@@ -317,7 +331,7 @@ class OrchestrationService:
                     min(_MAX_RESULT_ROWS, outcome.manifest.row_count or _MAX_RESULT_ROWS),
                 )
                 await self._set_runtime_result(record, outcome, table)
-                await self._complete_stage(record, "Execute")
+                await self._complete_stage(record, "Execute", complete_nodes=False)
 
                 await self._begin_stage(record, "Generate")
                 await self._complete_stage(record, "Generate")
@@ -358,8 +372,8 @@ class OrchestrationService:
                             NodeSummary(
                                 node_id=node.id[:64],
                                 kind=node.operation.value,
-                                state=RunState.RUNNING,
-                                started_at=now,
+                                state=(RunState.RUNNING if node.wave == 0 else RunState.QUEUED),
+                                started_at=now if node.wave == 0 else None,
                             )
                             for node in plan.nodes
                         ]
@@ -381,7 +395,13 @@ class OrchestrationService:
                 update={"state": RunState.RUNNING, "stages": stages}
             )
 
-    async def _complete_stage(self, record: RunRecord, name: str) -> None:
+    async def _complete_stage(
+        self,
+        record: RunRecord,
+        name: str,
+        *,
+        complete_nodes: bool = True,
+    ) -> None:
         now = datetime.now(UTC)
         async with record.lock:
             stages = []
@@ -391,15 +411,19 @@ class OrchestrationService:
                         update={
                             "state": RunState.SUCCEEDED,
                             "completed_at": now,
-                            "nodes": [
-                                node.model_copy(
-                                    update={
-                                        "state": RunState.SUCCEEDED,
-                                        "completed_at": now,
-                                    }
-                                )
-                                for node in stage.nodes
-                            ],
+                            "nodes": (
+                                [
+                                    node.model_copy(
+                                        update={
+                                            "state": RunState.SUCCEEDED,
+                                            "completed_at": now,
+                                        }
+                                    )
+                                    for node in stage.nodes
+                                ]
+                                if complete_nodes
+                                else stage.nodes
+                            ),
                         }
                     )
                 stages.append(stage)
@@ -531,7 +555,11 @@ class OrchestrationService:
                 LineageNodeDetail(
                     id=node.id,
                     kind=LineageNodeKind(node.kind),
-                    operation=node.operation,
+                    operation=(
+                        self._connector_resolver_name(record.request.run_id)
+                        if node.kind == "source"
+                        else node.operation
+                    ),
                     source_alias=node.source_alias,
                     source_type=node.source_type,
                     result_id=node.result_id,
@@ -547,8 +575,16 @@ class OrchestrationService:
             ],
             edges=[
                 LineageEdgeDetail(
-                    source=edge.source,
-                    target=edge.target,
+                    source=(
+                        edge.target
+                        if edge.relation == LineageRelation.READS_FROM.value
+                        else edge.source
+                    ),
+                    target=(
+                        edge.source
+                        if edge.relation == LineageRelation.READS_FROM.value
+                        else edge.target
+                    ),
                     relation=LineageRelation(edge.relation),
                 )
                 for edge in outcome.lineage.edges
@@ -559,6 +595,26 @@ class OrchestrationService:
                 update={"result": result, "manifest": committed, "lineage": lineage}
             )
 
+    def _connector_provenance(self, run_id: str) -> tuple[dict[str, str], ...]:
+        reader = getattr(self.resolver, "provenance", None)
+        if reader is None:
+            return ()
+        return tuple(
+            {
+                "run_id": item.run_id,
+                "node_id": item.node_id,
+                "resolver": item.resolver,
+                "source_name": item.source_name,
+                "statement_id": item.statement_id,
+                "physical_fragment_sha256": item.physical_fragment_sha256,
+            }
+            for item in reader(run_id)
+        )
+
+    def _connector_resolver_name(self, run_id: str) -> str | None:
+        provenance = self._connector_provenance(run_id)
+        return provenance[0]["resolver"] if provenance else None
+
     async def _succeed(self, record: RunRecord) -> None:
         async with record.lock:
             if record.status.state is RunState.CANCELLED:
@@ -568,10 +624,55 @@ class OrchestrationService:
             )
 
     async def _cancelled(self, record: RunRecord) -> None:
-        async with record.lock:
-            if record.status.state is RunState.CANCELLED:
+        wait_for_cleanup = getattr(self.resolver, "wait_for_run_cleanup", None)
+        if wait_for_cleanup is not None:
+            try:
+                await wait_for_cleanup(record.request.run_id)
+            except RuntimeFailure as exc:
+                await self._fail(
+                    record,
+                    exc.code,
+                    "The provider cancellation could not be confirmed safely.",
+                )
                 return
-        await self.cancel(record.request.run_id)
+        await self._finalize_cancelled(record)
+
+    async def _finalize_cancelled(self, record: RunRecord) -> None:
+        now = datetime.now(UTC)
+        async with record.lock:
+            if record.status.state.terminal:
+                return
+            stages = []
+            for stage in record.status.stages:
+                if stage.state in {RunState.STARTING, RunState.RUNNING}:
+                    nodes = []
+                    for node in stage.nodes:
+                        if node.state.terminal or node.state is RunState.QUEUED:
+                            nodes.append(node)
+                        else:
+                            nodes.append(
+                                node.model_copy(
+                                    update={
+                                        "state": RunState.CANCELLED,
+                                        "completed_at": now,
+                                    }
+                                )
+                            )
+                    stage = stage.model_copy(
+                        update={
+                            "state": RunState.CANCELLED,
+                            "completed_at": now,
+                            "nodes": nodes,
+                        }
+                    )
+                stages.append(stage)
+            record.status = record.status.model_copy(
+                update={
+                    "state": RunState.CANCELLED,
+                    "finalized_at": now,
+                    "stages": stages,
+                }
+            )
 
     async def _fail(self, record: RunRecord, code: str, message: str) -> None:
         now = datetime.now(UTC)
@@ -583,16 +684,24 @@ class OrchestrationService:
             for stage in record.status.stages:
                 if stage.state in {RunState.STARTING, RunState.RUNNING}:
                     failed_stage = stage.name
+                    nodes = []
+                    for node in stage.nodes:
+                        if node.state.terminal or node.state is RunState.QUEUED:
+                            nodes.append(node)
+                        else:
+                            nodes.append(
+                                node.model_copy(
+                                    update={
+                                        "state": RunState.FAILED,
+                                        "completed_at": now,
+                                    }
+                                )
+                            )
                     stage = stage.model_copy(
                         update={
                             "state": RunState.FAILED,
                             "completed_at": now,
-                            "nodes": [
-                                node.model_copy(
-                                    update={"state": RunState.FAILED, "completed_at": now}
-                                )
-                                for node in stage.nodes
-                            ],
+                            "nodes": nodes,
                         }
                     )
                 stages.append(stage)
@@ -630,6 +739,75 @@ class OrchestrationService:
         async with record.lock:
             if record.cancel_requested or record.status.state is RunState.CANCELLED:
                 raise asyncio.CancelledError
+
+    async def _apply_runtime_events(
+        self,
+        record: RunRecord,
+        events: tuple[DiagnosticEvent, ...] | list[DiagnosticEvent],
+    ) -> None:
+        runtime_states = {
+            ExecutionState.PENDING: RunState.QUEUED,
+            ExecutionState.READY: RunState.STARTING,
+            ExecutionState.RUNNING: RunState.RUNNING,
+            ExecutionState.SUCCEEDED: RunState.SUCCEEDED,
+            ExecutionState.CANCELLED: RunState.CANCELLED,
+            ExecutionState.FAILED: RunState.FAILED,
+            ExecutionState.TIMED_OUT: RunState.FAILED,
+            ExecutionState.SKIPPED: RunState.CANCELLED,
+        }
+        by_node: dict[str, list[Any]] = {}
+        for event in events:
+            if event.scope == "node":
+                by_node.setdefault(event.scope_id, []).append(event)
+        async with record.lock:
+            stages = []
+            for stage in record.status.stages:
+                if stage.name != "Execute":
+                    stages.append(stage)
+                    continue
+                nodes = []
+                for node in stage.nodes:
+                    events = by_node.get(node.node_id, [])
+                    if not events:
+                        nodes.append(node)
+                        continue
+                    running = next(
+                        (event for event in events if event.state is ExecutionState.RUNNING),
+                        None,
+                    )
+                    terminal = next(
+                        (
+                            event
+                            for event in reversed(events)
+                            if event.state
+                            in {
+                                ExecutionState.SUCCEEDED,
+                                ExecutionState.CANCELLED,
+                                ExecutionState.FAILED,
+                                ExecutionState.TIMED_OUT,
+                                ExecutionState.SKIPPED,
+                            }
+                        ),
+                        None,
+                    )
+                    latest = terminal or events[-1]
+                    state = runtime_states[latest.state]
+                    started_at = (
+                        running.timestamp
+                        if running is not None
+                        else (latest.timestamp if state is not RunState.QUEUED else None)
+                    )
+                    nodes.append(
+                        node.model_copy(
+                            update={
+                                "state": state,
+                                "started_at": started_at,
+                                "completed_at": latest.timestamp if state.terminal else None,
+                            }
+                        )
+                    )
+                stages.append(stage.model_copy(update={"nodes": nodes}))
+            record.status = record.status.model_copy(update={"stages": stages})
 
     @staticmethod
     def _physical_node_detail(node: PhysicalNode) -> PhysicalNodeDetail:
@@ -698,7 +876,12 @@ class OrchestrationService:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         if isinstance(value, Decimal):
-            return float(value)
+            if data_type is ScalarType.DECIMAL:
+                return format(value, "f")
+            raise RuntimeFailure(
+                "RESULT_DECIMAL_TYPE_MISMATCH",
+                "An exact decimal result did not declare the decimal scalar type.",
+            )
         if isinstance(value, datetime):
             aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value
             return aware.isoformat().replace("+00:00", "Z")
