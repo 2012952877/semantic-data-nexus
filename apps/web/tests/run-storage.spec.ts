@@ -27,6 +27,14 @@ const store = (runs: unknown[], version = RUN_STORAGE_VERSION) => {
   window.localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify({ version, runs }))
 }
 
+const withoutColumnDataTypes = (run: Run) => {
+  const legacy = JSON.parse(JSON.stringify(run)) as Run
+  legacy.result?.columns.forEach((column) => {
+    delete (column as Partial<typeof column>).dataType
+  })
+  return legacy
+}
+
 describe('run history storage', () => {
   it('uses collision-resistant IDs and merges stale cross-tab clients', async () => {
     const firstClient = new MockSemanticNexusClient(0, false, 'client-a')
@@ -66,6 +74,60 @@ describe('run history storage', () => {
     expect(runs).toHaveLength(1)
     expect(runs[0]?.id).toBe('run-syn-1010')
     expect(window.localStorage.getItem(RUN_STORAGE_QUARANTINE_KEY)).not.toBeNull()
+  })
+
+  it('migrates origin/main-shaped aggregate v1 columns before validation', async () => {
+    const legacy = withoutColumnDataTypes(
+      createSeedRun('run-syn-legacy-aggregate', '旧聚合记录', 'succeeded', 10),
+    )
+    store([legacy])
+
+    const client = new MockSemanticNexusClient(0, false)
+    const [migrated] = await client.listRuns()
+
+    expect(migrated?.id).toBe(legacy.id)
+    expect(migrated?.result?.columns.map((column) => column.dataType)).toEqual([
+      'string',
+      'integer',
+      'float',
+      'float',
+    ])
+    await vi.waitFor(() => {
+      expect(window.localStorage.getItem(RUN_STORAGE_KEY)).toBeNull()
+      expect(parseStoredRun(
+        window.localStorage.getItem(runStorageKey(legacy.id)) ?? '',
+      )?.result?.columns.every((column) => Boolean(column.dataType))).toBe(true)
+    })
+    expect(window.localStorage.getItem(RUN_STORAGE_QUARANTINE_KEY)).toBeNull()
+  })
+
+  it('migrates and rewrites origin/main-shaped per-run v1 columns', async () => {
+    const legacy = withoutColumnDataTypes(
+      createSeedRun('run-syn-legacy-record', '旧逐运行记录', 'empty', 10),
+    )
+    const key = runStorageKey(legacy.id)
+    window.localStorage.setItem(key, JSON.stringify({
+      version: RUN_STORAGE_VERSION,
+      run: legacy,
+    }))
+
+    const client = new MockSemanticNexusClient(0, false)
+    const migrated = await client.getRun(legacy.id)
+
+    expect(migrated?.result?.columns.map((column) => column.dataType)).toEqual([
+      'string',
+      'float',
+      'float',
+      'float',
+    ])
+    await vi.waitFor(() => {
+      const rewritten = JSON.parse(window.localStorage.getItem(key) ?? '{}') as {
+        run?: Run
+      }
+      expect(rewritten.run?.result?.columns.every((column) => Boolean(column.dataType)))
+        .toBe(true)
+    })
+    expect(window.localStorage.getItem(RUN_STORAGE_QUARANTINE_KEY)).toBeNull()
   })
 
   it('keeps valid runs in memory when repairing storage exceeds quota', async () => {

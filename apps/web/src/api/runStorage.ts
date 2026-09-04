@@ -33,6 +33,11 @@ interface ParsedStoredRuns {
   reason?: string
 }
 
+export interface ParsedStoredRunRecord {
+  run?: Run
+  migrated: boolean
+}
+
 const runStates = ['queued', 'running', 'succeeded', 'empty', 'failed', 'canceled'] as const
 const scenarios = ['success', 'empty', 'failure'] as const
 const stageKeys = ['initialize', 'compile', 'optimize', 'execute', 'generate'] as const
@@ -140,6 +145,61 @@ const isResult = (value: unknown): value is ResultSet =>
     ? value.rowCount > value.rows.length
     : value.rowCount === value.rows.length)
 
+const inferLegacyColumnDataType = (
+  column: Record<string, unknown>,
+  rows: unknown[],
+): ResultColumn['dataType'] => {
+  if (column.format === 'date') return 'date'
+  if (column.format === 'timestamp') return 'timestamp'
+  const values = isString(column.key)
+    ? rows.flatMap((row) =>
+        isRecord(row) && row[column.key as string] !== null && row[column.key as string] !== undefined
+          ? [row[column.key as string]]
+          : [])
+    : []
+  if (values.length > 0 && values.every((value) => typeof value === 'boolean')) return 'boolean'
+  if (values.length > 0 && values.every((value) => typeof value === 'number')) {
+    return values.every((value) => Number.isSafeInteger(value)) ? 'integer' : 'float'
+  }
+  if (values.length > 0 && values.every(isString)) return 'string'
+  if (column.format === 'currency'
+    || column.format === 'percent'
+    || column.format === 'number') return 'float'
+  return 'string'
+}
+
+const migrateLegacyResultColumns = (value: unknown) => {
+  if (!isRecord(value)) return { value, migrated: false }
+  const result = value.result
+  if (!isRecord(result)
+    || !Array.isArray(result.columns)
+    || !Array.isArray(result.rows)) {
+    return { value, migrated: false }
+  }
+  const rows = result.rows
+  let migrated = false
+  const columns = result.columns.map((column) => {
+    if (!isRecord(column) || column.dataType !== undefined) return column
+    migrated = true
+    return {
+      ...column,
+      dataType: inferLegacyColumnDataType(column, rows),
+    }
+  })
+  return migrated
+    ? {
+        value: {
+          ...value,
+          result: {
+            ...result,
+            columns,
+          },
+        },
+        migrated: true,
+      }
+    : { value, migrated: false }
+}
+
 const isLineageSource = (value: unknown): value is LineageSource =>
   isRecord(value)
   && isString(value.id)
@@ -216,7 +276,8 @@ export const parseStoredRuns = (raw: string): ParsedStoredRuns => {
     return { runs: [], rejected: true, reason: 'schema-mismatch' }
   }
 
-  const runs = parsed.runs.filter(isRun)
+  const candidates = parsed.runs.map(migrateLegacyResultColumns)
+  const runs = candidates.flatMap((candidate) => isRun(candidate.value) ? [candidate.value] : [])
   return {
     runs,
     rejected: runs.length !== parsed.runs.length,
@@ -224,18 +285,24 @@ export const parseStoredRuns = (raw: string): ParsedStoredRuns => {
   }
 }
 
-export const parseStoredRun = (raw: string): Run | undefined => {
+export const parseStoredRunRecord = (raw: string): ParsedStoredRunRecord => {
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return undefined
+    return { migrated: false }
   }
-  if (!isRecord(parsed) || parsed.version !== RUN_STORAGE_VERSION || !isRun(parsed.run)) {
-    return undefined
+  if (!isRecord(parsed) || parsed.version !== RUN_STORAGE_VERSION) {
+    return { migrated: false }
   }
-  return parsed.run
+  const candidate = migrateLegacyResultColumns(parsed.run)
+  return isRun(candidate.value)
+    ? { run: candidate.value, migrated: candidate.migrated }
+    : { migrated: false }
 }
+
+export const parseStoredRun = (raw: string): Run | undefined =>
+  parseStoredRunRecord(raw).run
 
 export const serializeStoredRun = (run: Run) =>
   JSON.stringify({ version: RUN_STORAGE_VERSION, run } satisfies StoredRun)

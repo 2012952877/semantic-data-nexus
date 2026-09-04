@@ -12,6 +12,7 @@ import {
 } from './mockFixtures'
 import {
   parseStoredRun,
+  parseStoredRunRecord,
   parseStoredRuns,
   RUN_STORAGE_KEY,
   RUN_STORAGE_CHANGE_EVENT,
@@ -398,9 +399,11 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       try {
         const raw = window.localStorage.getItem(key)
         if (!raw) return
-        const run = parseStoredRun(raw)
+        const parsed = parseStoredRunRecord(raw)
+        const run = parsed.run
         if (run) {
           records.set(run.id, run)
+          if (parsed.migrated) void this.rewriteMigratedRunRecord(key, raw, run)
         } else {
           this.quarantine(raw, 'invalid-run-record')
           void this.removeInvalidRunRecord(key, raw)
@@ -453,6 +456,19 @@ export class MockSemanticNexusClient implements SemanticNexusClient {
       })
     } catch (error) {
       console.warn('Unable to remove an invalid mock run record.', error)
+    }
+  }
+
+  private async rewriteMigratedRunRecord(key: string, legacyRaw: string, run: Run) {
+    try {
+      await this.withRunLock(run.id, () => {
+        if (window.localStorage.getItem(key) !== legacyRaw) return
+        const serialized = serializeStoredRun(run)
+        window.localStorage.setItem(key, serialized)
+        this.dispatchRunStorageChange(run.id, serialized)
+      })
+    } catch (error) {
+      console.warn('Unable to rewrite migrated mock run record.', error)
     }
   }
 
