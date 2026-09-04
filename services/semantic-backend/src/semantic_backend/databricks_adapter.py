@@ -224,13 +224,40 @@ class DatabricksFragmentTranslator:
             )
             right_sql = self._expression(right, right_precedence)
             if expression.kind is ExpressionKind.AND and right_sql.startswith("("):
-                right_sql = f"COALESCE({right_sql}, FALSE)"
+                right_sql = self._boolean_case(
+                    right_sql,
+                    when_true="TRUE",
+                    when_false="FALSE",
+                    when_null="NULL",
+                )
             rendered = f"{left_sql} {_BINARY_SQL[expression.kind]} {right_sql}"
             return f"({rendered})" if precedence < parent_precedence else rendered
         if expression.kind is ExpressionKind.NOT and len(expression.args) == 1:
-            return f"NOT COALESCE({self._expression(expression.args[0])}, TRUE)"
+            argument = expression.args[0]
+            rendered = self._expression(argument)
+            return (
+                self._boolean_case(
+                    rendered,
+                    when_true="FALSE",
+                    when_false="TRUE",
+                    when_null="NULL",
+                )
+                if argument.kind in _BINARY_SQL
+                else f"NOT {rendered}"
+            )
         if expression.kind is ExpressionKind.IS_NULL and len(expression.args) == 1:
-            return f"({self._expression(expression.args[0])} IS NULL)"
+            argument = expression.args[0]
+            rendered = self._expression(argument)
+            return (
+                self._boolean_case(
+                    rendered,
+                    when_true="FALSE",
+                    when_false="FALSE",
+                    when_null="TRUE",
+                )
+                if argument.kind in _BINARY_SQL
+                else f"{rendered} IS NULL"
+            )
         if expression.kind is ExpressionKind.COALESCE and expression.args:
             return f"COALESCE({', '.join(self._expression(item) for item in expression.args)})"
         raise ResolverFailure(
@@ -304,6 +331,21 @@ class DatabricksFragmentTranslator:
     @staticmethod
     def _quote(value: str) -> str:
         return f"`{value}`"
+
+    @staticmethod
+    def _boolean_case(
+        rendered: str,
+        *,
+        when_true: str,
+        when_false: str,
+        when_null: str,
+    ) -> str:
+        inner = rendered[1:-1] if rendered.startswith("(") and rendered.endswith(")") else rendered
+        return (
+            f"CASE WHEN {inner} THEN {when_true} "
+            f"WHEN FALSE = ({inner}) THEN {when_false} "
+            f"ELSE {when_null} END"
+        )
 
 
 class DatabricksSourceAdapter:

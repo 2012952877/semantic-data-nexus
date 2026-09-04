@@ -376,8 +376,79 @@ def test_boolean_renderer_preserves_mixed_and_or_grouping() -> None:
         catalog="synthetic_demo",
         schema="analytics",
     ).translate(fragment)
-    assert "(`a` OR `b`) AND COALESCE((`c` OR `d`), FALSE)" in translated.sql
+    assert "(`a` OR `b`) AND CASE WHEN `c` OR `d`" in translated.sql
     validate_fragment(translated)
+
+
+def test_boolean_renderer_preserves_three_valued_null_semantics() -> None:
+    import duckdb
+
+    translator = DatabricksFragmentTranslator(
+        catalog="synthetic_demo",
+        schema="analytics",
+    )
+    nested = TypedExpression(
+        kind=ExpressionKind.NOT,
+        data_type=ScalarType.BOOLEAN,
+        args=(
+            TypedExpression(
+                kind=ExpressionKind.AND,
+                data_type=ScalarType.BOOLEAN,
+                args=(
+                    TypedExpression.col("a", ScalarType.BOOLEAN),
+                    TypedExpression(
+                        kind=ExpressionKind.OR,
+                        data_type=ScalarType.BOOLEAN,
+                        args=(
+                            TypedExpression.col("b", ScalarType.BOOLEAN),
+                            TypedExpression.col("c", ScalarType.BOOLEAN),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    is_null = TypedExpression(
+        kind=ExpressionKind.IS_NULL,
+        data_type=ScalarType.BOOLEAN,
+        args=(
+            TypedExpression(
+                kind=ExpressionKind.OR,
+                data_type=ScalarType.BOOLEAN,
+                args=(
+                    TypedExpression.col("c", ScalarType.BOOLEAN),
+                    TypedExpression.col("b", ScalarType.BOOLEAN),
+                ),
+            ),
+        ),
+    )
+    fragment = validated_fragment().model_copy(
+        update={
+            "operations": (
+                OperatorSpec(
+                    kind=OperatorKind.SELECT,
+                    expressions=(
+                        NamedExpression(name="nested", expression=nested),
+                        NamedExpression(name="is_null", expression=is_null),
+                    ),
+                ),
+            )
+        }
+    )
+    validate_fragment(translator.translate(fragment))
+    connection = duckdb.connect()
+    try:
+        nested_sql = translator._expression(nested).replace("`", '"')
+        is_null_sql = translator._expression(is_null).replace("`", '"')
+        row = connection.execute(
+            "SELECT "
+            f"{nested_sql}, "
+            f"{is_null_sql} "
+            "FROM (SELECT TRUE AS a, NULL::BOOLEAN AS b, FALSE AS c)"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == (None, True)
 
 
 def test_arithmetic_renderer_preserves_nested_rhs_grouping() -> None:

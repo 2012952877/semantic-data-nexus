@@ -21,7 +21,10 @@ from semantic_api.models import CompilationMode
 
 _RUN_ID = re.compile(r"^run_[0-9a-f]{32}$")
 _SAFE_METADATA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_IANA_TIMEZONE = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z][A-Za-z0-9._+-]*)+$")
+_IANA_TIMEZONE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_+-]{0,13}"
+    r"(?:/[A-Za-z][A-Za-z0-9_+-]{0,13})+$"
+)
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 _DECIMAL_TEXT = re.compile(r"^-?(0|[1-9][0-9]*)(?:\.([0-9]+))?$")

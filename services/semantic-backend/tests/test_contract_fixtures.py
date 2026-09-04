@@ -78,11 +78,13 @@ def test_bff_start_rejects_unpaired_unicode_surrogate() -> None:
 
 def test_bff_start_rejects_unpaired_surrogate_in_evaluation_clock() -> None:
     payload = (
-        FIXTURES / "bff-start-request.json"
-    ).read_text(encoding="utf-8").replace(
-        '"2026-08-15T09:00:00+08:00"',
-        '"\\ud800"',
-        1,
+        (FIXTURES / "bff-start-request.json")
+        .read_text(encoding="utf-8")
+        .replace(
+            '"2026-08-15T09:00:00+08:00"',
+            '"\\ud800"',
+            1,
+        )
     )
     with pytest.raises(ValidationError):
         StartRunRequest.model_validate_json(payload)
@@ -108,6 +110,8 @@ def test_bff_start_accepts_canonical_iana_timezone(timezone: str) -> None:
         "/UTC",
         "Asia/",
         "亚洲/上海",
+        "America/ThisSegmentIsTooLong",
+        "America/New.York",
     ],
 )
 def test_bff_start_rejects_noncanonical_timezone(timezone: str) -> None:
