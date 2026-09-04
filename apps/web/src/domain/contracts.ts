@@ -52,6 +52,7 @@ export interface PlanNode {
 export interface ResultColumn {
   key: string
   label: string
+  dataType: 'string' | 'integer' | 'float' | 'decimal' | 'boolean' | 'date' | 'timestamp'
   format: 'text' | 'currency' | 'percent' | 'number' | 'date' | 'timestamp'
 }
 

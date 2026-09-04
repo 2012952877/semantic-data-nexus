@@ -25,7 +25,7 @@ pnpm dev
 | `VITE_NEXUS_BASE_URL` | HTTP 模式必填；浏览器中必须与 Web 页面同源，可设置为 `/` |
 | `VITE_NEXUS_DEV_SUBJECT` | 可选的本地开发身份，只允许发往 loopback BFF 的 `X-Dev-Subject` |
 | `VITE_NEXUS_DEV_ROLES` | 可选的本地开发角色，只允许发往 loopback BFF 的 `X-Dev-Roles` |
-| `NEXUS_PROXY_TARGET` | 可选的 Vite 本地开发反向代理目标；只在开发服务器中使用，不进入浏览器产物 |
+| `NEXUS_PROXY_TARGET` | 可选的 Vite 本地开发反向代理目标；明文 HTTP 仅允许 `localhost`、`127.0.0.1`、`[::1]`，其他主机必须 HTTPS |
 
 `VITE_*` 值会进入浏览器产物，绝不能放入密钥或令牌。生产宿主应在应用模块加载前提供 `window.semanticNexusTokenProvider(AbortSignal)`；令牌只注入当前请求，不从 Vite 环境变量读取或持久化。测试和其他嵌入方式也可把同一 provider 直接传给 `createSemanticNexusClient` / `HttpSemanticNexusClient`。客户端拒绝把本地开发身份头发往非 loopback 地址，并拒绝包含换行或疑似密钥内容的开发值。
 
@@ -75,7 +75,7 @@ Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus
 
 ## HTTP 行为
 
-HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；path-bound summary 必须与请求的 `runId` 一致。Workload、ontology、compilation mode 与 model 独立建模：summary 提供 workload/compilation mode，detail 提供 ontology，BFF 没有 model 字段所以明确显示 `unknown`，绝不把 compilation mode 伪装成模型。Mock 的区域销售 v1.4 与 Nexus Planner 标签只在 Mock 模式展示。Decimal 列只接受 canonical fixed-point JSON string；Float 列执行 BFF 的 10^28 magnitude 与 safe-integer 边界。模糊失败重试会复用完整创建载荷与原 `clientRequestId`；版本栅栏、共享终态快照和按运行跟踪的取消请求保证终态不可回退。创建后若状态或详情暂不可用，界面保留最后确认的运行 ID、取消与状态恢复操作。明确拒绝的创建只凭持久化 `Failed` summary 与 diagnostics 展示；HTTP 零行只显示 BFF diagnostics 或通用建议。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 unavailable/unknown。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
+HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与已合入 main 的 BFF typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；path-bound summary 必须与请求的 `runId` 一致。Workload、ontology、compilation mode 与 model 独立建模：summary 提供 workload/compilation mode，detail 提供 ontology，BFF 没有 model 字段所以明确显示 `unknown`，绝不把 compilation mode 伪装成模型。Mock 的区域销售 v1.4 与 Nexus Planner 标签只在 Mock 模式展示。Decimal 列只接受 canonical fixed-point JSON string，并保留 `dataType`，使货币分组和百分比乘百都通过字符串运算保持原始精度与 scale；Float 列执行 BFF 的 10^28 magnitude 与 safe-integer 边界。运行期标识符允许 160 个 Unicode code points，业务 label 仍限制为 128；纯 Gregorian 日期校验接受 `0001` 等早期年份。模糊失败重试会复用完整创建载荷与原 `clientRequestId`；版本栅栏、共享终态快照和按运行跟踪的取消请求保证终态不可回退。Ask 页面还按目标 run ID 栅栏延迟取消结果，旧运行的取消成功或失败都不能覆盖新运行。创建后若状态或详情暂不可用，界面保留最后确认的运行 ID、取消与状态恢复操作。明确拒绝的创建只凭持久化 `Failed` summary 与 diagnostics 展示；HTTP 零行只显示 BFF diagnostics 或通用建议。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 unavailable/unknown。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
 
 确定性 HTTP stub 同时供 Vitest 和主要 Playwright 套件使用。主要套件强制 `VITE_NEXUS_CLIENT=http`，覆盖真实 HTTP 创建、轮询、列表、详情、取消、跨标签页历史与不安全 HTML 文本；独立的 Mock Chromium 套件保留原生 Web Locks 租约栅栏与过期行为。
 

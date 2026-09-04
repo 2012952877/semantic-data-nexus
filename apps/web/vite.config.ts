@@ -2,20 +2,10 @@ import { fileURLToPath, URL } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
+import { validateProxyTarget } from './viteProxyTarget.js'
 
 const proxyTarget = process.env.NEXUS_PROXY_TARGET
-if (proxyTarget) {
-  const url = new URL(proxyTarget)
-  if (!['http:', 'https:'].includes(url.protocol)
-    || url.username
-    || url.password
-    || url.search
-    || url.hash) {
-    throw new Error(
-      'NEXUS_PROXY_TARGET must be an HTTP(S) URL without credentials, query, or fragment.',
-    )
-  }
-}
+if (proxyTarget) validateProxyTarget(proxyTarget)
 
 export default defineConfig({
   plugins: [vue()],

@@ -42,6 +42,14 @@ const terminal = new Set<StubState>(['Succeeded', 'Failed', 'Cancelled'])
 const createdAt = '2026-09-04T05:15:50.492Z'
 const completedAt = '2026-09-04T05:15:52.332Z'
 const runId = (sequence: number) => `run_${sequence.toString(16).padStart(32, '0')}`
+const taggedIdentifierLength = (run: StubRun) => {
+  const match = String(run.request.question).match(/\[identifier-(\d+)\]/)
+  return match?.[1] ? Number(match[1]) : undefined
+}
+const runtimeIdentifier = (run: StubRun, character: string, fallback: string) => {
+  const length = taggedIdentifierLength(run)
+  return length === undefined ? fallback : character.repeat(length)
+}
 const backendRunDetail = JSON.parse(readFileSync(
   new URL('./fixtures/backend-run-detail.json', import.meta.url),
   'utf8',
@@ -100,8 +108,17 @@ const summaryFor = (run: StubRun) => ({
       startedAt: state === 'Queued' ? null : createdAt,
       completedAt: done ? completedAt : null,
       duration: done ? '00:00:00.3680000' : null,
-      nodes: run.id === runId(1) && index === 0
-        ? Array.from({ length: 101 }, (_, nodeIndex) => ({
+      nodes: index === 0 && taggedIdentifierLength(run) !== undefined
+        ? [{
+            nodeId: runtimeIdentifier(run, 'n', 'node-runtime'),
+            kind: 'synthetic',
+            state: 'Succeeded',
+            startedAt: createdAt,
+            completedAt,
+            duration: '00:00:00.0010000',
+          }]
+        : run.id === runId(1) && index === 0
+          ? Array.from({ length: 101 }, (_, nodeIndex) => ({
             nodeId: `node-${nodeIndex.toString().padStart(3, '0')}`,
             kind: 'synthetic',
             state: 'Succeeded',
@@ -109,7 +126,7 @@ const summaryFor = (run: StubRun) => ({
             completedAt,
             duration: '00:00:00.0010000',
           }))
-        : [],
+          : [],
     }
   }),
   tokenUsage: {
@@ -145,6 +162,20 @@ const detailDiagnostics = (run: StubRun) => {
       title: '查询完成，但没有匹配行',
       message: '当前筛选条件没有返回数据。',
       recovery: '请检查筛选条件或选择其他期间。',
+      severity: 'info',
+      occurredAt: completedAt,
+    }]
+  }
+  if (taggedIdentifierLength(run) !== undefined) {
+    return [{
+      sequence: 0,
+      runId: run.id,
+      scope: 'node',
+      scopeId: runtimeIdentifier(run, 'd', 'diagnostic-scope'),
+      code: 'IDENTIFIER_LENGTH_CHECKED',
+      title: 'Identifier accepted',
+      message: 'The runtime identifier passed validation.',
+      recovery: 'No action required.',
       severity: 'info',
       occurredAt: completedAt,
     }]
@@ -189,31 +220,55 @@ const resultFor = (run: StubRun) => ({
       format: 'date',
       nullable: true,
     },
+    {
+      key: 'preciseRate',
+      label: '精确占比',
+      dataType: 'decimal',
+      format: 'percent',
+      nullable: false,
+    },
   ],
-  rows: run.outcome === 'empty' ? [] : [['华东', '4286000.00', 1.08, true, null]],
+  rows: run.outcome === 'empty'
+    ? []
+    : [[
+        '华东',
+        '4286000.00',
+        1.08,
+        true,
+        String(run.request.question).includes('[early-date]')
+          ? '0001-01-01'
+          : String(run.request.question).includes('[invalid-early-date]')
+            ? '0001-02-29'
+            : null,
+        '0.123400',
+      ]],
   rowCount: run.outcome === 'empty' ? 0 : 1,
   truncated: false,
 })
 
 const detailFor = (run: StubRun) => {
   const hasResult = run.state === 'Succeeded'
+  const physicalNodeId = runtimeIdentifier(run, 'p', 'aggregate-region')
+  const sourceNodeId = runtimeIdentifier(run, 's', 'source-sales')
+  const resultNodeId = runtimeIdentifier(run, 'r', 'result-sales')
+  const resultId = runtimeIdentifier(run, 'm', 'result-synthetic')
   const lineageNodes = [
     {
-      id: 'source-sales',
+      id: sourceNodeId,
       kind: 'source',
       operation: 'Read governed regional sales',
-      sourceAlias: 'regional_sales',
+      sourceAlias: runtimeIdentifier(run, 'a', 'regional_sales'),
       sourceType: 'synthetic',
       resultId: null,
       parameters: [],
     },
     {
-      id: 'result-sales',
+      id: resultNodeId,
       kind: 'result',
       operation: 'Commit inline result',
       sourceAlias: null,
       sourceType: null,
-      resultId: 'result-synthetic',
+      resultId,
       parameters: [],
     },
   ]
@@ -231,19 +286,26 @@ const detailFor = (run: StubRun) => {
       policyChecks: ['governed'],
     },
     physicalNodes: [{
-      id: 'aggregate-region',
+      id: physicalNodeId,
       kind: 'AGGREGATE',
       label: '按区域汇总',
       plainLanguage: '把每个区域的订单收入分别加总。',
-      inputs: ['regional-sales'],
-      outputFields: ['region', 'revenue', 'attainment', 'governed', 'closedOn'],
+      inputs: [runtimeIdentifier(run, 'i', 'regional-sales')],
+      outputFields: [
+        'region',
+        'revenue',
+        'attainment',
+        'governed',
+        'closedOn',
+        'preciseRate',
+      ],
     }],
     result: hasResult ? resultFor(run) : null,
     manifest: hasResult
       ? {
-          resultId: 'result-synthetic',
+          resultId,
           runId: run.id,
-          nodeId: 'aggregate-region',
+          nodeId: physicalNodeId,
           storage: 'inline',
           uri: `results/${run.id}/result-synthetic`,
           rowCount: run.outcome === 'empty' ? 0 : 1,
@@ -257,8 +319,8 @@ const detailFor = (run: StubRun) => {
       runId: run.id,
       nodes: lineageNodes,
       edges: [{
-        source: 'source-sales',
-        target: 'result-sales',
+        source: sourceNodeId,
+        target: resultNodeId,
         relation: 'produces',
       }],
     },

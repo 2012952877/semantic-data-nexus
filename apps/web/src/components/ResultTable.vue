@@ -1,26 +1,8 @@
 <script setup lang="ts">
-import type { ResultCell, ResultColumn, ResultSet } from '@/domain'
+import type { ResultSet } from '@/domain'
+import { formatResultValue } from './resultFormatting'
 
 defineProps<{ result: ResultSet }>()
-
-const formatValue = (value: ResultCell, column: ResultColumn) => {
-  if (value === null) return '—'
-  if (column.format === 'currency' && typeof value === 'number') {
-    return new Intl.NumberFormat('zh-CN', {
-      style: 'currency',
-      currency: 'CNY',
-      maximumFractionDigits: 0,
-    }).format(value)
-  }
-  if (column.format === 'percent' && typeof value === 'number') {
-    return new Intl.NumberFormat('zh-CN', {
-      style: 'percent',
-      minimumFractionDigits: 1,
-      maximumFractionDigits: 1,
-    }).format(value)
-  }
-  return String(value)
-}
 </script>
 
 <template>
@@ -37,7 +19,7 @@ const formatValue = (value: ResultCell, column: ResultColumn) => {
       <tbody>
         <tr v-for="(row, index) in result.rows" :key="index">
           <td v-for="column in result.columns" :key="column.key">
-            {{ formatValue(row[column.key] ?? '—', column) }}
+            {{ formatResultValue(row[column.key] ?? null, column) }}
           </td>
         </tr>
       </tbody>

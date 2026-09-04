@@ -90,14 +90,18 @@ const submit = async () => {
 }
 
 const cancel = async () => {
-  if (!currentRun.value) return
+  const targetRunId = currentRun.value?.id
+  if (!targetRunId) return
   try {
-    currentRun.value = await client.cancelRun(currentRun.value.id)
+    const cancelled = await client.cancelRun(targetRunId)
+    if (currentRun.value?.id !== targetRunId) return
+    currentRun.value = cancelled
     if (!currentRunActive.value) {
       formError.value = ''
       cancelError.value = ''
     }
   } catch (error) {
+    if (currentRun.value?.id !== targetRunId) return
     if (currentRunActive.value) {
       cancelError.value = error instanceof Error
         ? error.message

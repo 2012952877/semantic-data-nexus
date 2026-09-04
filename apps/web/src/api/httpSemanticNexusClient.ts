@@ -350,8 +350,11 @@ const isText = (value: unknown, maximum = 4_000): value is string =>
   && [...value].length <= maximum
   && !/\p{C}/u.test(value)
 const isLabel = (value: unknown): value is string => isText(value, 128)
+const isIdentifier = (value: unknown): value is string => isText(value, 160)
 const isOptionalLabel = (value: unknown): value is string | null =>
   value === null || isLabel(value)
+const isOptionalIdentifier = (value: unknown): value is string | null =>
+  value === null || isIdentifier(value)
 const isFiniteNonNegative = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0
 const isInteger = (value: unknown): value is number =>
@@ -375,11 +378,24 @@ const isRunId = (value: unknown): value is string =>
 const isIsoDate = (value: unknown): value is string => {
   if (!isString(value) || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
   const [year, month, day] = value.split('-').map(Number)
-  if (year === undefined || month === undefined || day === undefined) return false
-  const parsed = new Date(Date.UTC(year, month - 1, day))
-  return parsed.getUTCFullYear() === year
-    && parsed.getUTCMonth() === month - 1
-    && parsed.getUTCDate() === day
+  if (year === undefined || month === undefined || day === undefined
+    || year < 1 || month < 1 || month > 12 || day < 1) return false
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ]
+  return day <= (daysInMonth[month - 1] ?? 0)
 }
 
 const maximumDecimalMagnitude = `1${'0'.repeat(28)}`
@@ -401,7 +417,7 @@ const isCanonicalDecimal = (value: unknown): value is string => {
 
 const isNodeSummary = (value: unknown): value is BffNodeSummary =>
   isRecord(value)
-  && isLabel(value.nodeId)
+  && isIdentifier(value.nodeId)
   && isLabel(value.kind)
   && isEnum(value.state, runStates)
   && isNullableIsoWithOffset(value.startedAt)
@@ -482,11 +498,13 @@ const isSqg = (value: unknown): value is BffSqgSummary =>
 
 const isPhysicalNode = (value: unknown): value is BffPhysicalNode =>
   isRecord(value)
-  && isLabel(value.id)
+  && isIdentifier(value.id)
   && isEnum(value.kind, operatorKinds)
   && isText(value.label, 256)
   && isText(value.plainLanguage, 1_000)
-  && isStringArray(value.inputs)
+  && Array.isArray(value.inputs)
+  && value.inputs.length <= 100
+  && value.inputs.every(isIdentifier)
   && isStringArray(value.outputFields)
 
 const isResultColumn = (value: unknown): value is BffResultColumn =>
@@ -541,9 +559,9 @@ const isResultSet = (value: unknown): value is BffResultSet => {
 
 const isManifest = (value: unknown): value is BffCommittedManifest =>
   isRecord(value)
-  && isLabel(value.resultId)
+  && isIdentifier(value.resultId)
   && isRunId(value.runId)
-  && isLabel(value.nodeId)
+  && isIdentifier(value.nodeId)
   && isEnum(value.storage, resultStorageKinds)
   && isText(value.uri, 2_048)
   && isInteger(value.rowCount)
@@ -558,20 +576,20 @@ const isLineageParameter = (value: unknown): value is BffLineageParameter =>
 
 const isLineageNode = (value: unknown): value is BffLineageNode =>
   isRecord(value)
-  && isLabel(value.id)
+  && isIdentifier(value.id)
   && isEnum(value.kind, lineageNodeKinds)
   && isOptionalLabel(value.operation)
-  && isOptionalLabel(value.sourceAlias)
+  && isOptionalIdentifier(value.sourceAlias)
   && isOptionalLabel(value.sourceType)
-  && isOptionalLabel(value.resultId)
+  && isOptionalIdentifier(value.resultId)
   && Array.isArray(value.parameters)
   && value.parameters.length <= 100
   && value.parameters.every(isLineageParameter)
 
 const isLineageEdge = (value: unknown): value is BffLineageEdge =>
   isRecord(value)
-  && isLabel(value.source)
-  && isLabel(value.target)
+  && isIdentifier(value.source)
+  && isIdentifier(value.target)
   && isEnum(value.relation, lineageRelations)
 
 const isLineage = (value: unknown): value is BffLineage => {
@@ -594,7 +612,7 @@ const isDetailDiagnostic = (value: unknown): value is BffDetailDiagnostic =>
   && isInteger(value.sequence)
   && isRunId(value.runId)
   && isEnum(value.scope, diagnosticScopes)
-  && isLabel(value.scopeId)
+  && isIdentifier(value.scopeId)
   && isLabel(value.code)
   && isText(value.title, 256)
   && isText(value.message, 1_000)
@@ -753,6 +771,7 @@ const mapResult = (result: BffResultSet): ResultSet => ({
   columns: result.columns.map((column) => ({
     key: column.key,
     label: column.label,
+    dataType: column.dataType,
     format: column.format,
   })),
   rows: result.rows.map((row) => Object.fromEntries(

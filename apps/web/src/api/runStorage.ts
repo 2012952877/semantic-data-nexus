@@ -50,6 +50,15 @@ const nodeKinds = [
   'JOIN',
 ] as const
 const columnFormats = ['text', 'currency', 'percent', 'number', 'date', 'timestamp'] as const
+const scalarTypes = [
+  'string',
+  'integer',
+  'float',
+  'decimal',
+  'boolean',
+  'date',
+  'timestamp',
+] as const
 const diagnosticSeverities = ['info', 'warning', 'error'] as const
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -109,6 +118,7 @@ const isResultColumn = (value: unknown): value is ResultColumn =>
   isRecord(value)
   && isString(value.key)
   && isString(value.label)
+  && isEnumValue(value.dataType, scalarTypes)
   && isEnumValue(value.format, columnFormats)
 
 const isResultRow = (value: unknown): value is ResultSet['rows'][number] =>

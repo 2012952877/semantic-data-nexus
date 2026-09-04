@@ -44,6 +44,8 @@ test('submits a governed question and renders the committed result', async ({ pa
   await expect(page.getByText('结果已提交')).toBeVisible()
   await expect(page.getByRole('table')).toContainText('华东')
   await expect(page.getByRole('table')).toContainText('目标达成率')
+  await expect(page.getByRole('table')).toContainText('¥4,286,000.00')
+  await expect(page.getByRole('table')).toContainText('12.3400%')
 })
 
 test('shares BFF history across tabs and cancels without committing a result', async ({ page, context }) => {

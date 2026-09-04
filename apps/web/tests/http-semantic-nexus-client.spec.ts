@@ -55,6 +55,8 @@ describe('HttpSemanticNexusClient', () => {
     expect(run.state).toBe('succeeded')
     expect(run.result?.rows[0]?.region).toBe('华东')
     expect(run.result?.rows[0]?.revenue).toBe('4286000.00')
+    expect(run.result?.columns.find((column) => column.key === 'revenue'))
+      .toMatchObject({ dataType: 'decimal', format: 'currency' })
     expect(run.result?.rows[0]?.governed).toBe(true)
     expect(run.result?.rows[0]?.closedOn).toBeNull()
     expect(run.nodes[0]?.kind).toBe('AGGREGATE')
@@ -373,6 +375,40 @@ describe('HttpSemanticNexusClient', () => {
         .rejects.toMatchObject({ code: 'request' } satisfies Partial<NexusClientError>)
       expect(stub.requests.filter((item) =>
         item.method === 'POST' && item.path === '/api/v1/runs')).toHaveLength(postCount)
+  })
+
+  it('accepts 160-code-point runtime identifiers and rejects 161', async () => {
+    const accepted = await createClient().startRun({
+      ...request,
+      question: 'runtime identifier boundary [identifier-160]',
+    })
+
+    expect([...accepted.nodes[0]!.id]).toHaveLength(160)
+    expect([...accepted.manifest!.uri]).not.toHaveLength(0)
+    expect([...accepted.lineage.sources[0]!.id]).toHaveLength(160)
+    expect(accepted.diagnostics[0]?.code).toBe('IDENTIFIER_LENGTH_CHECKED')
+
+    await expect(createClient().startRun({
+      ...request,
+      question: 'runtime identifier overflow [identifier-161]',
+    })).rejects.toMatchObject(
+      { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+    )
+  })
+
+  it('accepts early Gregorian years without Date.UTC remapping', async () => {
+    const accepted = await createClient().startRun({
+      ...request,
+      question: 'early date [early-date]',
+    })
+    expect(accepted.result?.rows[0]?.closedOn).toBe('0001-01-01')
+
+    await expect(createClient().startRun({
+      ...request,
+      question: 'invalid early leap date [invalid-early-date]',
+    })).rejects.toMatchObject(
+      { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+    )
   })
 
   it('marks HTTP-only ontology and health placeholders as synthetic and unavailable', async () => {

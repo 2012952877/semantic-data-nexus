@@ -32,6 +32,16 @@ const askQuestion = async (wrapper: ReturnType<typeof mountAsk>) => {
   await flushPromises()
 }
 
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 describe('ask workflow', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -140,6 +150,65 @@ describe('ask workflow', () => {
     expect(wrapper.text()).toContain('运行已自行结束')
     expect(wrapper.text()).not.toContain('原运行仍在继续')
   })
+
+  it.each(['success', 'error'] as const)(
+    'ignores delayed old-run cancellation %s after a new run starts',
+    async (outcome) => {
+      const question = '比较各区域第二季度净销售额与目标'
+      const oldActive: Run = {
+        ...createSeedRun('run_old', question, 'succeeded', 0),
+        state: 'running',
+        completedAt: undefined,
+        result: undefined,
+        manifest: undefined,
+      }
+      const oldCompleted = createSeedRun('run_old', question, 'succeeded', 0)
+      const newRun = createSeedRun('run_new', '新的运行问题', 'succeeded', 0)
+      const oldRunCompletion = deferred<Run>()
+      const cancellation = deferred<Run>()
+      let startCalls = 0
+      const client: SemanticNexusClient = {
+        mode: 'http',
+        listRuns: vi.fn(),
+        getRun: vi.fn(),
+        startRun: vi.fn(async (_request, onProgress) => {
+          startCalls += 1
+          if (startCalls === 1) {
+            onProgress?.(oldActive)
+            return oldRunCompletion.promise
+          }
+          return newRun
+        }),
+        cancelRun: vi.fn(() => cancellation.promise),
+        getOntology: vi.fn(),
+        getComponentStatus: vi.fn(),
+      }
+      const wrapper = mountAsk(client)
+      await askQuestion(wrapper)
+      await wrapper.get('button.secondary-button').trigger('click')
+
+      oldRunCompletion.resolve(oldCompleted)
+      await flushPromises()
+      await wrapper.get('textarea').setValue('新的运行问题')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      expect(wrapper.text()).toContain(newRun.id)
+
+      if (outcome === 'success') {
+        cancellation.resolve({
+          ...oldCompleted,
+          state: 'canceled',
+        })
+      } else {
+        cancellation.reject(new Error('旧运行取消失败'))
+      }
+      await flushPromises()
+
+      expect(wrapper.text()).toContain(newRun.id)
+      expect(wrapper.text()).not.toContain('旧运行取消失败')
+      expect(wrapper.text()).not.toContain('运行已停止')
+    },
+  )
 
   it('does not offer cancellation before the BFF returns a run ID', async () => {
     const client: SemanticNexusClient = {
