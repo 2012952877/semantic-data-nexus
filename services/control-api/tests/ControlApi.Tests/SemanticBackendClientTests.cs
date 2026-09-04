@@ -15,7 +15,9 @@ public sealed class SemanticBackendClientTests
     [Fact]
     public async Task StartUsesTypedBoundaryAndDoesNotRetry()
     {
-        var runId = RunId.New();
+        var runId = RunId.Parse(
+            "run_0123456789abcdef0123456789abcdef",
+            provider: null);
         var start = new SemanticRunStart(
             runId,
             "request-typed",
@@ -36,6 +38,12 @@ public sealed class SemanticBackendClientTests
             Assert.Equal("/v1/runs", request.RequestUri!.AbsolutePath);
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
             using var document = JsonDocument.Parse(body);
+            using var fixture = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(
+                    AppContext.BaseDirectory,
+                    "Fixtures",
+                    "bff-start-request.json")));
+            Assert.True(JsonElement.DeepEquals(fixture.RootElement, document.RootElement));
             var root = document.RootElement;
             Assert.Equal(runId.Value, root.GetProperty("runId").GetString());
             Assert.Equal("request-typed", root.GetProperty("clientRequestId").GetString());
