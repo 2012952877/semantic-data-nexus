@@ -112,7 +112,8 @@ projection details without replacing local `CancelRequested`; a terminal
 observation resolves it and also makes a racing delivery acknowledgment
 idempotent. Feedback uses `submissionId` for idempotency and
 `expectedRunVersion` for optimistic concurrency. Feedback is structured to
-avoid an unrestricted text/prompt field; `outcome` is required and must be
+avoid an unrestricted text/prompt field. `submissionId`, `rating`, `outcome`,
+`reasonCodes`, and `expectedRunVersion` are all required; `outcome` must be
 `Helpful`, `PartiallyHelpful`, or `NotHelpful`.
 
 ## Configuration

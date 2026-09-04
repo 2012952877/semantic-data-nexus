@@ -98,11 +98,11 @@ public sealed record CreateRunRequest
 public sealed record CancelRunRequest(long? ExpectedVersion);
 
 public sealed record SubmitFeedbackRequest(
-    string SubmissionId,
-    int Rating,
-    [property: Required] FeedbackOutcome Outcome,
-    IReadOnlyList<string> ReasonCodes,
-    long ExpectedRunVersion);
+    [property: JsonRequired] string SubmissionId,
+    [property: JsonRequired] int Rating,
+    [property: Required, JsonRequired] FeedbackOutcome Outcome,
+    [property: JsonRequired] IReadOnlyList<string> ReasonCodes,
+    [property: JsonRequired] long ExpectedRunVersion);
 
 public sealed record CurrentPrincipalResponse(
     string Subject,

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
@@ -43,6 +44,23 @@ builder.Services.AddSwaggerGen(options =>
     options.OperationFilter<OpenApiSecurityOperationFilter>();
     options.SchemaFilter<JsonRequiredSchemaFilter>();
     options.UseAllOfToExtendReferenceSchemas();
+    options.MapType<SemanticOperatorKind>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticOperatorKind>(JsonNamingPolicy.SnakeCaseUpper));
+    options.MapType<SemanticScalarType>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticScalarType>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticColumnFormat>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticColumnFormat>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticResultStorage>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticResultStorage>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticLineageNodeKind>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticLineageNodeKind>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticLineageRelation>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticLineageRelation>(JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticDiagnosticSeverity>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticDiagnosticSeverity>(
+            JsonNamingPolicy.SnakeCaseLower));
+    options.MapType<SemanticDiagnosticScope>(() =>
+        OpenApiContractSchemas.StringEnum<SemanticDiagnosticScope>(JsonNamingPolicy.SnakeCaseLower));
     options.MapType<RunId>(() => new OpenApiSchema
     {
         Type = "string",
@@ -245,6 +263,7 @@ app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
+app.UseMiddleware<JsonUnicodeValidationMiddleware>();
 
 if (app.Environment.IsDevelopment() ||
     builder.Configuration.GetValue<bool>("OpenApi:Enabled"))

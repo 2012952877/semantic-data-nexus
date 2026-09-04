@@ -484,6 +484,61 @@ public sealed class ApiEndpointTests
     }
 
     [Theory]
+    [InlineData("enum")]
+    [InlineData("property")]
+    public async Task UnpairedSurrogateInEnumOrPropertyNameMapsToBadRequest(string location)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var payload =
+            """
+            {
+              "clientRequestId": "invalid-json-unicode",
+              "workload": "synthetic-workload",
+              "question": "Synthetic question",
+              "evaluationClock": "2026-08-15T09:00:00+08:00",
+              "evaluationTimezone": "UTC",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """;
+        payload = location == "enum"
+            ? payload.Replace(
+                "\"compilationMode\": \"regional_quarterly_profit\"",
+                "\"compilationMode\": \"\\uD800\"",
+                StringComparison.Ordinal)
+            : payload.TrimEnd()[..^1] + ",\n  \"\\uD800\": true\n}";
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task ValidUtf16JsonRequestRemainsSupported()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var payload = JsonSerializer.Serialize(
+            ValidCreateRequest("utf16-json"),
+            JsonOptions);
+        using var content = new ByteArrayContent(Encoding.Unicode.GetBytes(payload));
+        content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+            {
+                CharSet = "utf-16"
+            };
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Theory]
     [InlineData("semantic_backend_timeout", HttpStatusCode.GatewayTimeout)]
     [InlineData("semantic_backend_unavailable", HttpStatusCode.BadGateway)]
     public async Task SemanticFailuresMapToStableProblems(string code, HttpStatusCode expectedStatus)
@@ -795,7 +850,37 @@ public sealed class ApiEndpointTests
         var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("invalid_feedback", Extension(problem!, "code"));
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("submissionId")]
+    [InlineData("rating")]
+    [InlineData("outcome")]
+    [InlineData("reasonCodes")]
+    [InlineData("expectedRunVersion")]
+    public async Task MissingFeedbackFieldsAreRejected(string missingField)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = JsonSerializer.SerializeToNode(
+            new SubmitFeedbackRequest(
+                "feedback-required",
+                5,
+                FeedbackOutcome.Helpful,
+                ["clear"],
+                1),
+            JsonOptions)!.AsObject();
+        Assert.True(request.Remove(missingField));
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/v1/runs/{RunId.New()}/feedback",
+            request,
+            JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
     }
 
     [Fact]
@@ -827,7 +912,16 @@ public sealed class ApiEndpointTests
             .GetProperty("/api/v1/runs/{runId}/detail")
             .GetProperty("get");
 
-        Assert.Contains("outcome", feedbackRequired);
+        Assert.Equal(
+            new[]
+            {
+                "submissionId",
+                "rating",
+                "outcome",
+                "reasonCodes",
+                "expectedRunVersion"
+            }.Order(),
+            feedbackRequired.Order());
         Assert.Contains("question", createRequired);
         Assert.Contains("evaluationClock", createRequired);
         Assert.Contains("evaluationTimezone", createRequired);
@@ -929,6 +1023,44 @@ public sealed class ApiEndpointTests
                 .GetProperty("operation")
                 .GetProperty("nullable")
                 .GetBoolean());
+        Assert.Equal(
+            ["SOURCE", "SELECT", "FILTER", "AGGREGATE", "PIVOT", "DERIVE", "PROJECT", "SORT", "LIMIT", "JOIN"],
+            schemas
+                .GetProperty(nameof(SemanticPhysicalNode))
+                .GetProperty("properties")
+                .GetProperty("kind")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
+        Assert.Contains(
+            "decimal",
+            schemas
+                .GetProperty(nameof(SemanticResultColumn))
+                .GetProperty("properties")
+                .GetProperty("dataType")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Contains(
+            "realized_as",
+            schemas
+                .GetProperty(nameof(SemanticLineageEdge))
+                .GetProperty("properties")
+                .GetProperty("relation")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(
+            ["info", "warning", "error"],
+            schemas
+                .GetProperty(nameof(SemanticDetailDiagnostic))
+                .GetProperty("properties")
+                .GetProperty("severity")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString())
+                .ToArray());
     }
 
     [Fact]
