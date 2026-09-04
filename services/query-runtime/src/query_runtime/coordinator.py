@@ -173,22 +173,29 @@ class _Emitter:
         duration_ms: int | None = None,
         metadata: dict[str, str | int | bool | None] | None = None,
     ) -> None:
+        was_cancelled = False
         async with self._lock:
             sequence = self._sequence
             self._sequence += 1
-        await self.store.append(
-            DiagnosticEvent(
-                sequence=sequence,
-                run_id=self.run_id,
-                scope=scope,  # type: ignore[arg-type]
-                scope_id=scope_id,
-                state=state,
-                code=code,
-                message=message,
-                duration_ms=duration_ms,
-                metadata=metadata or {},
+            persistence = asyncio.create_task(
+                self.store.append(
+                    DiagnosticEvent(
+                        sequence=sequence,
+                        run_id=self.run_id,
+                        scope=scope,  # type: ignore[arg-type]
+                        scope_id=scope_id,
+                        state=state,
+                        code=code,
+                        message=message,
+                        duration_ms=duration_ms,
+                        metadata=metadata or {},
+                    )
+                )
             )
-        )
+            was_cancelled = await _wait_for_task_completion(persistence)
+            persistence.result()
+        if was_cancelled:
+            raise asyncio.CancelledError
 
 
 class QueryCoordinator:
@@ -455,6 +462,7 @@ class QueryCoordinator:
         started = time.monotonic()
         reserved = False
         cleanup_deferred = False
+        resolver_cancel_requested = False
         execution: asyncio.Task[tuple[pa.Table, CommittedManifest]] | None = None
         inputs: tuple[pa.Table, ...] = ()
         machine.transition(ExecutionState.READY)
@@ -485,11 +493,35 @@ class QueryCoordinator:
                         node, run_id, inputs, cancel_event, memory
                     )
                 )
-                done, _ = await asyncio.wait(
-                    {execution},
-                    timeout=self.limits.node_timeout_seconds,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                cancellation = asyncio.create_task(cancel_event.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {execution, cancellation},
+                        timeout=self.limits.node_timeout_seconds,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if not cancellation.done():
+                        cancellation.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await cancellation
+                if cancellation in done and execution not in done:
+                    if (
+                        node.kind is PhysicalNodeKind.SOURCE_FRAGMENT
+                        and not resolver_cancel_requested
+                    ):
+                        self._request_resolver_cancel(run_id, node.id)
+                        resolver_cancel_requested = True
+                    await self._handoff_deferred_execution(
+                        execution,
+                        memory,
+                        run_id,
+                        node.id,
+                        node.dependencies,
+                        inputs,
+                    )
+                    cleanup_deferred = True
+                    raise asyncio.CancelledError
                 if execution not in done:
                     cancel_event.set()
                     was_cancelled = await self._handoff_deferred_execution(
@@ -503,6 +535,7 @@ class QueryCoordinator:
                     cleanup_deferred = True
                     if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
                         self._request_resolver_cancel(run_id, node.id)
+                        resolver_cancel_requested = True
                     if was_cancelled:
                         raise asyncio.CancelledError
                     await self._emit_node_terminal(
@@ -551,7 +584,10 @@ class QueryCoordinator:
             if reserved:
                 await memory.release(run_id, node.id)
             cancel_event.set()
-            if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
+            if (
+                node.kind is PhysicalNodeKind.SOURCE_FRAGMENT
+                and not resolver_cancel_requested
+            ):
                 self._request_resolver_cancel(run_id, node.id)
             await self._emit_node_terminal(
                 machine,
@@ -586,7 +622,10 @@ class QueryCoordinator:
             if reserved:
                 await memory.release(run_id, node.id)
             cancel_event.set()
-            if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
+            if (
+                node.kind is PhysicalNodeKind.SOURCE_FRAGMENT
+                and not resolver_cancel_requested
+            ):
                 self._request_resolver_cancel(run_id, node.id)
             await self._emit_node_terminal(
                 machine,

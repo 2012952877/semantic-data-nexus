@@ -118,6 +118,10 @@ class DuckDBOperatorExecutor:
     def _build_query(
         self, spec: OperatorSpec, inputs: tuple[pa.Table, ...]
     ) -> tuple[str, list[Any]]:
+        for table in inputs:
+            _reject_normalized_collisions(
+                table.column_names, "Input contains colliding column names"
+            )
         columns = set(inputs[0].column_names)
         if spec.kind in {OperatorKind.SELECT, OperatorKind.PROJECT}:
             return self._select_query(spec, columns)
@@ -164,16 +168,10 @@ class DuckDBOperatorExecutor:
         projections: list[str] = []
         parameters: list[Any] = []
         for column in spec.columns:
-            if column in names:
-                raise OperatorFailure("COLUMN_COLLISION", f"Duplicate output column '{column}'")
-            names.add(column)
+            _add_output_name(names, column)
             projections.append(quote_identifier(column, columns))
         for item in spec.expressions:
-            if item.name in names:
-                raise OperatorFailure(
-                    "COLUMN_COLLISION", f"Duplicate output column '{item.name}'"
-                )
-            names.add(item.name)
+            _add_output_name(names, item.name)
             rendered = render_expression(item.expression, columns)
             projections.append(f"{rendered.sql} AS {quote_identifier(item.name)}")
             parameters.extend(rendered.parameters)
@@ -186,13 +184,11 @@ class DuckDBOperatorExecutor:
     ) -> tuple[str, list[Any]]:
         projections = [quote_identifier(column, columns) for column in spec.group_by]
         parameters: list[Any] = []
-        output_names = set(spec.group_by)
+        output_names: set[str] = set()
+        for column in spec.group_by:
+            _add_output_name(output_names, column)
         for aggregate in spec.aggregates:
-            if aggregate.name in output_names:
-                raise OperatorFailure(
-                    "COLUMN_COLLISION", f"Duplicate output column '{aggregate.name}'"
-                )
-            output_names.add(aggregate.name)
+            _add_output_name(output_names, aggregate.name)
             if aggregate.function is AggregateFunction.COUNT and aggregate.expression is None:
                 expression_sql = "*"
             elif aggregate.expression is None:
@@ -229,11 +225,11 @@ class DuckDBOperatorExecutor:
         pivot_value = quote_identifier(spec.pivot_value, columns)
         projections = [quote_identifier(column, columns) for column in spec.pivot_index]
         parameters: list[Any] = []
-        output_names = set(spec.pivot_index)
+        output_names: set[str] = set()
+        for column in spec.pivot_index:
+            _add_output_name(output_names, column)
         for value in spec.pivot_values:
-            if value in output_names:
-                raise OperatorFailure("COLUMN_COLLISION", f"Pivot output '{value}' collides")
-            output_names.add(value)
+            _add_output_name(output_names, value)
             projections.append(
                 f"SUM(CASE WHEN {pivot_column} = ? THEN {pivot_value} END) "
                 f"AS {quote_identifier(value)}"
@@ -255,13 +251,14 @@ class DuckDBOperatorExecutor:
     ) -> tuple[str, list[Any]]:
         projections = ["*"]
         parameters: list[Any] = []
-        names = set(columns)
+        names = {_normalize_identifier(column) for column in columns}
         for item in spec.expressions:
-            if item.name in names:
+            normalized = _normalize_identifier(item.name)
+            if normalized in names:
                 raise OperatorFailure(
                     "COLUMN_COLLISION", f"Derived column '{item.name}' already exists"
                 )
-            names.add(item.name)
+            names.add(normalized)
             rendered = render_expression(item.expression, columns)
             projections.append(f"{rendered.sql} AS {quote_identifier(item.name)}")
             parameters.extend(rendered.parameters)
@@ -276,12 +273,21 @@ class DuckDBOperatorExecutor:
             raise OperatorFailure("OPERATOR_INVALID", "JOIN requires type and keys")
         left_columns = set(inputs[0].column_names)
         right_columns = set(inputs[1].column_names)
-        collisions = sorted(left_columns & right_columns)
+        left_normalized = {
+            _normalize_identifier(column): column for column in left_columns
+        }
+        right_normalized = {
+            _normalize_identifier(column): column for column in right_columns
+        }
+        collisions = [
+            (left_normalized[name], right_normalized[name])
+            for name in sorted(left_normalized.keys() & right_normalized.keys())
+        ]
         if collisions:
             raise OperatorFailure(
                 "COLUMN_COLLISION",
                 "JOIN inputs contain colliding column names",
-                details={"columns": collisions},
+                details={"columns": [name for pair in collisions for name in pair]},
             )
         clauses = []
         for key in spec.join_keys:
@@ -308,6 +314,38 @@ class DuckDBOperatorExecutor:
                 "Operator output exceeded the configured byte limit",
                 details={"bytes": table.nbytes, "limit": self.limits.max_bytes},
             )
+
+
+def _normalize_identifier(name: str) -> str:
+    return name.translate(_ASCII_IDENTIFIER_FOLD)
+
+
+def _reject_normalized_collisions(names: list[str], message: str) -> None:
+    normalized: dict[str, str] = {}
+    for name in names:
+        key = _normalize_identifier(name)
+        existing = normalized.get(key)
+        if existing is not None:
+            raise OperatorFailure(
+                "COLUMN_COLLISION",
+                message,
+                details={"columns": [existing, name]},
+            )
+        normalized[key] = name
+
+
+def _add_output_name(names: set[str], name: str) -> None:
+    normalized = _normalize_identifier(name)
+    if normalized in names:
+        raise OperatorFailure(
+            "COLUMN_COLLISION", f"Duplicate output column '{name}'"
+        )
+    names.add(normalized)
+
+
+_ASCII_IDENTIFIER_FOLD = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+)
 
 
 async def _await_worker(work: asyncio.Task[pa.Table]) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from query_runtime.coordinator import QueryCoordinator, validate_physical_plan
+from query_runtime.coordinator import QueryCoordinator, _Emitter, validate_physical_plan
 from query_runtime.domain import (
     BoundSource,
     CapabilityCatalog,
@@ -79,6 +79,19 @@ class _PausingClaimStore(InMemoryEventStore):
             self.claimed.set()
             await self.release.wait()
         return result
+
+
+class _YieldingAppendStore(InMemoryEventStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_append = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def append(self, event: DiagnosticEvent) -> None:
+        if event.sequence == 0:
+            self.first_append.set()
+            await self.release.wait()
+        await super().append(event)
 
 
 class _SlowParquetStore(ParquetResultStore):
@@ -364,6 +377,60 @@ async def test_resolver_cancel_timeout_does_not_block_run_finalization(
     assert elapsed < 0.1
     assert outcome.summary.state is ExecutionState.CANCELLED
     await asyncio.sleep(0.25)
+
+
+@pytest.mark.asyncio
+async def test_run_cancel_wakes_noncooperative_active_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = simple_profit_fixture()
+    execute_started = asyncio.Event()
+    execute_release = asyncio.Event()
+    resolver_cancelled = asyncio.Event()
+    resolver_cancel_calls = 0
+    source_table = fixture.resolver._tables["regional_source"]
+
+    async def stubborn_execute(fragment, cancel_event):
+        execute_started.set()
+        while not execute_release.is_set():
+            try:
+                await execute_release.wait()
+            except asyncio.CancelledError:
+                continue
+        return source_table
+
+    async def record_cancel(run_id: str, node_id: str) -> None:
+        nonlocal resolver_cancel_calls
+        resolver_cancel_calls += 1
+        resolver_cancelled.set()
+
+    monkeypatch.setattr(fixture.resolver, "execute", stubborn_execute)
+    monkeypatch.setattr(fixture.resolver, "cancel", record_cancel)
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        limits=ResourceLimits(
+            max_bytes=100_000,
+            max_in_flight_bytes=100_000,
+            node_timeout_seconds=10.0,
+        ),
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-active-cancel")
+    )
+    await execute_started.wait()
+    started = asyncio.get_running_loop().time()
+    assert await coordinator.cancel("run-active-cancel")
+    outcome = await asyncio.wait_for(task, timeout=0.1)
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 0.1
+    assert outcome.summary.state is ExecutionState.CANCELLED
+    await asyncio.wait_for(resolver_cancelled.wait(), timeout=0.05)
+    assert resolver_cancel_calls == 1
+
+    execute_release.set()
+    await _wait_for_coordinator_cleanup(coordinator)
+    assert coordinator._memory.current == 0
 
 
 @pytest.mark.parametrize("value", (True, 1.5, math.nan, math.inf))
@@ -950,6 +1017,69 @@ async def test_bounded_concurrency_and_dependency_ordering(tmp_path: Path) -> No
     assert starts["local-join"] > successes["source-regions"]
     assert starts["local-join"] > successes["source-scores"]
     assert starts["local-sort"] > successes["local-join"]
+
+
+@pytest.mark.asyncio
+async def test_emitter_persists_events_in_sequence_order() -> None:
+    store = _YieldingAppendStore()
+    emitter = _Emitter("run-ordered-events", store)
+    first = asyncio.create_task(
+        emitter.emit(
+            scope="run",
+            scope_id="run-ordered-events",
+            state=ExecutionState.READY,
+            code="RUN_READY",
+            message="ready",
+        )
+    )
+    await store.first_append.wait()
+    second = asyncio.create_task(
+        emitter.emit(
+            scope="run",
+            scope_id="run-ordered-events",
+            state=ExecutionState.RUNNING,
+            code="RUN_STARTED",
+            message="started",
+        )
+    )
+    await asyncio.sleep(0)
+    assert await store.list("run-ordered-events") == ()
+    store.release.set()
+    await asyncio.gather(first, second)
+    events = await store.list("run-ordered-events")
+    assert [event.sequence for event in events] == [0, 1]
+    assert [event.code for event in events] == ["RUN_READY", "RUN_STARTED"]
+
+
+@pytest.mark.asyncio
+async def test_emitter_cancellation_cannot_consume_unpersisted_sequence() -> None:
+    store = _YieldingAppendStore()
+    emitter = _Emitter("run-cancelled-append", store)
+    first = asyncio.create_task(
+        emitter.emit(
+            scope="run",
+            scope_id="run-cancelled-append",
+            state=ExecutionState.READY,
+            code="RUN_READY",
+            message="ready",
+        )
+    )
+    await store.first_append.wait()
+    first.cancel()
+    await asyncio.sleep(0)
+    store.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await emitter.emit(
+        scope="run",
+        scope_id="run-cancelled-append",
+        state=ExecutionState.RUNNING,
+        code="RUN_STARTED",
+        message="started",
+    )
+    events = await store.list("run-cancelled-append")
+    assert [event.sequence for event in events] == [0, 1]
+    assert [event.code for event in events] == ["RUN_READY", "RUN_STARTED"]
 
 
 def test_invalid_dag_is_rejected() -> None:

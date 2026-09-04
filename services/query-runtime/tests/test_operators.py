@@ -201,6 +201,101 @@ async def test_expression_safety_missing_and_collision_diagnostics(
     assert collision.value.code == "COLUMN_COLLISION"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spec", "inputs"),
+    (
+        (
+            OperatorSpec(
+                kind=OperatorKind.DERIVE,
+                expressions=(
+                    NamedExpression(
+                        name="FOO",
+                        expression=TypedExpression.literal(1, ScalarType.INTEGER),
+                    ),
+                ),
+            ),
+            (pa.table({"foo": [1]}),),
+        ),
+        (
+            OperatorSpec(
+                kind=OperatorKind.PROJECT,
+                columns=("foo",),
+                expressions=(
+                    NamedExpression(
+                        name="FOO",
+                        expression=TypedExpression.literal(1, ScalarType.INTEGER),
+                    ),
+                ),
+            ),
+            (pa.table({"foo": [1]}),),
+        ),
+        (
+            OperatorSpec(
+                kind=OperatorKind.JOIN,
+                join_type=JoinType.INNER,
+                join_keys=(JoinKey(left="left_id", right="right_id"),),
+            ),
+            (
+                pa.table({"left_id": [1], "foo": [1]}),
+                pa.table({"right_id": [1], "FOO": [2]}),
+            ),
+        ),
+        (
+            OperatorSpec(
+                kind=OperatorKind.PIVOT,
+                pivot_index=("foo",),
+                pivot_column="period",
+                pivot_value="amount",
+                pivot_values=("FOO",),
+            ),
+            (
+                pa.table(
+                    {"foo": ["x"], "period": ["FOO"], "amount": [1.0]}
+                ),
+            ),
+        ),
+    ),
+)
+async def test_duckdb_normalized_output_collisions_are_rejected(
+    executor: DuckDBOperatorExecutor,
+    spec: OperatorSpec,
+    inputs: tuple[pa.Table, ...],
+) -> None:
+    with pytest.raises(OperatorFailure) as error:
+        await executor.execute(spec, inputs, asyncio.Event())
+    assert error.value.code == "COLUMN_COLLISION"
+
+
+@pytest.mark.asyncio
+async def test_duckdb_normalized_input_collision_is_rejected_for_pass_through(
+    executor: DuckDBOperatorExecutor,
+) -> None:
+    table = pa.Table.from_arrays(
+        [pa.array([1]), pa.array([2])], names=["foo", "FOO"]
+    )
+    with pytest.raises(OperatorFailure) as error:
+        await executor.execute(
+            OperatorSpec(kind=OperatorKind.LIMIT, limit=1),
+            (table,),
+            asyncio.Event(),
+        )
+    assert error.value.code == "COLUMN_COLLISION"
+
+
+@pytest.mark.asyncio
+async def test_duckdb_normalization_preserves_distinct_unicode_identifiers(
+    executor: DuckDBOperatorExecutor,
+) -> None:
+    table = pa.table({"ß": [1], "ss": [2]})
+    result = await executor.execute(
+        OperatorSpec(kind=OperatorKind.PROJECT, columns=("ß", "ss")),
+        (table,),
+        asyncio.Event(),
+    )
+    assert result.column_names == ["ß", "ss"]
+
+
 def test_memory_limit_rejects_non_numeric_configuration() -> None:
     with pytest.raises(ValueError, match="integers"):
         ResourceLimits(
