@@ -75,7 +75,7 @@ Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus
 
 ## HTTP 行为
 
-HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；网络错误、非 JSON、结构不符、HTTP 问题响应和轮询超时都会以明确错误关闭，不会伪装成空列表或成功结果。模糊失败重试会复用完整创建载荷与原 `clientRequestId`，已知 `runId` 后只恢复轮询；版本栅栏保证状态单调且终态不可回退。运行终态再读取 `/detail`。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 synthetic unavailable/unknown，而不复用 Mock 数据。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
+HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；网络错误、非 JSON、结构不符、HTTP 问题响应和轮询超时都会以明确错误关闭，不会伪装成空列表或成功结果。Decimal 列只接受保留精度与 scale 的 canonical fixed-point JSON string。模糊失败重试会复用完整创建载荷与原 `clientRequestId`，已知 `runId` 后只恢复轮询；版本栅栏和共享终态快照保证状态单调、终态不可回退，取消与轮询竞态不会把已确认终态变回网络错误。明确拒绝的创建可只凭持久化 `Failed` summary 与 diagnostics 展示，不要求不存在的 semantic detail。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 synthetic unavailable/unknown，而不复用 Mock 数据。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
 
 确定性 HTTP stub 同时供 Vitest 和主要 Playwright 套件使用。主要套件强制 `VITE_NEXUS_CLIENT=http`，覆盖真实 HTTP 创建、轮询、列表、详情、取消、跨标签页历史与不安全 HTML 文本；独立的 Mock Chromium 套件保留原生 Web Locks 租约栅栏与过期行为。
 

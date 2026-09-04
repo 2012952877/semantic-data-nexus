@@ -43,7 +43,7 @@ test('submits a governed question and renders the committed result', async ({ pa
 
 test('shares BFF history across tabs and cancels without committing a result', async ({ page, context }) => {
   await page.goto('/ask')
-  const question = '按区域汇总 2025 年上半年的净销售额'
+  const question = '按区域汇总 2025 年上半年的净销售额 [held-running-until-cancel]'
   await page.getByLabel('你想了解什么？').fill(question)
   await page.getByRole('button', { name: '开始受控运行' }).click()
 

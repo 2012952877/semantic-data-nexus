@@ -382,6 +382,22 @@ const isIsoDate = (value: unknown): value is string => {
     && parsed.getUTCDate() === day
 }
 
+const maximumDecimalMagnitude = `1${'0'.repeat(28)}`
+const isCanonicalDecimal = (value: unknown): value is string => {
+  if (!isString(value) || !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,28})?$/.test(value)) {
+    return false
+  }
+  const negative = value.startsWith('-')
+  const unsigned = negative ? value.slice(1) : value
+  const [integer = '', fraction = ''] = unsigned.split('.')
+  const coefficient = `${integer}${fraction}`.replace(/^0+/, '')
+  if (coefficient.length > 29 || (negative && coefficient.length === 0)) return false
+  if (integer.length > maximumDecimalMagnitude.length
+    || (integer.length === maximumDecimalMagnitude.length
+      && integer > maximumDecimalMagnitude)) return false
+  return true
+}
+
 const isNodeSummary = (value: unknown): value is BffNodeSummary =>
   isRecord(value)
   && isLabel(value.nodeId)
@@ -484,9 +500,8 @@ const isCellForColumn = (value: unknown, column: BffResultColumn) => {
   if (value === null) return column.nullable
   if (column.dataType === 'string') return isString(value) && [...value].length <= 4_000
   if (column.dataType === 'integer') return typeof value === 'number' && Number.isSafeInteger(value)
-  if (column.dataType === 'float' || column.dataType === 'decimal') {
-    return typeof value === 'number' && Number.isFinite(value)
-  }
+  if (column.dataType === 'float') return typeof value === 'number' && Number.isFinite(value)
+  if (column.dataType === 'decimal') return isCanonicalDecimal(value)
   if (column.dataType === 'boolean') return typeof value === 'boolean'
   if (column.dataType === 'date') {
     return isIsoDate(value)
@@ -937,9 +952,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     const summary = this.acceptSummary(
       await this.validatedJson(summaryResponse, isBffRunSummary, 'run summary'),
     )
-    if (summary.state !== 'Succeeded' && summary.state !== 'Failed') {
-      return mapSummary(summary)
-    }
+    if (summary.state !== 'Succeeded') return mapSummary(summary)
     const detailResponse = await this.request(`${path}/detail`)
     const detail = await this.validatedJson(detailResponse, isBffRunDetail, 'run detail')
     return mapDetail(summary, detail)
@@ -977,12 +990,17 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     }
     let summary: BffRunSummary
     if (attempt.runId) {
-      const resumed = await this.request(
-        `/api/v1/runs/${encodeURIComponent(attempt.runId)}/semantic-status`,
-      )
-      summary = this.acceptSummary(
-        await this.validatedJson(resumed, isBffRunSummary, 'resumed run'),
-      )
+      const cached = this.terminalSnapshot(attempt.runId)
+      if (cached) {
+        summary = cached
+      } else {
+        const resumed = await this.request(
+          `/api/v1/runs/${encodeURIComponent(attempt.runId)}/semantic-status`,
+        )
+        summary = this.acceptSummary(
+          await this.validatedJson(resumed, isBffRunSummary, 'resumed run'),
+        )
+      }
     } else {
       try {
         const created = await this.request('/api/v1/runs', {
@@ -1003,6 +1021,12 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     const deadline = Date.now() + this.deadlineMs
     let delayMs = this.initialDelayMs
     while (!terminalStates.has(summary.state)) {
+      const alreadyTerminal = this.terminalSnapshot(summary.id)
+      if (alreadyTerminal) {
+        summary = alreadyTerminal
+        onProgress?.(mapSummary(summary))
+        break
+      }
       if (Date.now() + delayMs > deadline) {
         throw new NexusClientError(
           'timeout',
@@ -1010,20 +1034,31 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
         )
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs))
-      const polled = await this.request(
-        `/api/v1/runs/${encodeURIComponent(summary.id)}/semantic-status`,
-        {},
-        false,
-        deadline,
-      )
-      summary = this.acceptSummary(
-        await this.validatedJson(polled, isBffRunSummary, 'polled run'),
-      )
+      const cached = this.terminalSnapshot(summary.id)
+      if (cached) {
+        summary = cached
+      } else {
+        try {
+          const polled = await this.request(
+            `/api/v1/runs/${encodeURIComponent(summary.id)}/semantic-status`,
+            {},
+            false,
+            deadline,
+          )
+          summary = this.acceptSummary(
+            await this.validatedJson(polled, isBffRunSummary, 'polled run'),
+          )
+        } catch (error) {
+          const terminal = this.terminalSnapshot(summary.id)
+          if (!terminal) throw error
+          summary = terminal
+        }
+      }
       onProgress?.(mapSummary(summary))
       delayMs = Math.min(this.maximumDelayMs, Math.ceil(delayMs * 1.6))
     }
 
-    if (summary.state === 'Cancelled') {
+    if (summary.state === 'Cancelled' || summary.state === 'Failed') {
       this.clearAttempt(requestKey, attempt)
       return mapSummary(summary)
     }
@@ -1048,8 +1083,8 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     const summary = this.acceptSummary(
       await this.validatedJson(response, isBffRunSummary, 'cancelled run'),
     )
-    if (!terminalStates.has(summary.state) || summary.state === 'Cancelled') {
-      if (summary.state === 'Cancelled') this.clearAttemptByRunId(summary.id)
+    if (summary.state !== 'Succeeded') {
+      if (terminalStates.has(summary.state)) this.clearAttemptByRunId(summary.id)
       return mapSummary(summary)
     }
     const detailResponse = await this.request(
@@ -1105,6 +1140,11 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
 
   private statePrecedence(state: BffRunState) {
     return runStates.indexOf(state)
+  }
+
+  private terminalSnapshot(runId: string) {
+    const snapshot = this.snapshots.get(runId)
+    return snapshot && terminalStates.has(snapshot.state) ? snapshot : undefined
   }
 
   private clearAttempt(requestKey: string, attempt: PendingCreateAttempt) {

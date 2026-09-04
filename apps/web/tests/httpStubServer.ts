@@ -190,7 +190,7 @@ const resultFor = (run: StubRun) => ({
       nullable: true,
     },
   ],
-  rows: run.outcome === 'empty' ? [] : [['华东', 4_286_000, 1.08, true, null]],
+  rows: run.outcome === 'empty' ? [] : [['华东', '4286000.00', 1.08, true, null]],
   rowCount: run.outcome === 'empty' ? 0 : 1,
   truncated: false,
 })
@@ -309,6 +309,7 @@ export const startHttpStubServer = async (port = 4310) => {
   const ambiguousCreateFailures = new Set<string>()
   const ambiguousPollFailures = new Set<string>()
   const ambiguousDetailFailures = new Set<string>()
+  const heldPollResponses = new Map<string, ServerResponse>()
   let sequence = 2
   const seed: StubRun = {
     id: runId(1),
@@ -393,14 +394,15 @@ export const startHttpStubServer = async (port = 4310) => {
         return
       }
       const question = String(body.question)
+      const rejected = question.includes('[definitive-reject]')
       const run: StubRun = {
         id: runId(sequence),
         request: body,
-        state: 'Queued',
-        terminalState: question.includes('执行失败') ? 'Failed' : 'Succeeded',
+        state: rejected ? 'Failed' : 'Queued',
+        terminalState: question.includes('执行失败') || rejected ? 'Failed' : 'Succeeded',
         outcome: question.includes('0 行') || question.includes('2022')
           ? 'empty'
-          : question.includes('执行失败')
+          : question.includes('执行失败') || rejected
             ? 'failed'
             : 'success',
         polls: 0,
@@ -436,9 +438,15 @@ export const startHttpStubServer = async (port = 4310) => {
         run.state = 'Cancelled'
       }
       send(response, 200, summaryFor(run))
+      heldPollResponses.get(run.id)?.destroy()
+      heldPollResponses.delete(run.id)
       return
     }
     if (request.method === 'GET' && match?.[2] === '/detail') {
+      if (String(run.request.question).includes('[definitive-reject]')) {
+        send(response, 404, { title: 'Run detail not found', status: 404 })
+        return
+      }
       if (run.id === backendRunDetail.runId) {
         send(response, 200, backendRunDetail)
         return
@@ -454,12 +462,29 @@ export const startHttpStubServer = async (port = 4310) => {
         send(response, 200, { runId: run.id, question: run.request.question })
         return
       }
-      send(response, 200, detailFor(run))
+      const detail = detailFor(run)
+      const decimal = String(run.request.question).match(/\[decimal:([^\]]+)\]/)?.[1]
+      if (decimal !== undefined && detail.result?.rows[0]) detail.result.rows[0][1] = decimal
+      if (String(run.request.question).includes('[decimal-number]')
+        && detail.result?.rows[0]) detail.result.rows[0][1] = 1250.5
+      send(response, 200, detail)
       return
     }
     if (request.method === 'GET' && match?.[2] === '/semantic-status') {
       if (!terminal.has(run.state)) {
         const requestKey = String(run.request.clientRequestId)
+        const question = String(run.request.question)
+        if (question.includes('[poll-fails-after-cancel]')
+          && !heldPollResponses.has(run.id)) {
+          heldPollResponses.set(run.id, response)
+          return
+        }
+        if (question.includes('[held-running-until-cancel]')) {
+          run.state = 'Running'
+          run.version += 1
+          send(response, 200, summaryFor(run))
+          return
+        }
         if (String(run.request.question).includes('[ambiguous-poll]')
           && !ambiguousPollFailures.has(requestKey)) {
           ambiguousPollFailures.add(requestKey)

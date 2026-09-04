@@ -54,6 +54,7 @@ describe('HttpSemanticNexusClient', () => {
 
     expect(run.state).toBe('succeeded')
     expect(run.result?.rows[0]?.region).toBe('华东')
+    expect(run.result?.rows[0]?.revenue).toBe('4286000.00')
     expect(run.result?.rows[0]?.governed).toBe(true)
     expect(run.result?.rows[0]?.closedOn).toBeNull()
     expect(run.nodes[0]?.kind).toBe('AGGREGATE')
@@ -96,7 +97,7 @@ describe('HttpSemanticNexusClient', () => {
     const run = await createClient().getRun('run_0123456789abcdef0123456789abcdef')
 
     expect(run?.sqg.version).toBe('sqg.v0')
-    expect(run?.result?.rows).toEqual([{ region: '北辰区', profit: 2334 }])
+    expect(run?.result?.rows).toEqual([{ region: '北辰区', profit: '2334.00' }])
     expect(run?.manifest?.uri).toContain('inline://run_0123456789abcdef')
     expect(run?.lineage.sources[0]?.name).toBe('synthetic_sales')
   })
@@ -155,17 +156,97 @@ describe('HttpSemanticNexusClient', () => {
     expect(idIndex).toBe(2)
   })
 
+  it('preserves valid fixed-point decimals and rejects non-canonical decimal cells', async () => {
+    const valid = [
+      '1234567890123456.1200',
+      '10000000000000000000000000000',
+      '0.0000000000000000000000000001',
+      '9.9999999999999999999999999999',
+    ]
+    for (const value of valid) {
+      const run = await createClient().startRun({
+        ...request,
+        question: `decimal precision [decimal:${value}]`,
+      })
+      expect(run.result?.rows[0]?.revenue).toBe(value)
+    }
+
+    const invalid = [
+      '+1.0',
+      '01.0',
+      '1.',
+      '1e2',
+      '-0.00',
+      '10000000000000000000000000001',
+      '0.00000000000000000000000000001',
+    ]
+    for (const value of invalid) {
+      await expect(createClient().startRun({
+        ...request,
+        question: `invalid decimal [decimal:${value}]`,
+      })).rejects.toMatchObject(
+        { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+      )
+    }
+    await expect(createClient().startRun({
+      ...request,
+      question: 'decimal must not be a JSON number [decimal-number]',
+    })).rejects.toMatchObject(
+      { code: 'invalid-response' } satisfies Partial<NexusClientError>,
+    )
+  })
+
+  it('renders definitively rejected runs from their persisted failed summary', async () => {
+    const client = createClient()
+    const failed = await client.startRun({
+      ...request,
+      question: 'reject before dispatch [definitive-reject]',
+    })
+
+    expect(failed.state).toBe('failed')
+    expect(failed.diagnostics[0]?.code).toBe('STUB_SOURCE_UNAVAILABLE')
+    expect(await client.getRun(failed.id)).toMatchObject({
+      state: 'failed',
+      diagnostics: [expect.objectContaining({ code: 'STUB_SOURCE_UNAVAILABLE' })],
+    })
+    expect(latest(`/api/v1/runs/${failed.id}/semantic-status`)).toBeUndefined()
+    expect(latest(`/api/v1/runs/${failed.id}/detail`)).toBeUndefined()
+  })
+
   it('delivers cancellation and returns the terminal detail', async () => {
     const client = createClient()
     let releaseId: ((id: string) => void) | undefined
     const id = new Promise<string>((resolve) => {
       releaseId = resolve
     })
-    const active = client.startRun(request, (run) => releaseId?.(run.id))
+    const active = client.startRun(
+      { ...request, question: 'cancel deterministically [held-running-until-cancel]' },
+      (run) => releaseId?.(run.id),
+    )
     const cancelled = await client.cancelRun(await id)
 
     expect(cancelled.state).toBe('canceled')
     expect((await active).state).toBe('canceled')
+  })
+
+  it('returns a shared terminal cancellation when the in-flight poll fails', async () => {
+    const client = createClient()
+    let releaseId: ((id: string) => void) | undefined
+    const id = new Promise<string>((resolve) => {
+      releaseId = resolve
+    })
+    const active = client.startRun(
+      { ...request, question: 'cancel during failed poll [poll-fails-after-cancel]' },
+      (run) => releaseId?.(run.id),
+    )
+    const runId = await id
+    await vi.waitFor(() => {
+      expect(latest(`/api/v1/runs/${runId}/semantic-status`)).toBeDefined()
+    })
+
+    expect((await client.cancelRun(runId)).state).toBe('canceled')
+    await expect(active).resolves.toMatchObject({ state: 'canceled' })
+    expect(latest(`/api/v1/runs/${runId}/detail`)).toBeUndefined()
   })
 
   it('keeps terminal cancellation absorbing when a delayed poll returns an older version', async () => {
