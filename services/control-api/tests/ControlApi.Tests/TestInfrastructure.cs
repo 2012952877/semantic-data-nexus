@@ -179,22 +179,6 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
             await ReleaseStart.Task.WaitAsync(cancellationToken);
         }
 
-        public Task<SemanticRunDetail> GetDetailAsync(
-            RunId runId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            DetailCalls++;
-            if (DetailException is not null)
-            {
-                throw DetailException;
-            }
-
-            return Task.FromResult(
-                DetailResult ??
-                Detail(runId, LastStartRequest?.Question ?? "Synthetic governed question"));
-        }
-
         if (StartException is not null)
         {
             throw StartException;
@@ -203,6 +187,22 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
         var status = StartResult ?? Status(request.RunId, RunState.Starting);
         Runs[request.RunId] = status;
         return status;
+    }
+
+    public Task<SemanticRunDetail> GetDetailAsync(
+        RunId runId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        DetailCalls++;
+        if (DetailException is not null)
+        {
+            throw DetailException;
+        }
+
+        return Task.FromResult(
+            DetailResult ??
+            Detail(runId, LastStartRequest?.Question ?? "Synthetic governed question"));
     }
 
     public Task<SemanticRunStatus> GetStatusAsync(

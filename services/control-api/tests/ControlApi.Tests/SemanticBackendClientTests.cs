@@ -242,13 +242,13 @@ public sealed class SemanticBackendClientTests
             Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
             Assert.Equal(SemanticFailureKind.InvalidResponse, exception.FailureKind);
         }
+    }
 
-        private static JsonSerializerOptions JsonOptions()
-        {
-            var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-            JsonContractOptions.Configure(options);
-            SemanticJsonContractOptions.Configure(options);
-            return options;
-        }
+    private static JsonSerializerOptions JsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        JsonContractOptions.Configure(options);
+        SemanticJsonContractOptions.Configure(options);
+        return options;
     }
 }
