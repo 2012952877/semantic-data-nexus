@@ -278,6 +278,18 @@ async def test_problem_details_and_no_raw_exception_leak(
             "NEGATED_MEMBER_UNSUPPORTED",
         ),
         (
+            "Show regional quarterly profit unless East",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show quarterly profit for all regions but East",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 除非华东",
+            "NEGATED_MEMBER_UNSUPPORTED",
+        ),
+        (
             "Show regional quarterly profit 去年 not included",
             "NEGATED_TIME_UNSUPPORTED",
         ),
@@ -315,6 +327,18 @@ async def test_problem_details_and_no_raw_exception_leak(
         ),
         (
             "Show regional quarterly profit 去年 oughtn't to have been shown",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit unless 去年",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit for periods other than 去年",
+            "NEGATED_TIME_UNSUPPORTED",
+        ),
+        (
+            "Show regional quarterly profit 除非去年",
             "NEGATED_TIME_UNSUPPORTED",
         ),
         (
@@ -361,6 +385,18 @@ async def test_problem_details_and_no_raw_exception_leak(
             "Show regional profit oughtn\u2019t to have been shown",
             "NEGATED_CONCEPT_UNSUPPORTED",
         ),
+        (
+            "Show regional quarterly results unless profit",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "Show all metrics but profit",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
+        (
+            "显示区域季度\uff0c除非利润",
+            "NEGATED_CONCEPT_UNSUPPORTED",
+        ),
         ("Show regional quarterly profit where 华东被排除", "NEGATED_MEMBER_UNSUPPORTED"),
         ("Show regional quarterly profit 去年应该被排除", "NEGATED_TIME_UNSUPPORTED"),
         ("Show regional 利润应排除", "NEGATED_CONCEPT_UNSUPPORTED"),
@@ -388,9 +424,14 @@ async def test_compile_fails_closed_for_copular_and_modal_negation(
         "Omit taxes; show regional quarterly profit for 去年",
         "Don't include inventory, show regional quarterly profit for East",
         "不要显示库存\uff1b显示去年季度区域利润",
+        "When East is included, show regional quarterly profit",
+        "Show regional quarterly profit if East is included",
+        "Although 去年 is available, show regional quarterly profit",
+        "如果华东可用\uff0c显示区域季度利润",
+        "Do not show inventory, but show regional quarterly profit for East",
     ],
 )
-async def test_prior_clause_negation_does_not_contaminate_positive_request(
+async def test_clause_boundaries_do_not_contaminate_positive_request(
     question: str,
 ) -> None:
     response = await SemanticCompiler.default().compile(

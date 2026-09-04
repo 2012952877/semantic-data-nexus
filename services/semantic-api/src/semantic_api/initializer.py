@@ -345,10 +345,10 @@ class DeterministicInitializer:
         limit = 80
         prefix = question[max(0, mention_start - limit) : mention_start]
         suffix = question[mention_end : mention_end + limit]
-        clause_boundary = re.compile(
+        shared_clause_boundary = re.compile(
             (
-                r"\b(?:but|however|instead|whereas|then|when|where|if|unless|although|"
-                r"though|while)\b|(?:但是|但|不过|然而|然后|当|如果|除非|虽然)"
+                r"\b(?:however|instead|whereas|then|when|where|if|although|though|while)\b|"
+                r"(?:但是|但|不过|然而|然后|当|如果|虽然)"
             ),
             re.IGNORECASE,
         )
@@ -357,14 +357,22 @@ class DeterministicInitializer:
             match.end()
             for match in re.finditer(r"[,;.!?\n\r\u3002\uff01\uff1f\uff1b\uff0c]", prefix)
         ]
-        prefix_boundaries.extend(match.end() for match in clause_boundary.finditer(prefix))
+        prefix_boundaries.extend(match.end() for match in shared_clause_boundary.finditer(prefix))
+        for match in re.finditer(r"\bbut\b", prefix, re.IGNORECASE):
+            preceding = prefix[: match.start()]
+            if re.search(r"\b(?:all|every)\b[^,;.!?]{0,60}$", preceding, re.IGNORECASE):
+                continue
+            prefix_boundaries.append(match.end())
         if prefix_boundaries:
             prefix = prefix[max(prefix_boundaries) :]
 
         suffix_boundaries = [
             match.start() for match in re.finditer(r"[;.!?\n\r\u3002\uff01\uff1f\uff1b]", suffix)
         ]
-        suffix_boundaries.extend(match.start() for match in clause_boundary.finditer(suffix))
+        suffix_boundaries.extend(match.start() for match in shared_clause_boundary.finditer(suffix))
+        suffix_boundaries.extend(
+            match.start() for match in re.finditer(r"\bbut\b", suffix, re.IGNORECASE)
+        )
         if suffix_boundaries:
             suffix = suffix[: min(suffix_boundaries)]
 
@@ -379,6 +387,7 @@ class DeterministicInitializer:
             "no",
             "without",
             "except",
+            "unless",
             "never",
             "neither",
             "nor",
@@ -393,7 +402,10 @@ class DeterministicInitializer:
             for token in english_tokens
         ):
             return True
-        if re.search(r"\b(?:other\s+than|left\s+out)\b", normalized):
+        if re.search(
+            r"\b(?:other\s+than|left\s+out|(?:all|every)\b[^,;.!?]{0,60}\bbut)\b",
+            normalized,
+        ):
             return True
         return any(
             marker in normalized
@@ -403,6 +415,7 @@ class DeterministicInitializer:
                 "排除",
                 "除外",
                 "除了",
+                "除非",
                 "以外",
                 "之外",
                 "不要",
