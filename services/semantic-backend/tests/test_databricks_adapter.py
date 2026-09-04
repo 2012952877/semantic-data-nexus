@@ -127,7 +127,7 @@ def test_translator_generates_only_parameterized_read_only_sql() -> None:
         "2024-04-01T00:00:00Z",
     ]
     assert "DELETE" not in translated.sql
-    assert translated.sql.endswith("LIMIT 1000")
+    assert translated.sql.endswith("LIMIT 1001")
     validate_fragment(translated)
 
 
@@ -225,6 +225,36 @@ async def test_live_adapter_converts_typed_result_to_arrow() -> None:
     )
     assert isinstance(table, pa.Table)
     assert table.to_pylist() == [{"region": "北辰区", "profit": 2334.0}]
+
+
+async def test_live_adapter_fails_on_sentinel_row_instead_of_silent_truncation() -> None:
+    result = await StubConnector().resolve(None)
+
+    @dataclass
+    class SentinelConnector:
+        async def resolve(self, fragment):
+            return TabularResult(
+                columns=result.columns,
+                rows=result.rows * 1_001,
+                lineage=result.lineage,
+                elapsed_ms=result.elapsed_ms,
+            )
+
+    adapter = DatabricksSourceAdapter(
+        SentinelConnector(),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+    )
+    with pytest.raises(ResolverFailure, match="complete-result row boundary"):
+        await adapter.execute(
+            ExecutionContext(
+                run_id="run_00000000000000000000000000000099",
+                node_id="source",
+                attempt=1,
+                cancellation_handle="opaque-sentinel",
+            ),
+            validated_fragment(),
+            asyncio.Event(),
+        )
 
 
 async def test_live_service_preserves_connector_provenance_and_lineage() -> None:
@@ -642,6 +672,30 @@ async def test_service_does_not_report_unconfirmed_provider_cancel_as_cancelled(
         assert status.state.value == "Failed"
         assert status.diagnostics[0].code == "DATABRICKS_CANCELLATION_UNCONFIRMED"
         assert cleaned.is_set()
+    finally:
+        await service.shutdown()
+
+
+async def test_service_timeout_waits_for_resolver_cleanup(monkeypatch) -> None:
+    import semantic_backend.service as service_module
+
+    monkeypatch.setattr(service_module, "_RUN_TIMEOUT_SECONDS", 0.1)
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+    resolver = DatabricksSourceAdapter(
+        BlockingConnector(started, asyncio.Event(), cleaned),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+        timeout_seconds=0.2,
+    )
+    service = OrchestrationService(resolver=resolver)
+    request = request_for("run_00000000000000000000000000000100")
+    try:
+        await service.start(request)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        status = await wait_for_terminal(service, request.run_id)
+        assert status.state.value == "Failed"
+        assert cleaned.is_set()
+        assert resolver._active_contexts == {}
     finally:
         await service.shutdown()
 

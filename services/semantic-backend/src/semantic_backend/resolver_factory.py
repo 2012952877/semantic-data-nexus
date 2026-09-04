@@ -78,7 +78,7 @@ def resolver_from_environment(
         warehouse_id=values["DATABRICKS_WAREHOUSE_ID"],
         catalog=values.get("DATABRICKS_CATALOG", "synthetic_demo"),
         schema=values.get("DATABRICKS_SCHEMA", "analytics"),
-        row_limit=1_000,
+        row_limit=1_001,
         byte_limit=10 * 1024 * 1024,
         statement_timeout_seconds=30,
         cancel_on_timeout=True,
@@ -104,7 +104,7 @@ def resolver_from_environment(
         DatabricksFragmentTranslator(
             catalog=config.catalog,
             schema=config.schema,
-            row_limit=config.row_limit,
+            row_limit=1_000,
         ),
         timeout_seconds=config.statement_timeout_seconds + 2,
         close=client.aclose,

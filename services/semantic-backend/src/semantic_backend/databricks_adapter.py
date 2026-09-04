@@ -113,7 +113,7 @@ class DatabricksFragmentTranslator:
         )
         for operation in fragment.operations:
             query = self._operation(query, operation)
-        query = f"SELECT * FROM ({query}) AS bounded_result LIMIT {self.row_limit}"
+        query = f"SELECT * FROM ({query}) AS bounded_result LIMIT {self.row_limit + 1}"
         return PhysicalSourceFragment(
             source_name=fragment.source.alias,
             sql=query,
@@ -403,7 +403,13 @@ class DatabricksSourceAdapter:
                 cancellation.cancel()
                 result = resolution.result()
                 await self._record_provenance(context, result)
-                return self._to_arrow(result)
+                table = self._to_arrow(result)
+                if table.num_rows > self._translator.row_limit:
+                    raise ResolverFailure(
+                        "DATABRICKS_RESULT_TRUNCATED",
+                        "The live result exceeded the complete-result row boundary.",
+                    )
+                return table
             resolution.cancel()
             await asyncio.gather(resolution, return_exceptions=True)
             raise ResolverFailure(

@@ -339,16 +339,39 @@ class OrchestrationService:
         except asyncio.CancelledError:
             await self._cancelled(record)
         except TimeoutError:
-            await self._fail(record, "RUN_TIMEOUT", "The bounded run exceeded its timeout.")
+            cleanup = await self._resolver_cleanup_failure(record)
+            await self._fail(
+                record,
+                cleanup.code if cleanup is not None else "RUN_TIMEOUT",
+                (
+                    "The resolver did not clean up safely after the run timeout."
+                    if cleanup is not None
+                    else "The bounded run exceeded its timeout."
+                ),
+            )
         except AdapterFailure as exc:
             await self._fail(record, exc.code, str(exc))
         except RuntimeFailure as exc:
-            await self._fail(record, exc.code, "The validated runtime operation failed safely.")
-        except Exception:
+            cleanup = await self._resolver_cleanup_failure(record)
             await self._fail(
                 record,
-                "INTEGRATION_FAILURE",
-                "The integration service could not complete the run.",
+                cleanup.code if cleanup is not None else exc.code,
+                (
+                    "The resolver did not clean up safely after runtime failure."
+                    if cleanup is not None
+                    else "The validated runtime operation failed safely."
+                ),
+            )
+        except Exception:
+            cleanup = await self._resolver_cleanup_failure(record)
+            await self._fail(
+                record,
+                cleanup.code if cleanup is not None else "INTEGRATION_FAILURE",
+                (
+                    "The resolver did not clean up safely after integration failure."
+                    if cleanup is not None
+                    else "The integration service could not complete the run."
+                ),
             )
         finally:
             async with record.lock:
@@ -624,18 +647,28 @@ class OrchestrationService:
             )
 
     async def _cancelled(self, record: RunRecord) -> None:
-        wait_for_cleanup = getattr(self.resolver, "wait_for_run_cleanup", None)
-        if wait_for_cleanup is not None:
-            try:
-                await wait_for_cleanup(record.request.run_id)
-            except RuntimeFailure as exc:
-                await self._fail(
-                    record,
-                    exc.code,
-                    "The provider cancellation could not be confirmed safely.",
-                )
-                return
+        cleanup = await self._resolver_cleanup_failure(record)
+        if cleanup is not None:
+            await self._fail(
+                record,
+                cleanup.code,
+                "The provider cancellation could not be confirmed safely.",
+            )
+            return
         await self._finalize_cancelled(record)
+
+    async def _resolver_cleanup_failure(
+        self,
+        record: RunRecord,
+    ) -> RuntimeFailure | None:
+        wait_for_cleanup = getattr(self.resolver, "wait_for_run_cleanup", None)
+        if wait_for_cleanup is None:
+            return None
+        try:
+            await wait_for_cleanup(record.request.run_id)
+        except RuntimeFailure as exc:
+            return exc
+        return None
 
     async def _finalize_cancelled(self, record: RunRecord) -> None:
         now = datetime.now(UTC)
