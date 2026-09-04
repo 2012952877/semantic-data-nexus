@@ -452,10 +452,25 @@ def _compare_exact(
         if unordered and isinstance(actual, list)
         else actual
     )
-    if left == right:
+    if _strict_equal(left, right):
         return True
     _difference(differences, dimension, path, expected, actual)
     return False
+
+
+def _strict_equal(expected: Any, actual: Any) -> bool:
+    if type(expected) is not type(actual):
+        return False
+    if isinstance(expected, dict):
+        return expected.keys() == actual.keys() and all(
+            _strict_equal(value, actual[key]) for key, value in expected.items()
+        )
+    if isinstance(expected, (list, tuple)):
+        return len(expected) == len(actual) and all(
+            _strict_equal(left, right)
+            for left, right in zip(expected, actual, strict=True)
+        )
+    return bool(expected == actual)
 
 
 def _numbers_equal(expected: Any, actual: Any, tolerance: Any) -> bool:

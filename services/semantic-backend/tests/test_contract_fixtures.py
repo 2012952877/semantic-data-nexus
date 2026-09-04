@@ -22,6 +22,9 @@ from semantic_backend.models import (
 
 FIXTURES = Path(__file__).parents[1] / "contract-fixtures" / "v1"
 REPOSITORY_ROOT = Path(__file__).parents[3]
+BFF_FIXTURES = (
+    REPOSITORY_ROOT / "services" / "control-api" / "tests" / "ControlApi.Tests" / "Fixtures"
+)
 
 
 def test_bff_start_fixture_round_trips_exactly() -> None:
@@ -41,6 +44,14 @@ def test_bff_start_fixture_round_trips_exactly() -> None:
         "requestedBy",
         "traceId",
     }
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["bff-start-request.json", "backend-run-detail.json"],
+)
+def test_backend_and_control_api_fixtures_are_byte_identical(name: str) -> None:
+    assert (FIXTURES / name).read_bytes() == (BFF_FIXTURES / name).read_bytes()
 
 
 @pytest.mark.parametrize(

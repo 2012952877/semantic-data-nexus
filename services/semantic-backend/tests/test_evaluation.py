@@ -238,6 +238,16 @@ async def test_integrated_evaluation_detects_artifact_mutations(service) -> None
     )
     assert diagnostic_report.dimension_scores["governance"] < 100
 
+    type_corrupted = candidate_bundle({case_id: artifact})
+    candidate = type_corrupted["cases"][case_id]
+    candidate["result"]["truncated"] = 0
+    candidate["result"]["row_count"] = 4.0
+    candidate["lineage"]["edge_semantics_valid"] = 1
+    candidate["lineage"]["result_identity_valid"] = 1
+    type_report = evaluate_bundle(golden, type_corrupted)
+    assert type_report.dimension_scores["execution_result"] < 100
+    assert type_report.dimension_scores["observability"] < 100
+
 
 async def test_member_candidate_selects_period_filter_for_time_range(service) -> None:
     request = request_for("run_00000000000000000000000000000074").model_copy(

@@ -419,6 +419,51 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public void DetailValidatorRejectsCorruptedResultLineageIdentity()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var resultIndex = valid.Lineage.Nodes
+            .Select((node, index) => (node, index))
+            .Single(item => item.node.Kind == SemanticLineageNodeKind.Result)
+            .index;
+        var nodes = valid.Lineage.Nodes.ToArray();
+        nodes[resultIndex] = nodes[resultIndex] with
+        {
+            ResultId = "corrupted-result-id"
+        };
+        var corrupted = valid with
+        {
+            Lineage = valid.Lineage with { Nodes = nodes }
+        };
+
+        Assert.Throws<SemanticBackendException>(() =>
+            SemanticRunDetailValidator.Validate(corrupted, runId));
+    }
+
+    [Fact]
+    public void DetailValidatorAcceptsMaximumSourceTypeIdentifier()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var sourceIndex = valid.Lineage.Nodes
+            .Select((node, index) => (node, index))
+            .Single(item => item.node.Kind == SemanticLineageNodeKind.Source)
+            .index;
+        var nodes = valid.Lineage.Nodes.ToArray();
+        nodes[sourceIndex] = nodes[sourceIndex] with
+        {
+            SourceType = new string('s', 160)
+        };
+        var detail = valid with
+        {
+            Lineage = valid.Lineage with { Nodes = nodes }
+        };
+
+        SemanticRunDetailValidator.Validate(detail, runId);
+    }
+
+    [Fact]
     public void DetailValidatorRejectsManifestForUnknownPhysicalNode()
     {
         var runId = RunId.New();
