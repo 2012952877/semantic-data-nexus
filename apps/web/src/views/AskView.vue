@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, nextTick, ref } from 'vue'
+import { computed, inject, nextTick, ref } from 'vue'
 
 import { nexusClientKey } from '@/api/clientContext'
 import ResultTable from '@/components/ResultTable.vue'
@@ -24,6 +24,11 @@ const alertPanel = ref<HTMLElement>()
 const formError = ref('')
 const cancelError = ref('')
 const isMock = client.mode === 'mock'
+const cancellationTargetEnded = computed(() => Boolean(
+  cancelError.value
+  && currentRun.value
+  && ['succeeded', 'empty', 'failed', 'canceled'].includes(currentRun.value.state),
+))
 
 const requestForCurrentInput = (): AskRequest => ({
   question: question.value.trim(),
@@ -42,7 +47,7 @@ const submit = async () => {
   try {
     const result = await client.startRun(requestForCurrentInput(), (run) => {
       currentRun.value = run
-      cancelError.value = ''
+      if (run.state === 'canceled') cancelError.value = ''
     })
     currentRun.value = result
     if (result.state === 'failed' || result.state === 'empty') {
@@ -140,7 +145,7 @@ const useExample = (example: string) => {
           </p>
           <div>
             <button
-              v-if="submitting"
+              v-if="submitting && currentRun"
               class="secondary-button"
               type="button"
               @click="cancel"
@@ -171,9 +176,10 @@ const useExample = (example: string) => {
 
       <div v-if="cancelError" class="inline-outcome outcome-error" role="alert">
         <span>取消未送达</span>
-        <h3>原运行仍在继续</h3>
+        <h3>{{ cancellationTargetEnded ? '运行已自行结束' : '原运行仍在继续' }}</h3>
         <p>{{ cancelError }}</p>
-        <strong>可以再次取消，或等待当前运行完成。</strong>
+        <strong v-if="cancellationTargetEnded">取消错误已保留供排查；无需再次取消。</strong>
+        <strong v-else>可以再次取消，或等待当前运行完成。</strong>
       </div>
 
       <div

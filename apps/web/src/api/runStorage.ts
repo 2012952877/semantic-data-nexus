@@ -82,7 +82,7 @@ const isStage = (value: unknown): value is Stage =>
 
 const isSqg = (value: unknown): value is SqgSummary =>
   isRecord(value)
-  && value.version === '0.1'
+  && isString(value.version)
   && isString(value.intent)
   && isString(value.ontology)
   && isStringArray(value.resolvedMembers)

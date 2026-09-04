@@ -47,8 +47,8 @@ pnpm run test:e2e
 | `/ask` | 提问、选择 Mock 场景、查看五阶段执行进度与结果 |
 | `/runs` | Mock 本地历史或 BFF 运行历史 |
 | `/runs/:id` | 阶段、节点、结果、提交清单、血缘与诊断 |
-| `/ontology` | 区域销售实体、字段、指标、关系与查询策略 |
-| `/settings` | 只读提供方与组件健康状态 |
+| `/ontology` | Mock 区域销售目录；HTTP 模式明确显示目录不可用 |
+| `/settings` | Mock 组件状态；HTTP 模式在无契约端点时显示未知 |
 
 Vue Router 使用浏览器历史模式，部署静态产物时需要将未知路径回退到 `index.html`。
 
@@ -75,7 +75,7 @@ Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus
 
 ## HTTP 行为
 
-HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；网络错误、非 JSON、结构不符、HTTP 问题响应和轮询超时都会以明确错误关闭，不会伪装成空列表或成功结果。运行创建后使用有上限的指数退避轮询，终态再读取 `/detail`。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
+HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；网络错误、非 JSON、结构不符、HTTP 问题响应和轮询超时都会以明确错误关闭，不会伪装成空列表或成功结果。模糊失败重试会复用完整创建载荷与原 `clientRequestId`，已知 `runId` 后只恢复轮询；版本栅栏保证状态单调且终态不可回退。运行终态再读取 `/detail`。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 synthetic unavailable/unknown，而不复用 Mock 数据。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
 
 确定性 HTTP stub 同时供 Vitest 和主要 Playwright 套件使用。主要套件强制 `VITE_NEXUS_CLIENT=http`，覆盖真实 HTTP 创建、轮询、列表、详情、取消、跨标签页历史与不安全 HTML 文本；独立的 Mock Chromium 套件保留原生 Web Locks 租约栅栏与过期行为。
 

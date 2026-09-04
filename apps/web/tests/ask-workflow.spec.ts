@@ -5,6 +5,7 @@ import AskView from '@/views/AskView.vue'
 import { nexusClientKey } from '@/api/clientContext'
 import { MockSemanticNexusClient } from '@/api/mockSemanticNexusClient'
 import type { SemanticNexusClient } from '@/api/semanticNexusClient'
+import type { Run } from '@/domain'
 
 const mountAsk = (
   client: SemanticNexusClient = new MockSemanticNexusClient(20, false),
@@ -119,6 +120,7 @@ describe('ask workflow', () => {
     vi.spyOn(client, 'cancelRun').mockRejectedValue(new Error('取消端点暂不可用。'))
     const wrapper = mountAsk(client)
     await askQuestion(wrapper)
+    expect(wrapper.find('button.secondary-button').exists()).toBe(true)
 
     await wrapper.get('button.secondary-button').trigger('click')
     await flushPromises()
@@ -130,6 +132,25 @@ describe('ask workflow', () => {
     await vi.runAllTimersAsync()
     await flushPromises()
     expect(wrapper.text()).toContain('结果已提交')
+    expect(wrapper.text()).toContain('取消端点暂不可用')
+    expect(wrapper.text()).toContain('运行已自行结束')
     expect(wrapper.text()).not.toContain('原运行仍在继续')
+  })
+
+  it('does not offer cancellation before the BFF returns a run ID', async () => {
+    const client: SemanticNexusClient = {
+      mode: 'http',
+      listRuns: vi.fn(),
+      getRun: vi.fn(),
+      startRun: vi.fn(() => new Promise<Run>(() => undefined)),
+      cancelRun: vi.fn(),
+      getOntology: vi.fn(),
+      getComponentStatus: vi.fn(),
+    }
+    const wrapper = mountAsk(client)
+    await askQuestion(wrapper)
+
+    expect(wrapper.text()).toContain('正在编排')
+    expect(wrapper.find('button.secondary-button').exists()).toBe(false)
   })
 })

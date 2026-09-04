@@ -9,6 +9,11 @@ if (!client) throw new Error('SemanticNexusClient is not provided')
 
 const statuses = ref<ComponentStatus[]>([])
 const isMock = client.mode === 'mock'
+const statusLabel = (status: ComponentStatus['status']) => {
+  if (status === 'healthy') return '正常'
+  if (status === 'degraded') return '隔离模拟'
+  return '未知'
+}
 
 onMounted(async () => {
   statuses.value = await client.getComponentStatus()
@@ -33,7 +38,7 @@ onMounted(async () => {
           <h2>{{ item.name }}</h2>
           <p>{{ item.provider }}</p>
         </div>
-        <strong>{{ item.status === 'healthy' ? '正常' : '隔离模拟' }}</strong>
+        <strong>{{ statusLabel(item.status) }}</strong>
         <small>{{ item.detail }}</small>
       </article>
     </section>

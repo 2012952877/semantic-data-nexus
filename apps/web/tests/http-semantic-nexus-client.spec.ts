@@ -4,6 +4,7 @@ import { HttpSemanticNexusClient, NexusClientError } from '@/api/httpSemanticNex
 import { startHttpStubServer, type StubRequest } from './httpStubServer'
 
 let stub: Awaited<ReturnType<typeof startHttpStubServer>>
+let requestSequence = 0
 
 beforeAll(async () => {
   stub = await startHttpStubServer(0)
@@ -24,7 +25,7 @@ const createClient = (
     deadlineMs: 100,
   },
   now: () => new Date('2026-09-04T13:15:50.492+08:00'),
-  requestId: () => 'request-unit-001',
+  requestId: () => `request-unit-${++requestSequence}`,
   ...overrides,
 })
 
@@ -91,6 +92,69 @@ describe('HttpSemanticNexusClient', () => {
     expect(failed.diagnostics[0]?.code).toBe('STUB_SOURCE_UNAVAILABLE')
   })
 
+  it('validates and maps the real PR #22 backend detail fixture', async () => {
+    const run = await createClient().getRun('run_0123456789abcdef0123456789abcdef')
+
+    expect(run?.sqg.version).toBe('sqg.v0')
+    expect(run?.result?.rows).toEqual([{ region: '北辰区', profit: 2334 }])
+    expect(run?.manifest?.uri).toContain('inline://run_0123456789abcdef')
+    expect(run?.lineage.sources[0]?.name).toBe('synthetic_sales')
+  })
+
+  it('reuses the complete create payload and resumes a known run after ambiguous failures', async () => {
+    const clientRequestId = `request-ambiguous-${++requestSequence}`
+    const client = createClient({ requestId: () => clientRequestId })
+    const ambiguousRequest = {
+      ...request,
+      question: 'recover [ambiguous-create] [ambiguous-poll] [ambiguous-detail]',
+    }
+
+    await expect(client.startRun(ambiguousRequest))
+      .rejects.toMatchObject({ code: 'network' } satisfies Partial<NexusClientError>)
+    await expect(client.startRun(ambiguousRequest))
+      .rejects.toMatchObject({ code: 'network' } satisfies Partial<NexusClientError>)
+    await expect(client.startRun(ambiguousRequest))
+      .rejects.toMatchObject({ code: 'network' } satisfies Partial<NexusClientError>)
+    const recovered = await client.startRun(ambiguousRequest)
+
+    expect(recovered.state).toBe('succeeded')
+    const creates = stub.requests.filter((item) =>
+      item.method === 'POST'
+      && item.path === '/api/v1/runs'
+      && (item.body as { clientRequestId?: string })?.clientRequestId === clientRequestId)
+    expect(creates).toHaveLength(2)
+    expect(creates[1]?.body).toEqual(creates[0]?.body)
+    const resumedStatuses = stub.requests.filter((item) =>
+      item.method === 'GET'
+      && item.path === `/api/v1/runs/${recovered.id}/semantic-status`)
+    expect(resumedStatuses.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('keeps ambiguous retry state isolated across overlapping requests', async () => {
+    const ids = [
+      `request-overlap-a-${++requestSequence}`,
+      `request-overlap-b-${++requestSequence}`,
+    ]
+    let idIndex = 0
+    const client = createClient({ requestId: () => ids[idIndex++] ?? 'unexpected-request-id' })
+    const firstRequest = { ...request, question: 'first overlap [ambiguous-create]' }
+
+    await expect(client.startRun(firstRequest))
+      .rejects.toMatchObject({ code: 'network' } satisfies Partial<NexusClientError>)
+    await expect(client.startRun({ ...request, question: 'second overlap' }))
+      .resolves.toMatchObject({ state: 'succeeded' })
+    await expect(client.startRun(firstRequest))
+      .resolves.toMatchObject({ state: 'succeeded' })
+
+    const firstCreates = stub.requests.filter((item) =>
+      item.method === 'POST'
+      && item.path === '/api/v1/runs'
+      && (item.body as { clientRequestId?: string })?.clientRequestId === ids[0])
+    expect(firstCreates).toHaveLength(2)
+    expect(firstCreates[1]?.body).toEqual(firstCreates[0]?.body)
+    expect(idIndex).toBe(2)
+  })
+
   it('delivers cancellation and returns the terminal detail', async () => {
     const client = createClient()
     let releaseId: ((id: string) => void) | undefined
@@ -102,6 +166,65 @@ describe('HttpSemanticNexusClient', () => {
 
     expect(cancelled.state).toBe('canceled')
     expect((await active).state).toBe('canceled')
+  })
+
+  it('keeps terminal cancellation absorbing when a delayed poll returns an older version', async () => {
+      const client = createClient()
+      let releaseId: ((id: string) => void) | undefined
+      const id = new Promise<string>((resolve) => {
+        releaseId = resolve
+      })
+      const states: string[] = []
+      const active = client.startRun(
+        { ...request, question: 'cancel race [delayed-cancel]' },
+        (run) => {
+          states.push(run.state)
+          releaseId?.(run.id)
+        },
+      )
+      const requested = await client.cancelRun(await id)
+      const cancelled = await active
+
+      expect(requested.state).toBe('running')
+      expect(cancelled.state).toBe('canceled')
+      expect(states.at(-1)).toBe('canceled')
+      expect(latest(`/api/v1/runs/${cancelled.id}/detail`)).toBeUndefined()
+  })
+
+  it('uses Unicode code points and rejects every Unicode category-C character', async () => {
+      const client = createClient()
+      const astralQuestion = '😀'.repeat(2_001)
+      const accepted = await client.startRun({ ...request, question: astralQuestion })
+      expect(accepted.state).toBe('succeeded')
+
+      const postCount = stub.requests.filter((item) =>
+        item.method === 'POST' && item.path === '/api/v1/runs').length
+      await expect(client.startRun({ ...request, question: '😀'.repeat(4_001) }))
+        .rejects.toMatchObject({ code: 'request' } satisfies Partial<NexusClientError>)
+      await expect(client.startRun({ ...request, question: 'hidden\u200Bformat' }))
+        .rejects.toMatchObject({ code: 'request' } satisfies Partial<NexusClientError>)
+      expect(stub.requests.filter((item) =>
+        item.method === 'POST' && item.path === '/api/v1/runs')).toHaveLength(postCount)
+  })
+
+  it('marks HTTP-only ontology and health placeholders as synthetic and unavailable', async () => {
+      const noFetch: typeof fetch = async () => {
+        throw new Error('HTTP metadata placeholders must not probe undocumented endpoints')
+      }
+      const client = createClient({ fetch: noFetch })
+
+      await expect(client.getOntology()).resolves.toMatchObject({
+        version: 'unavailable',
+        entities: [],
+        metrics: [],
+      })
+      await expect(client.getComponentStatus()).resolves.toEqual([
+        expect.objectContaining({
+          provider: expect.stringContaining('synthetic'),
+          status: 'unknown',
+          detail: expect.stringContaining('未探测'),
+        }),
+      ])
   })
 
   it('fails closed on invalid detail and bounded polling timeout', async () => {

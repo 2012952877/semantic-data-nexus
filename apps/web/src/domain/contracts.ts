@@ -10,7 +10,7 @@ export type StageKey = 'initialize' | 'compile' | 'optimize' | 'execute' | 'gene
 export type StageState = 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
 export interface SqgSummary {
-  version: '0.1'
+  version: string
   intent: string
   ontology: string
   resolvedMembers: string[]
@@ -172,6 +172,6 @@ export interface AskRequest {
 export interface ComponentStatus {
   name: string
   provider: string
-  status: 'healthy' | 'degraded'
+  status: 'healthy' | 'degraded' | 'unknown'
   detail: string
 }

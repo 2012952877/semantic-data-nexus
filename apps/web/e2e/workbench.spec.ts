@@ -5,7 +5,7 @@ test('stable routes render their primary surfaces', async ({ page }) => {
     ['/ask', '把业务问题编排为可信结果'],
     ['/runs', '运行记录'],
     ['/runs/run_00000000000000000000000000000001', '比较各区域第二季度净销售额、目标达成率和同比'],
-    ['/ontology', '区域销售语义模型'],
+    ['/ontology', '语义目录不可用'],
     ['/settings', '组件状态'],
   ] as const
 
@@ -13,6 +13,10 @@ test('stable routes render their primary surfaces', async ({ page }) => {
     await page.goto(path)
     await expect(page.getByRole('main').getByText(heading, { exact: false }).first()).toBeVisible()
   }
+
+  await page.goto('/settings')
+  await expect(page.getByText('未知', { exact: true })).toBeVisible()
+  await expect(page.getByText('未探测或推断后端健康度', { exact: false })).toBeVisible()
 
   await page.goto('/runs')
   await expect(page.getByRole('table', { name: '运行列表' })).toBeVisible()

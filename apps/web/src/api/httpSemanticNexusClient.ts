@@ -1,4 +1,3 @@
-import { componentStatus, ontology } from './mockFixtures'
 import type { SemanticNexusClient } from './semanticNexusClient'
 import type {
   AskRequest,
@@ -117,7 +116,7 @@ interface BffRunSummary {
 }
 
 interface BffSqgSummary {
-  version: '0.1'
+  version: string
   intent: string
   ontology: string
   resolvedMembers: string[]
@@ -227,6 +226,21 @@ interface ProblemDetails {
   status?: number
 }
 
+interface PendingCreateAttempt {
+  requestKey: string
+  payload: {
+    clientRequestId: string
+    workload: string
+    question: string
+    evaluationClock: string
+    evaluationTimezone: string
+    compilationMode: BffCompilationMode
+    executionMode: BffExecutionMode
+    outputMode: BffOutputMode
+  }
+  runId?: string
+}
+
 export interface HttpSemanticNexusClientOptions {
   baseUrl: string
   tokenProvider?: NexusTokenProvider
@@ -333,8 +347,8 @@ const isString = (value: unknown): value is string => typeof value === 'string'
 const isText = (value: unknown, maximum = 4_000): value is string =>
   isString(value)
   && value.trim().length > 0
-  && value.length <= maximum
-  && !/[\u0000-\u001f\u007f]/.test(value)
+  && [...value].length <= maximum
+  && !/\p{C}/u.test(value)
 const isLabel = (value: unknown): value is string => isText(value, 128)
 const isOptionalLabel = (value: unknown): value is string | null =>
   value === null || isLabel(value)
@@ -434,7 +448,7 @@ const isBffRunSummary = (value: unknown): value is BffRunSummary =>
 
 const isSqg = (value: unknown): value is BffSqgSummary =>
   isRecord(value)
-  && value.version === '0.1'
+  && isLabel(value.version)
   && isText(value.intent, 512)
   && isLabel(value.ontology)
   && isStringArray(value.resolvedMembers)
@@ -468,7 +482,7 @@ const isResultColumn = (value: unknown): value is BffResultColumn =>
 
 const isCellForColumn = (value: unknown, column: BffResultColumn) => {
   if (value === null) return column.nullable
-  if (column.dataType === 'string') return isString(value) && value.length <= 4_000
+  if (column.dataType === 'string') return isString(value) && [...value].length <= 4_000
   if (column.dataType === 'integer') return typeof value === 'number' && Number.isSafeInteger(value)
   if (column.dataType === 'float' || column.dataType === 'decimal') {
     return typeof value === 'number' && Number.isFinite(value)
@@ -662,7 +676,7 @@ const mapStages = (stages: BffStageSummary[]): Stage[] => {
 }
 
 const emptySqg = (summary: BffRunSummary): SqgSummary => ({
-  version: '0.1',
+  version: 'unavailable',
   intent: summary.question,
   ontology: summary.workload,
   resolvedMembers: [],
@@ -885,6 +899,8 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     Response,
     { deadlineAt: number; controller: AbortController }
   >()
+  private readonly snapshots = new Map<string, BffRunSummary>()
+  private readonly pendingAttempts = new Map<string, PendingCreateAttempt>()
 
   constructor(options: HttpSemanticNexusClientOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl)
@@ -911,14 +927,16 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
   async listRuns(): Promise<Run[]> {
     const response = await this.request('/api/v1/runs')
     const payload = await this.validatedJson(response, isBffRunList, 'run list')
-    return payload.items.map(mapSummary)
+    return payload.items.map((summary) => mapSummary(this.acceptSummary(summary)))
   }
 
   async getRun(id: string): Promise<Run | undefined> {
     const path = `/api/v1/runs/${encodeURIComponent(id)}`
     const summaryResponse = await this.request(path, {}, true)
     if (summaryResponse.status === 404) return undefined
-    const summary = await this.validatedJson(summaryResponse, isBffRunSummary, 'run summary')
+    const summary = this.acceptSummary(
+      await this.validatedJson(summaryResponse, isBffRunSummary, 'run summary'),
+    )
     if (summary.state !== 'Succeeded' && summary.state !== 'Failed') {
       return mapSummary(summary)
     }
@@ -934,20 +952,52 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
         'Questions must contain 1 to 4,000 visible characters.',
       )
     }
-    const created = await this.request('/api/v1/runs', {
-      method: 'POST',
-      body: JSON.stringify({
-        clientRequestId: this.requestId(),
-        workload: this.workload,
-        question: request.question,
-        evaluationClock: this.now().toISOString(),
-        evaluationTimezone: this.evaluationTimezone,
-        compilationMode: this.compilationMode,
-        executionMode: 'thread' satisfies BffExecutionMode,
-        outputMode: 'normal' satisfies BffOutputMode,
-      }),
+    const requestKey = JSON.stringify({
+      question: request.question,
+      workload: this.workload,
+      compilationMode: this.compilationMode,
+      evaluationTimezone: this.evaluationTimezone,
     })
-    let summary = await this.validatedJson(created, isBffRunSummary, 'created run')
+    let attempt = this.pendingAttempts.get(requestKey)
+    if (!attempt) {
+      attempt = {
+        requestKey,
+        payload: {
+          clientRequestId: this.requestId(),
+          workload: this.workload,
+          question: request.question,
+          evaluationClock: this.now().toISOString(),
+          evaluationTimezone: this.evaluationTimezone,
+          compilationMode: this.compilationMode,
+          executionMode: 'thread' satisfies BffExecutionMode,
+          outputMode: 'normal' satisfies BffOutputMode,
+        },
+      }
+      this.pendingAttempts.set(requestKey, attempt)
+    }
+    let summary: BffRunSummary
+    if (attempt.runId) {
+      const resumed = await this.request(
+        `/api/v1/runs/${encodeURIComponent(attempt.runId)}/semantic-status`,
+      )
+      summary = this.acceptSummary(
+        await this.validatedJson(resumed, isBffRunSummary, 'resumed run'),
+      )
+    } else {
+      try {
+        const created = await this.request('/api/v1/runs', {
+          method: 'POST',
+          body: JSON.stringify(attempt.payload),
+        })
+        summary = this.acceptSummary(
+          await this.validatedJson(created, isBffRunSummary, 'created run'),
+        )
+        attempt.runId = summary.id
+      } catch (error) {
+        if (this.isDefinitiveCreateFailure(error)) this.clearAttempt(requestKey, attempt)
+        throw error
+      }
+    }
     onProgress?.(mapSummary(summary))
 
     const deadline = Date.now() + this.deadlineMs
@@ -966,12 +1016,17 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
         false,
         deadline,
       )
-      summary = await this.validatedJson(polled, isBffRunSummary, 'polled run')
+      summary = this.acceptSummary(
+        await this.validatedJson(polled, isBffRunSummary, 'polled run'),
+      )
       onProgress?.(mapSummary(summary))
       delayMs = Math.min(this.maximumDelayMs, Math.ceil(delayMs * 1.6))
     }
 
-    if (summary.state === 'Cancelled') return mapSummary(summary)
+    if (summary.state === 'Cancelled') {
+      this.clearAttempt(requestKey, attempt)
+      return mapSummary(summary)
+    }
     const detailResponse = await this.request(
       `/api/v1/runs/${encodeURIComponent(summary.id)}/detail`,
       {},
@@ -980,6 +1035,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     )
     const detail = await this.validatedJson(detailResponse, isBffRunDetail, 'run detail')
     const mapped = mapDetail(summary, detail)
+    this.clearAttempt(requestKey, attempt)
     onProgress?.(mapped)
     return mapped
   }
@@ -989,8 +1045,11 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
       `/api/v1/runs/${encodeURIComponent(id)}/cancel`,
       { method: 'POST' },
     )
-    const summary = await this.validatedJson(response, isBffRunSummary, 'cancelled run')
+    const summary = this.acceptSummary(
+      await this.validatedJson(response, isBffRunSummary, 'cancelled run'),
+    )
     if (!terminalStates.has(summary.state) || summary.state === 'Cancelled') {
+      if (summary.state === 'Cancelled') this.clearAttemptByRunId(summary.id)
       return mapSummary(summary)
     }
     const detailResponse = await this.request(
@@ -1001,26 +1060,70 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
       isBffRunDetail,
       'cancelled run detail',
     )
-    return mapDetail(summary, detail)
+    const mapped = mapDetail(summary, detail)
+    this.clearAttemptByRunId(summary.id)
+    return mapped
   }
 
   async getOntology() {
-    return clone(ontology)
+    return {
+      name: '语义目录不可用 · synthetic placeholder',
+      version: 'unavailable',
+      entities: [],
+      metrics: [],
+      relations: [],
+      queryPolicy: {
+        allowedDimensions: [],
+        maxLookbackMonths: 0,
+        description: 'HTTP BFF v1 没有提供 ontology 端点；此页不显示 Mock 目录。',
+      },
+    }
   }
 
   async getComponentStatus() {
-    return [
-      {
-        name: '控制面 BFF',
-        provider: new URL(this.baseUrl).origin,
-        status: 'healthy' as const,
-        detail: 'HTTP contract v1 · runtime validated',
-      },
-      ...clone(componentStatus).map((status) => ({
-        ...status,
-        detail: status.detail.replace('Mock ', ''),
-      })),
-    ]
+    return [{
+      name: '组件健康状态不可用',
+      provider: 'unknown · synthetic placeholder',
+      status: 'unknown' as const,
+      detail: 'HTTP BFF v1 没有提供浏览器可用的健康端点；未探测或推断后端健康度。',
+    }]
+  }
+
+  private acceptSummary(candidate: BffRunSummary) {
+    const current = this.snapshots.get(candidate.id)
+    if (current) {
+      if (terminalStates.has(current.state)) return current
+      if (candidate.version < current.version) return current
+      if (candidate.version === current.version
+        && this.statePrecedence(candidate.state) < this.statePrecedence(current.state)) {
+        return current
+      }
+    }
+    this.snapshots.set(candidate.id, candidate)
+    return candidate
+  }
+
+  private statePrecedence(state: BffRunState) {
+    return runStates.indexOf(state)
+  }
+
+  private clearAttempt(requestKey: string, attempt: PendingCreateAttempt) {
+    if (this.pendingAttempts.get(requestKey) === attempt) {
+      this.pendingAttempts.delete(requestKey)
+    }
+  }
+
+  private clearAttemptByRunId(runId: string) {
+    for (const [requestKey, attempt] of this.pendingAttempts) {
+      if (attempt.runId === runId) this.clearAttempt(requestKey, attempt)
+    }
+  }
+
+  private isDefinitiveCreateFailure(error: unknown) {
+    return error instanceof NexusClientError
+      && (error.code === 'request'
+        || error.code === 'configuration'
+        || (error.code === 'http' && error.status !== undefined && error.status < 500))
   }
 
   private validateOptions() {

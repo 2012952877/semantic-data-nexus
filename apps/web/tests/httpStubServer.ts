@@ -1,7 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
-type StubState = 'Queued' | 'Running' | 'Succeeded' | 'Failed' | 'Cancelled'
+type StubState =
+  | 'Queued'
+  | 'Running'
+  | 'CancelRequested'
+  | 'Succeeded'
+  | 'Failed'
+  | 'Cancelled'
 type StubOutcome = 'success' | 'empty' | 'failed'
 
 interface StubRun {
@@ -11,6 +18,9 @@ interface StubRun {
   terminalState: Extract<StubState, 'Succeeded' | 'Failed'>
   outcome: StubOutcome
   polls: number
+  version: number
+  cancellationRequested?: boolean
+  staleAfterCancellationSent?: boolean
 }
 
 export interface StubRequest {
@@ -32,10 +42,15 @@ const terminal = new Set<StubState>(['Succeeded', 'Failed', 'Cancelled'])
 const createdAt = '2026-09-04T05:15:50.492Z'
 const completedAt = '2026-09-04T05:15:52.332Z'
 const runId = (sequence: number) => `run_${sequence.toString(16).padStart(32, '0')}`
+const backendRunDetail = JSON.parse(readFileSync(
+  new URL('./fixtures/backend-run-detail.json', import.meta.url),
+  'utf8',
+)) as { runId: string; question: string }
 
 const stateForStage = (run: StubRun, index: number): StubState => {
   if (run.state === 'Queued') return 'Queued'
   if (run.state === 'Running') return index === 0 ? 'Running' : 'Queued'
+  if (run.state === 'CancelRequested') return 'CancelRequested'
   if (run.state === 'Cancelled') return 'Cancelled'
   if (run.state === 'Failed') {
     if (index < 3) return 'Succeeded'
@@ -65,14 +80,16 @@ const summaryFor = (run: StubRun) => ({
   outputMode: String(run.request.outputMode),
   createdBy: 'playwright-user',
   state: run.state,
-  cancellationDelivery: run.state === 'Cancelled' ? 'Delivered' : 'NotRequested',
-  cancellationGeneration: run.state === 'Cancelled' ? 1 : 0,
+  cancellationDelivery: run.state === 'Cancelled'
+    ? 'Delivered'
+    : run.state === 'CancelRequested' ? 'Pending' : 'NotRequested',
+  cancellationGeneration: run.state === 'Cancelled' || run.state === 'CancelRequested' ? 1 : 0,
   createdAt,
   updatedAt: terminal.has(run.state) ? completedAt : createdAt,
   startedAt: run.state === 'Queued' ? null : createdAt,
   completedAt: terminal.has(run.state) ? completedAt : null,
   duration: terminal.has(run.state) ? '00:00:01.8400000' : null,
-  version: run.polls + 1,
+  version: run.version,
   stages: stages.map(([stageId, name], index) => {
     const state = stateForStage(run, index)
     const done = terminal.has(state)
@@ -204,8 +221,8 @@ const detailFor = (run: StubRun) => {
     runId: run.id,
     question: String(run.request.question),
     sqg: {
-      version: '0.1',
-      intent: String(run.request.question),
+      version: 'sqg.v0',
+      intent: [...String(run.request.question)].slice(0, 512).join(''),
       ontology: 'regional-sales',
       resolvedMembers: ['sales.region', 'sales.net_revenue'],
       metrics: ['net_revenue', 'target_attainment'],
@@ -288,6 +305,10 @@ const isCreateRequest = (value: unknown): value is Record<string, unknown> => {
 export const startHttpStubServer = async (port = 4310) => {
   const requests: StubRequest[] = []
   const runs = new Map<string, StubRun>()
+  const runsByClientRequestId = new Map<string, StubRun>()
+  const ambiguousCreateFailures = new Set<string>()
+  const ambiguousPollFailures = new Set<string>()
+  const ambiguousDetailFailures = new Set<string>()
   let sequence = 2
   const seed: StubRun = {
     id: runId(1),
@@ -305,8 +326,30 @@ export const startHttpStubServer = async (port = 4310) => {
     terminalState: 'Succeeded',
     outcome: 'success',
     polls: 2,
+    version: 3,
   }
   runs.set(seed.id, seed)
+  runsByClientRequestId.set(String(seed.request.clientRequestId), seed)
+  const fixtureRun: StubRun = {
+    id: backendRunDetail.runId,
+    request: {
+      clientRequestId: 'fixture-request',
+      workload: 'synthetic-workload',
+      question: backendRunDetail.question,
+      evaluationClock: '2026-08-15T09:00:00+08:00',
+      evaluationTimezone: 'Asia/Shanghai',
+      compilationMode: 'regional_quarterly_profit',
+      executionMode: 'thread',
+      outputMode: 'normal',
+    },
+    state: 'Succeeded',
+    terminalState: 'Succeeded',
+    outcome: 'success',
+    polls: 2,
+    version: 3,
+  }
+  runs.set(fixtureRun.id, fixtureRun)
+  runsByClientRequestId.set(String(fixtureRun.request.clientRequestId), fixtureRun)
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
@@ -343,6 +386,12 @@ export const startHttpStubServer = async (port = 4310) => {
         })
         return
       }
+      const clientRequestId = String(body.clientRequestId)
+      const existing = runsByClientRequestId.get(clientRequestId)
+      if (existing) {
+        send(response, 200, summaryFor(existing))
+        return
+      }
       const question = String(body.question)
       const run: StubRun = {
         id: runId(sequence),
@@ -355,9 +404,17 @@ export const startHttpStubServer = async (port = 4310) => {
             ? 'failed'
             : 'success',
         polls: 0,
+        version: 1,
       }
       sequence += 1
       runs.set(run.id, run)
+      runsByClientRequestId.set(clientRequestId, run)
+      if (question.includes('[ambiguous-create]')
+        && !ambiguousCreateFailures.has(clientRequestId)) {
+        ambiguousCreateFailures.add(clientRequestId)
+        response.destroy()
+        return
+      }
       send(response, 202, summaryFor(run))
       return
     }
@@ -371,11 +428,28 @@ export const startHttpStubServer = async (port = 4310) => {
       return
     }
     if (request.method === 'POST' && match?.[2] === '/cancel') {
-      run.state = 'Cancelled'
+      run.version += 1
+      if (String(run.request.question).includes('[delayed-cancel]')) {
+        run.state = 'CancelRequested'
+        run.cancellationRequested = true
+      } else {
+        run.state = 'Cancelled'
+      }
       send(response, 200, summaryFor(run))
       return
     }
     if (request.method === 'GET' && match?.[2] === '/detail') {
+      if (run.id === backendRunDetail.runId) {
+        send(response, 200, backendRunDetail)
+        return
+      }
+      const requestKey = String(run.request.clientRequestId)
+      if (String(run.request.question).includes('[ambiguous-detail]')
+        && !ambiguousDetailFailures.has(requestKey)) {
+        ambiguousDetailFailures.add(requestKey)
+        response.destroy()
+        return
+      }
       if (String(run.request.question).includes('[invalid-detail]')) {
         send(response, 200, { runId: run.id, question: run.request.question })
         return
@@ -385,12 +459,35 @@ export const startHttpStubServer = async (port = 4310) => {
     }
     if (request.method === 'GET' && match?.[2] === '/semantic-status') {
       if (!terminal.has(run.state)) {
+        const requestKey = String(run.request.clientRequestId)
+        if (String(run.request.question).includes('[ambiguous-poll]')
+          && !ambiguousPollFailures.has(requestKey)) {
+          ambiguousPollFailures.add(requestKey)
+          response.destroy()
+          return
+        }
+        if (run.cancellationRequested && !run.staleAfterCancellationSent) {
+          run.staleAfterCancellationSent = true
+          send(response, 200, {
+            ...summaryFor(run),
+            state: 'Running',
+            version: Math.max(1, run.version - 1),
+          })
+          return
+        }
+        if (run.cancellationRequested) {
+          run.state = 'Cancelled'
+          run.version += 1
+          send(response, 200, summaryFor(run))
+          return
+        }
         run.polls += 1
         if (String(run.request.question).includes('[timeout]')) {
           run.state = 'Running'
         } else {
           run.state = run.polls === 1 ? 'Running' : run.terminalState
         }
+        run.version += 1
       }
       send(response, 200, summaryFor(run))
       return

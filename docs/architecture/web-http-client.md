@@ -28,7 +28,7 @@ The Web workbench has two explicit client modes. `mock` remains the default and 
 }
 ```
 
-Questions are limited to 1-4,000 visible characters. `evaluationClock` always contains `Z`; `evaluationTimezone` is validated as an IANA timezone. The client supports the typed BFF compilation modes `regional_quarterly_profit` and `monthly_regional_comparison`, execution mode `thread`, and output modes `normal` and `stream`. The current workbench defaults are `regional-sales`, `regional_quarterly_profit`, `thread`, and `normal`.
+Questions are limited to 1-4,000 Unicode code points. Matching the BFF, the client rejects Unicode categories Control, Format, Surrogate, PrivateUse, and OtherNotAssigned. `evaluationClock` always contains `Z`; `evaluationTimezone` is validated as an IANA timezone. The client supports the typed BFF compilation modes `regional_quarterly_profit` and `monthly_regional_comparison`, execution mode `thread`, and output modes `normal` and `stream`. The current workbench defaults are `regional-sales`, `regional_quarterly_profit`, `thread`, and `normal`.
 
 ## Summary contract
 
@@ -54,7 +54,7 @@ The Web maps pre-start states to `queued`, active and cancel-requested states to
   "runId": "run_00000000000000000000000000000001",
   "question": "Compare regional revenue",
   "sqg": {
-    "version": "0.1",
+    "version": "sqg.v0",
     "intent": "Compare regional revenue",
     "ontology": "regional-sales",
     "resolvedMembers": ["sales.region"],
@@ -114,8 +114,12 @@ After create, the client polls `GET /api/v1/runs/{id}/semantic-status` with boun
 
 Queued, active, and `Cancelled` direct lookups use BFF summary metadata alone. Cancellation never requires semantic detail because a run can be validly cancelled after the BFF reconciles a backend `404`.
 
+The client retains the complete create payload across ambiguous network, timeout, 5xx, and invalid-response failures. A retry for the same request reuses the original `clientRequestId` and evaluation clock so the BFF's idempotency contract cannot create duplicate execution. Once a create response reveals the `runId`, retries resume through semantic status and never create again. Validated summaries are fenced by BFF `version`; lower versions and equal-version state regressions are ignored, and `Cancelled`, `Succeeded`, and `Failed` are absorbing.
+
 Each otherwise independent BFF request has a 10-second deadline. The remaining deadline is propagated through token acquisition, fetch, and response-body consumption using `AbortSignal`. Allowed `404` lookup responses abort and discard their body before mapping to an absent run.
 
 The client distinguishes request, configuration, network, HTTP, invalid-response, and timeout failures. Non-success responses may use RFC 7807 Problem Details with `title`, optional `detail`, `code`, and `status`; malformed problem bodies still produce an HTTP failure without reflecting arbitrary response content.
+
+The BFF v1 run contract does not define ontology or browser-consumable component-health endpoints. HTTP mode therefore returns empty synthetic placeholders explicitly marked `unavailable` and `unknown`; it never reports the Mock ontology or a fabricated healthy component. These placeholders perform no network probe.
 
 Vitest and the primary Playwright suite use a deterministic real HTTP stub that implements this wire contract. A separate Chromium suite keeps the existing native Web Locks lease-fencing and expiry coverage for default Mock mode.
