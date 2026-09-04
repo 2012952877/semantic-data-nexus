@@ -222,7 +222,7 @@ public sealed record SemanticScalarValue
         SemanticScalarKind kind,
         string? stringValue = null,
         long integerValue = 0,
-        decimal numberValue = 0,
+        double numberValue = 0,
         bool booleanValue = false)
     {
         Kind = kind;
@@ -235,14 +235,14 @@ public sealed record SemanticScalarValue
     public SemanticScalarKind Kind { get; }
     public string? StringValue { get; }
     public long IntegerValue { get; }
-    public decimal NumberValue { get; }
+    public double NumberValue { get; }
     public bool BooleanValue { get; }
 
     public static SemanticScalarValue Null { get; } = new(SemanticScalarKind.Null);
     public static SemanticScalarValue From(string value) => new(SemanticScalarKind.String, value);
     public static SemanticScalarValue From(long value) =>
         new(SemanticScalarKind.Integer, integerValue: value);
-    public static SemanticScalarValue From(decimal value) =>
+    public static SemanticScalarValue From(double value) =>
         new(SemanticScalarKind.Number, numberValue: value);
     public static SemanticScalarValue From(bool value) =>
         new(SemanticScalarKind.Boolean, booleanValue: value);
@@ -271,9 +271,10 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
 
         if (reader.TokenType == JsonTokenType.Number)
         {
-            if (reader.TryGetInt64(out var integer))
+            if (IsIntegerToken(reader))
             {
-                if (Math.Abs((decimal)integer) > SemanticScalarLimits.MaximumIntegerMagnitude)
+                if (!reader.TryGetInt64(out var integer) ||
+                    Math.Abs((decimal)integer) > SemanticScalarLimits.MaximumIntegerMagnitude)
                 {
                     throw new JsonException("Integer result cells exceed the shared safe range.");
                 }
@@ -281,8 +282,9 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
                 return SemanticScalarValue.From(integer);
             }
 
-            if (reader.TryGetDecimal(out var number) &&
-                Math.Abs(number) <= SemanticScalarLimits.MaximumNumberMagnitude)
+            if (reader.TryGetDouble(out var number) &&
+                double.IsFinite(number) &&
+                Math.Abs(number) <= (double)SemanticScalarLimits.MaximumNumberMagnitude)
             {
                 return SemanticScalarValue.From(number);
             }
@@ -297,6 +299,29 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
             _ => throw new JsonException("Result cells must be JSON scalar values.")
         };
     }
+
+    private static bool IsIntegerToken(in Utf8JsonReader reader)
+    {
+        if (!reader.HasValueSequence)
+        {
+            return IsIntegerToken(reader.ValueSpan);
+        }
+
+        foreach (var segment in reader.ValueSequence)
+        {
+            if (!IsIntegerToken(segment.Span))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsIntegerToken(ReadOnlySpan<byte> value) =>
+        value.IndexOf((byte)'.') < 0 &&
+        value.IndexOf((byte)'e') < 0 &&
+        value.IndexOf((byte)'E') < 0;
 
     public override void Write(
         Utf8JsonWriter writer,

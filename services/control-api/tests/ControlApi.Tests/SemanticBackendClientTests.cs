@@ -201,6 +201,7 @@ public sealed class SemanticBackendClientTests
     [Theory]
     [InlineData("9007199254740992")]
     [InlineData("-9007199254740992")]
+    [InlineData("9223372036854775808")]
     [InlineData("1e29")]
     [InlineData("-1e29")]
     public async Task BackendFixtureRejectsNumericValuesOutsideSharedRange(string value)
@@ -228,6 +229,8 @@ public sealed class SemanticBackendClientTests
             "1e28");
         var negativeNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
             "-1e28");
+        var smallNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
+            "1e-29");
 
         Assert.Equal(SemanticScalarKind.Integer, positiveInteger!.Kind);
         Assert.Equal(SemanticScalarKind.Integer, negativeInteger!.Kind);
@@ -235,8 +238,9 @@ public sealed class SemanticBackendClientTests
         Assert.Equal(-SemanticScalarLimits.MaximumIntegerMagnitude, negativeInteger.IntegerValue);
         Assert.Equal(SemanticScalarKind.Number, positiveNumber!.Kind);
         Assert.Equal(SemanticScalarKind.Number, negativeNumber!.Kind);
-        Assert.Equal(SemanticScalarLimits.MaximumNumberMagnitude, positiveNumber.NumberValue);
-        Assert.Equal(-SemanticScalarLimits.MaximumNumberMagnitude, negativeNumber.NumberValue);
+        Assert.Equal((double)SemanticScalarLimits.MaximumNumberMagnitude, positiveNumber.NumberValue);
+        Assert.Equal(-(double)SemanticScalarLimits.MaximumNumberMagnitude, negativeNumber.NumberValue);
+        Assert.Equal(1e-29, smallNumber!.NumberValue);
     }
 
     [Fact]
