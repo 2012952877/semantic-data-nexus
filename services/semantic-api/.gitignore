@@ -1,0 +1,9 @@
+.artifacts/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+dist/
+*.egg-info/
+*.py[cod]

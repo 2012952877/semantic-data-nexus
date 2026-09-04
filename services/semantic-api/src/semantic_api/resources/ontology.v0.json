@@ -1,0 +1,139 @@
+{
+  "schema_version": "ontology.v0",
+  "ontology_id": "synthetic-commerce",
+  "version": "2026.1",
+  "entities": [
+    {
+      "id": "commerce.sales_record",
+      "label": "Sales record",
+      "synonyms": ["sales", "销售"],
+      "enabled": true,
+      "query_policy": "allow"
+    },
+    {
+      "id": "commerce.plan_record",
+      "label": "Plan record",
+      "synonyms": ["plan", "计划"],
+      "enabled": false,
+      "query_policy": "deny"
+    }
+  ],
+  "fields": [
+    {
+      "id": "commerce.sales_record.region",
+      "entity_id": "commerce.sales_record",
+      "label": "Region",
+      "data_type": "string",
+      "synonyms": ["regional", "地区", "区域"],
+      "members": [
+        {
+          "id": "region.east",
+          "label": "East",
+          "synonyms": ["Eastern", "东部", "华东"],
+          "enabled": true
+        },
+        {
+          "id": "region.west",
+          "label": "West",
+          "synonyms": ["Western", "西部", "西区"],
+          "enabled": true
+        },
+        {
+          "id": "region.central_north",
+          "label": "Central North",
+          "synonyms": ["Central", "中央区"],
+          "enabled": true
+        },
+        {
+          "id": "region.central_south",
+          "label": "Central South",
+          "synonyms": ["Central", "中央区"],
+          "enabled": true
+        }
+      ],
+      "enabled": true,
+      "query_policy": "allow"
+    },
+    {
+      "id": "commerce.sales_record.period",
+      "entity_id": "commerce.sales_record",
+      "label": "Period",
+      "data_type": "datetime",
+      "synonyms": ["month", "monthly", "quarter", "quarterly", "月份", "季度"],
+      "members": [],
+      "enabled": true,
+      "query_policy": "allow"
+    },
+    {
+      "id": "commerce.sales_record.note",
+      "entity_id": "commerce.sales_record",
+      "label": "Note",
+      "data_type": "string",
+      "synonyms": ["instruction", "说明"],
+      "members": [],
+      "enabled": false,
+      "query_policy": "deny"
+    },
+    {
+      "id": "commerce.plan_record.region",
+      "entity_id": "commerce.plan_record",
+      "label": "Plan region",
+      "data_type": "string",
+      "synonyms": [],
+      "members": [],
+      "enabled": false,
+      "query_policy": "deny"
+    },
+    {
+      "id": "commerce.plan_record.period",
+      "entity_id": "commerce.plan_record",
+      "label": "Plan period",
+      "data_type": "datetime",
+      "synonyms": [],
+      "members": [],
+      "enabled": false,
+      "query_policy": "deny"
+    }
+  ],
+  "metrics": [
+    {
+      "id": "metric.profit",
+      "entity_id": "commerce.sales_record",
+      "label": "Profit",
+      "data_type": "number",
+      "synonyms": ["earnings", "利润"],
+      "enabled": true,
+      "query_policy": "allow"
+    },
+    {
+      "id": "metric.revenue",
+      "entity_id": "commerce.sales_record",
+      "label": "Revenue",
+      "data_type": "number",
+      "synonyms": ["sales amount", "收入"],
+      "enabled": true,
+      "query_policy": "allow"
+    },
+    {
+      "id": "metric.secret_score",
+      "entity_id": "commerce.sales_record",
+      "label": "Restricted score",
+      "data_type": "number",
+      "synonyms": [],
+      "enabled": false,
+      "query_policy": "deny"
+    }
+  ],
+  "relations": [
+    {
+      "id": "relation.sales_to_plan",
+      "from_entity_id": "commerce.sales_record",
+      "to_entity_id": "commerce.plan_record",
+      "from_field_id": "commerce.sales_record.region",
+      "to_field_id": "commerce.plan_record.region",
+      "label": "Sales to plan",
+      "enabled": false,
+      "query_policy": "deny"
+    }
+  ]
+}
