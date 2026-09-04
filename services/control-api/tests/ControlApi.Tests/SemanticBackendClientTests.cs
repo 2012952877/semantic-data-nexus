@@ -120,6 +120,60 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public async Task DetailTransportAcceptsWorstCaseEscapedResult()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var rows = Enumerable.Range(0, 1_000)
+            .Select(_ => (IReadOnlyList<SemanticScalarValue>)
+            [
+                SemanticScalarValue.From(new string('"', 4_000)),
+                SemanticScalarValue.From("2334.00")
+            ])
+            .ToArray();
+        var detail = valid with
+        {
+            Result = valid.Result! with
+            {
+                Rows = rows,
+                RowCount = rows.Length,
+                Truncated = false
+            },
+            Manifest = valid.Manifest! with { RowCount = rows.Length }
+        };
+        var options = JsonOptions();
+        var payload = JsonSerializer.SerializeToUtf8Bytes(detail, options);
+        Assert.True(payload.Length > 8 * 1024 * 1024);
+        Assert.True(payload.Length < SemanticBackendOptions.MaximumResponseContentBytes);
+        var handler = new DelegateHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(payload)
+                {
+                    Headers =
+                    {
+                        ContentType =
+                            new System.Net.Http.Headers.MediaTypeHeaderValue(
+                                "application/json")
+                    }
+                }
+            }));
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://semantic.invalid/"),
+            MaxResponseContentBufferSize =
+                SemanticBackendOptions.MaximumResponseContentBytes
+        };
+        var client = new HttpSemanticBackendClient(
+            httpClient,
+            NullLogger<HttpSemanticBackendClient>.Instance);
+
+        var received = await client.GetDetailAsync(runId, default);
+
+        Assert.Equal(1_000, received.Result!.Rows.Count);
+    }
+
+    [Fact]
     public async Task BackendProducedDetailFixtureDeserializesAndValidates()
     {
         var runId = RunId.Parse(
@@ -416,6 +470,51 @@ public sealed class SemanticBackendClientTests
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
         Assert.Throws<JsonException>(() =>
             JsonSerializer.Deserialize<SemanticScalarValue>("{\"unsafe\":true}"));
+    }
+
+    [Fact]
+    public void DetailValidatorRejectsCorruptedResultLineageIdentity()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var resultIndex = valid.Lineage.Nodes
+            .Select((node, index) => (node, index))
+            .Single(item => item.node.Kind == SemanticLineageNodeKind.Result)
+            .index;
+        var nodes = valid.Lineage.Nodes.ToArray();
+        nodes[resultIndex] = nodes[resultIndex] with
+        {
+            ResultId = "corrupted-result-id"
+        };
+        var corrupted = valid with
+        {
+            Lineage = valid.Lineage with { Nodes = nodes }
+        };
+
+        Assert.Throws<SemanticBackendException>(() =>
+            SemanticRunDetailValidator.Validate(corrupted, runId));
+    }
+
+    [Fact]
+    public void DetailValidatorAcceptsMaximumSourceTypeIdentifier()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var sourceIndex = valid.Lineage.Nodes
+            .Select((node, index) => (node, index))
+            .Single(item => item.node.Kind == SemanticLineageNodeKind.Source)
+            .index;
+        var nodes = valid.Lineage.Nodes.ToArray();
+        nodes[sourceIndex] = nodes[sourceIndex] with
+        {
+            SourceType = new string('s', 160)
+        };
+        var detail = valid with
+        {
+            Lineage = valid.Lineage with { Nodes = nodes }
+        };
+
+        SemanticRunDetailValidator.Validate(detail, runId);
     }
 
     [Fact]

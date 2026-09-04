@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 from pathlib import Path
 
@@ -17,24 +16,30 @@ def load_generator():
     return module
 
 
-def digest(directory: Path) -> dict[str, str]:
-    return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(directory.glob("*.csv"))
-    }
-
-
 def test_generation_is_byte_deterministic(tmp_path: Path) -> None:
     generator = load_generator()
     first = tmp_path / "first"
     second = tmp_path / "second"
     generator.generate(first)
     generator.generate(second)
-    assert digest(first) == digest(second)
+    assert generator.corpus_digest(first) == generator.corpus_digest(second)
 
 
 def test_checked_in_data_matches_generator(tmp_path: Path) -> None:
     generator = load_generator()
     regenerated = tmp_path / "generated"
     generator.generate(regenerated)
-    assert digest(regenerated) == digest(ROOT / "data" / "synthetic" / "generated")
+    assert generator.corpus_digest(regenerated) == generator.corpus_digest(
+        ROOT / "data" / "synthetic" / "generated"
+    )
+
+
+def test_digest_is_stable_across_checkout_line_endings(tmp_path: Path) -> None:
+    generator = load_generator()
+    lf = tmp_path / "lf"
+    crlf = tmp_path / "crlf"
+    lf.mkdir()
+    crlf.mkdir()
+    (lf / "sample.csv").write_bytes(b"id,value\n1,synthetic\n")
+    (crlf / "sample.csv").write_bytes(b"id,value\r\n1,synthetic\r\n")
+    assert generator.corpus_digest(lf) == generator.corpus_digest(crlf)

@@ -128,5 +128,6 @@ The route group applies the existing authentication and per-principal/IP rate
 limit. BFF errors are RFC 7807 Problem Details. Invalid local IDs return 400,
 missing local runs return 404, semantic-backend timeouts return 504, and
 transport failures, non-success responses, or invalid backend payloads return
-502. The HTTP client buffers no more than 1 MiB and uses the configured
-1-30 second timeout.
+502. The semantic backend rejects a full serialized detail above 24 MiB. The
+HTTP client buffers no more than 32 MiB, leaving explicit envelope/transport
+headroom, and uses the configured 1-30 second timeout.
