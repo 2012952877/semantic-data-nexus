@@ -37,8 +37,19 @@ const runStates = ['queued', 'running', 'succeeded', 'empty', 'failed', 'cancele
 const scenarios = ['success', 'empty', 'failure'] as const
 const stageKeys = ['initialize', 'compile', 'optimize', 'execute', 'generate'] as const
 const stageStates = ['pending', 'running', 'succeeded', 'failed', 'canceled'] as const
-const nodeKinds = ['AGGREGATE', 'PIVOT', 'DERIVE', 'PROJECT'] as const
-const columnFormats = ['text', 'currency', 'percent', 'number'] as const
+const nodeKinds = [
+  'SOURCE',
+  'SELECT',
+  'FILTER',
+  'AGGREGATE',
+  'PIVOT',
+  'DERIVE',
+  'PROJECT',
+  'SORT',
+  'LIMIT',
+  'JOIN',
+] as const
+const columnFormats = ['text', 'currency', 'percent', 'number', 'date', 'timestamp'] as const
 const diagnosticSeverities = ['info', 'warning', 'error'] as const
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -100,9 +111,10 @@ const isResultColumn = (value: unknown): value is ResultColumn =>
   && isString(value.label)
   && isEnumValue(value.format, columnFormats)
 
-const isResultRow = (value: unknown): value is Record<string, string | number> =>
+const isResultRow = (value: unknown): value is ResultSet['rows'][number] =>
   isRecord(value)
-  && Object.values(value).every((cell) => isString(cell) || isFiniteNumber(cell))
+  && Object.values(value).every((cell) =>
+    cell === null || typeof cell === 'boolean' || isString(cell) || isFiniteNumber(cell))
 
 const isResult = (value: unknown): value is ResultSet =>
   isRecord(value)
@@ -111,8 +123,12 @@ const isResult = (value: unknown): value is ResultSet =>
   && Array.isArray(value.rows)
   && value.rows.every(isResultRow)
   && isNumber(value.rowCount)
-  && value.rowCount === value.rows.length
+  && value.rowCount >= value.rows.length
   && isString(value.coverage)
+  && (value.truncated === undefined || typeof value.truncated === 'boolean')
+  && (value.truncated === true
+    ? value.rowCount > value.rows.length
+    : value.rowCount === value.rows.length)
 
 const isLineageSource = (value: unknown): value is LineageSource =>
   isRecord(value)

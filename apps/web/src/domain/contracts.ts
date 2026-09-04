@@ -28,7 +28,17 @@ export interface Stage {
   durationMs?: number
 }
 
-export type NodeKind = 'AGGREGATE' | 'PIVOT' | 'DERIVE' | 'PROJECT'
+export type NodeKind =
+  | 'SOURCE'
+  | 'SELECT'
+  | 'FILTER'
+  | 'AGGREGATE'
+  | 'PIVOT'
+  | 'DERIVE'
+  | 'PROJECT'
+  | 'SORT'
+  | 'LIMIT'
+  | 'JOIN'
 
 export interface PlanNode {
   id: string
@@ -42,14 +52,17 @@ export interface PlanNode {
 export interface ResultColumn {
   key: string
   label: string
-  format: 'text' | 'currency' | 'percent' | 'number'
+  format: 'text' | 'currency' | 'percent' | 'number' | 'date' | 'timestamp'
 }
+
+export type ResultCell = string | number | boolean | null
 
 export interface ResultSet {
   columns: ResultColumn[]
-  rows: Array<Record<string, string | number>>
+  rows: Array<Record<string, ResultCell>>
   rowCount: number
   coverage: string
+  truncated?: boolean
 }
 
 export interface LineageSource {

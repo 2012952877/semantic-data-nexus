@@ -4,7 +4,7 @@
   "exclude": ["dist"],
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
-    "types": ["vitest/globals"],
+    "types": ["vitest/globals", "vite/client"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "paths": {

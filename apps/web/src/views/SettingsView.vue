@@ -8,6 +8,7 @@ const client = inject(nexusClientKey)
 if (!client) throw new Error('SemanticNexusClient is not provided')
 
 const statuses = ref<ComponentStatus[]>([])
+const isMock = client.mode === 'mock'
 
 onMounted(async () => {
   statuses.value = await client.getComponentStatus()
@@ -43,8 +44,9 @@ onMounted(async () => {
         <path d="m9 12 2 2 4-4" />
       </svg>
       <div>
-        <h2>严格 Mock 边界</h2>
-        <p>所有状态均为确定性本地夹具；不会调用 Azure、DuckDB 服务或任何外部模型端点。</p>
+        <h2>{{ isMock ? '严格 Mock 边界' : 'BFF 网络边界' }}</h2>
+        <p v-if="isMock">所有状态均为确定性本地夹具；不会调用 Azure、DuckDB 服务或任何外部模型端点。</p>
+        <p v-else>浏览器只调用已配置的控制面 BFF；响应在进入界面前会经过完整运行时校验。</p>
       </div>
     </aside>
   </div>

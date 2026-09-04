@@ -14,9 +14,18 @@ const client = inject(nexusClientKey)
 if (!client) throw new Error('SemanticNexusClient is not provided')
 
 const runs = ref<Run[]>([])
+const errorMessage = ref('')
 
 const loadRuns = async () => {
-  runs.value = await client.listRuns()
+  try {
+    runs.value = await client.listRuns()
+    errorMessage.value = ''
+  } catch (error) {
+    runs.value = []
+    errorMessage.value = error instanceof Error
+      ? error.message
+      : '无法读取运行记录。'
+  }
 }
 
 const handleStorage = (event: StorageEvent) => {
@@ -94,7 +103,9 @@ const formatTime = (value: string) =>
             </span>
           </div>
           <div v-if="!runs.length" class="empty-row" role="row">
-            <span role="cell" aria-colspan="4">还没有运行记录。</span>
+            <span role="cell" aria-colspan="4">
+              {{ errorMessage || '还没有运行记录。' }}
+            </span>
           </div>
         </div>
       </div>

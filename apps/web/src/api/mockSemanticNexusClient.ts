@@ -67,6 +67,7 @@ class RunLeaseLostError extends Error {
 }
 
 export class MockSemanticNexusClient implements SemanticNexusClient {
+  readonly mode = 'mock' as const
   private runs = new Map<string, Run>()
   private canceled = new Set<string>()
   private leaseExpiryTimers = new Map<string, number>()

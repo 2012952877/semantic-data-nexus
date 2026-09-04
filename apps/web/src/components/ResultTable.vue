@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import type { ResultColumn, ResultSet } from '@/domain'
+import type { ResultCell, ResultColumn, ResultSet } from '@/domain'
 
 defineProps<{ result: ResultSet }>()
 
-const formatValue = (value: string | number, column: ResultColumn) => {
+const formatValue = (value: ResultCell, column: ResultColumn) => {
+  if (value === null) return '—'
   if (column.format === 'currency' && typeof value === 'number') {
     return new Intl.NumberFormat('zh-CN', {
       style: 'currency',

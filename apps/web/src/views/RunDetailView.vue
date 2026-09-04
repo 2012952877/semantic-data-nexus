@@ -17,11 +17,18 @@ if (!client) throw new Error('SemanticNexusClient is not provided')
 const route = useRoute()
 const run = ref<Run>()
 const loading = ref(true)
+const errorMessage = ref('')
 
 const load = async (showLoading = true) => {
   if (showLoading) loading.value = true
   try {
     run.value = await client.getRun(String(route.params.id))
+    errorMessage.value = ''
+  } catch (error) {
+    run.value = undefined
+    errorMessage.value = error instanceof Error
+      ? error.message
+      : '无法读取运行详情。'
   } finally {
     if (showLoading) loading.value = false
   }
@@ -55,8 +62,8 @@ watch(() => route.params.id, () => load())
   <div v-if="loading" class="page-shell" aria-live="polite">正在读取运行记录…</div>
   <RunDetailContent v-else-if="run" :run="run" />
   <div v-else class="page-shell not-found" role="alert">
-    <h1>找不到这条运行记录</h1>
-    <p>它可能来自其他浏览器，或本地 Mock 历史已被清除。</p>
+    <h1>{{ errorMessage ? '无法读取运行详情' : '找不到这条运行记录' }}</h1>
+    <p>{{ errorMessage || '这条运行记录可能不存在或已经被清除。' }}</p>
     <RouterLink class="primary-button" to="/runs">返回运行记录</RouterLink>
   </div>
 </template>

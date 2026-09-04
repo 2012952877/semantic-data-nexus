@@ -113,4 +113,23 @@ describe('ask workflow', () => {
     expect(submit.attributes('disabled')).toBeUndefined()
     expect(document.activeElement).toBe(alert.element)
   })
+
+  it('keeps an active run visible when cancellation delivery fails', async () => {
+    const client = new MockSemanticNexusClient(20, false)
+    vi.spyOn(client, 'cancelRun').mockRejectedValue(new Error('取消端点暂不可用。'))
+    const wrapper = mountAsk(client)
+    await askQuestion(wrapper)
+
+    await wrapper.get('button.secondary-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('原运行仍在继续')
+    expect(wrapper.text()).toContain('取消端点暂不可用')
+    expect(wrapper.get('button.secondary-button').text()).toContain('取消运行')
+
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    expect(wrapper.text()).toContain('结果已提交')
+    expect(wrapper.text()).not.toContain('原运行仍在继续')
+  })
 })

@@ -22,6 +22,8 @@ const currentRun = ref<Run>()
 const submitting = ref(false)
 const alertPanel = ref<HTMLElement>()
 const formError = ref('')
+const cancelError = ref('')
+const isMock = client.mode === 'mock'
 
 const requestForCurrentInput = (): AskRequest => ({
   question: question.value.trim(),
@@ -36,9 +38,11 @@ const submit = async () => {
   submitting.value = true
   currentRun.value = undefined
   formError.value = ''
+  cancelError.value = ''
   try {
     const result = await client.startRun(requestForCurrentInput(), (run) => {
       currentRun.value = run
+      cancelError.value = ''
     })
     currentRun.value = result
     if (result.state === 'failed' || result.state === 'empty') {
@@ -49,7 +53,7 @@ const submit = async () => {
     currentRun.value = undefined
     formError.value = error instanceof Error
       ? error.message
-      : '运行未能启动。请检查浏览器本地存储设置后重试。'
+      : '运行未能启动。请检查客户端配置和服务连接后重试。'
     await nextTick()
     alertPanel.value?.focus()
   } finally {
@@ -59,7 +63,16 @@ const submit = async () => {
 
 const cancel = async () => {
   if (!currentRun.value) return
-  await client.cancelRun(currentRun.value.id)
+  try {
+    currentRun.value = await client.cancelRun(currentRun.value.id)
+  } catch (error) {
+    if (submitting.value
+      && (currentRun.value?.state === 'queued' || currentRun.value?.state === 'running')) {
+      cancelError.value = error instanceof Error
+        ? error.message
+        : '取消请求未能送达。请稍后重试。'
+    }
+  }
 }
 
 const retry = () => submit()
@@ -110,7 +123,7 @@ const useExample = (example: string) => {
           </dl>
         </div>
 
-        <details class="scenario-settings">
+        <details v-if="isMock" class="scenario-settings">
           <summary>Mock 场景与执行设置</summary>
           <fieldset>
             <legend>模拟场景</legend>
@@ -156,6 +169,13 @@ const useExample = (example: string) => {
 
       <StageProgress :stages="currentRun?.stages ?? createStages()" />
 
+      <div v-if="cancelError" class="inline-outcome outcome-error" role="alert">
+        <span>取消未送达</span>
+        <h3>原运行仍在继续</h3>
+        <p>{{ cancelError }}</p>
+        <strong>可以再次取消，或等待当前运行完成。</strong>
+      </div>
+
       <div
         v-if="formError"
         ref="alertPanel"
@@ -164,9 +184,10 @@ const useExample = (example: string) => {
         tabindex="-1"
       >
         <span>运行未启动</span>
-        <h3>无法保存本地运行记录</h3>
+        <h3>{{ isMock ? '无法保存本地运行记录' : '无法连接运行服务' }}</h3>
         <p>{{ formError }}</p>
-        <strong>释放浏览器存储空间或允许本地存储，然后重试。</strong>
+        <strong v-if="isMock">释放浏览器存储空间或允许本地存储，然后重试。</strong>
+        <strong v-else>检查客户端模式、BFF 地址和网络连接，然后重试。</strong>
         <button class="secondary-button" type="button" @click="retry">重试当前问题</button>
       </div>
 
