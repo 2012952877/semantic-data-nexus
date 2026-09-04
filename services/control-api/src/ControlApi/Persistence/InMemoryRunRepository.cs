@@ -61,19 +61,19 @@ public sealed class InMemoryRunRepository(TimeProvider timeProvider) : IRunRepos
             createKeys.Add(key, run.Id);
             return Task.FromResult(new CreateRunResult(run, true));
         }
-
-        private static bool Matches(RunMetadata run, CreateRunRequest request) =>
-            string.Equals(run.Workload, request.Workload, StringComparison.Ordinal) &&
-            string.Equals(run.Question, request.Question, StringComparison.Ordinal) &&
-            run.EvaluationClock == request.EvaluationClock &&
-            string.Equals(
-                run.EvaluationTimezone,
-                request.EvaluationTimezone,
-                StringComparison.Ordinal) &&
-            run.CompilationMode == request.CompilationMode &&
-            run.ExecutionMode == request.ExecutionMode &&
-            run.OutputMode == request.OutputMode;
     }
+
+    private static bool Matches(RunMetadata run, CreateRunRequest request) =>
+        string.Equals(run.Workload, request.Workload, StringComparison.Ordinal) &&
+        string.Equals(run.Question, request.Question, StringComparison.Ordinal) &&
+        run.EvaluationClock == request.EvaluationClock &&
+        string.Equals(
+            run.EvaluationTimezone,
+            request.EvaluationTimezone,
+            StringComparison.Ordinal) &&
+        run.CompilationMode == request.CompilationMode &&
+        run.ExecutionMode == request.ExecutionMode &&
+        run.OutputMode == request.OutputMode;
 
     public Task<IReadOnlyList<RunMetadata>> ListAsync(int limit, CancellationToken cancellationToken)
     {
