@@ -138,6 +138,14 @@ public sealed class HttpSemanticBackendClient(
                 failureKind: SemanticFailureKind.InvalidResponse,
                 innerException: exception);
         }
+        catch (InvalidOperationException exception)
+        {
+            throw new SemanticBackendException(
+                "semantic_backend_invalid_response",
+                "The semantic backend returned an invalid detail response.",
+                failureKind: SemanticFailureKind.InvalidResponse,
+                innerException: exception);
+        }
         catch (NotSupportedException exception)
         {
             throw new SemanticBackendException(
@@ -206,6 +214,14 @@ public sealed class HttpSemanticBackendClient(
             }
         }
         catch (JsonException exception)
+        {
+            throw new SemanticBackendException(
+                "semantic_backend_invalid_response",
+                "The semantic backend returned an invalid response.",
+                failureKind: SemanticFailureKind.InvalidResponse,
+                innerException: exception);
+        }
+        catch (InvalidOperationException exception)
         {
             throw new SemanticBackendException(
                 "semantic_backend_invalid_response",

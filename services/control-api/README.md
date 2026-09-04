@@ -87,7 +87,9 @@ metadata is limited to 64 ASCII identifier characters and must begin with a
 letter or digit. Questions are limited to 4,000 Unicode scalar values and may
 not contain Unicode control, format, surrogate, private-use, or unassigned
 characters. `evaluationClock` requires an explicit UTC offset,
-`evaluationTimezone` must be an IANA identifier (including `UTC`),
+`evaluationTimezone` must be exact `UTC` or a canonical slash-separated IANA
+identifier. Validation is lexical and therefore independent of host timezone
+data; single-component aliases such as `CET`, `GMT`, and `Japan` are rejected.
 `compilationMode` is `regional_quarterly_profit` or
 `monthly_regional_comparison`, `executionMode` is `thread`, and `outputMode`
 is `normal` or `stream`. All fields participate in idempotency conflict
@@ -130,7 +132,9 @@ identity. Do not place tokens, connection strings, or credentials in files.
   lineage, manifest, or diagnostic collections. Integer cells are limited to
   the interoperable range -9,007,199,254,740,991 through
   9,007,199,254,740,991. Float cells are finite JSON numbers with absolute
-  values at or below 10^28. Decimal cells are canonical fixed-point JSON
+  values at or below 10^28; integral float values remain within the safe
+  integer range so every accepted scalar round-trips without changing JSON
+  token kind. Decimal cells are canonical fixed-point JSON
   strings with absolute values at or below 10^28, at most 29 significant
   digits, and scale 28 so precision and trailing scale survive the Python/.NET
   boundary.

@@ -79,95 +79,98 @@ public enum SemanticDiagnosticScope
     Node
 }
 
-public sealed record SemanticSqgFilter(string Field, string Operator, string Value);
+public sealed record SemanticSqgFilter(
+    [property: JsonRequired] string Field,
+    [property: JsonRequired] string Operator,
+    [property: JsonRequired] string Value);
 
 public sealed record SemanticSqgSummary(
-    string Version,
-    string Intent,
-    string Ontology,
-    IReadOnlyList<string> ResolvedMembers,
-    IReadOnlyList<string> Metrics,
-    IReadOnlyList<string> Dimensions,
-    IReadOnlyList<SemanticSqgFilter> Filters,
-    IReadOnlyList<string> PolicyChecks);
+    [property: JsonRequired] string Version,
+    [property: JsonRequired] string Intent,
+    [property: JsonRequired] string Ontology,
+    [property: JsonRequired] IReadOnlyList<string> ResolvedMembers,
+    [property: JsonRequired] IReadOnlyList<string> Metrics,
+    [property: JsonRequired] IReadOnlyList<string> Dimensions,
+    [property: JsonRequired] IReadOnlyList<SemanticSqgFilter> Filters,
+    [property: JsonRequired] IReadOnlyList<string> PolicyChecks);
 
 public sealed record SemanticPhysicalNode(
-    string Id,
+    [property: JsonRequired] string Id,
     [property: JsonRequired] SemanticOperatorKind Kind,
-    string Label,
-    string PlainLanguage,
-    IReadOnlyList<string> Inputs,
-    IReadOnlyList<string> OutputFields);
+    [property: JsonRequired] string Label,
+    [property: JsonRequired] string PlainLanguage,
+    [property: JsonRequired] IReadOnlyList<string> Inputs,
+    [property: JsonRequired] IReadOnlyList<string> OutputFields);
 
 public sealed record SemanticResultColumn(
-    string Key,
-    string Label,
+    [property: JsonRequired] string Key,
+    [property: JsonRequired] string Label,
     [property: JsonRequired] SemanticScalarType DataType,
     [property: JsonRequired] SemanticColumnFormat Format,
     [property: JsonRequired] bool Nullable);
 
 public sealed record SemanticResultSet(
-    IReadOnlyList<SemanticResultColumn> Columns,
-    IReadOnlyList<IReadOnlyList<SemanticScalarValue>> Rows,
+    [property: JsonRequired] IReadOnlyList<SemanticResultColumn> Columns,
+    [property: JsonRequired] IReadOnlyList<IReadOnlyList<SemanticScalarValue>> Rows,
     [property: JsonRequired] long RowCount,
     [property: JsonRequired] bool Truncated);
 
 public sealed record SemanticCommittedManifest(
-    string ResultId,
-    RunId RunId,
-    string NodeId,
+    [property: JsonRequired] string ResultId,
+    [property: JsonRequired] RunId RunId,
+    [property: JsonRequired] string NodeId,
     [property: JsonRequired] SemanticResultStorage Storage,
-    string Uri,
+    [property: JsonRequired] string Uri,
     [property: JsonRequired] long RowCount,
     [property: JsonRequired] long ByteCount,
-    string Checksum,
-    DateTimeOffset CommittedAt);
+    [property: JsonRequired] string Checksum,
+    [property: JsonRequired] DateTimeOffset CommittedAt);
 
 public sealed record SemanticLineageParameter(
-    string Name,
+    [property: JsonRequired] string Name,
     [property: JsonRequired] SemanticScalarType DataType);
 
 public sealed record SemanticLineageNode(
-    string Id,
+    [property: JsonRequired] string Id,
     [property: JsonRequired] SemanticLineageNodeKind Kind,
-    string? Operation,
-    string? SourceAlias,
-    string? SourceType,
-    string? ResultId,
-    IReadOnlyList<SemanticLineageParameter> Parameters);
+    [property: JsonRequired] string? Operation,
+    [property: JsonRequired] string? SourceAlias,
+    [property: JsonRequired] string? SourceType,
+    [property: JsonRequired] string? ResultId,
+    [property: JsonRequired] IReadOnlyList<SemanticLineageParameter> Parameters);
 
 public sealed record SemanticLineageEdge(
-    string Source,
-    string Target,
+    [property: JsonRequired] string Source,
+    [property: JsonRequired] string Target,
     [property: JsonRequired] SemanticLineageRelation Relation);
 
 public sealed record SemanticLineage(
-    string Version,
-    RunId RunId,
-    IReadOnlyList<SemanticLineageNode> Nodes,
-    IReadOnlyList<SemanticLineageEdge> Edges);
+    [property: JsonRequired] string Version,
+    [property: JsonRequired] RunId RunId,
+    [property: JsonRequired] IReadOnlyList<SemanticLineageNode> Nodes,
+    [property: JsonRequired] IReadOnlyList<SemanticLineageEdge> Edges);
 
 public sealed record SemanticDetailDiagnostic(
     [property: JsonRequired] long Sequence,
-    RunId RunId,
+    [property: JsonRequired] RunId RunId,
     [property: JsonRequired] SemanticDiagnosticScope Scope,
-    string ScopeId,
-    string Code,
-    string Title,
-    string Message,
-    string Recovery,
+    [property: JsonRequired] string ScopeId,
+    [property: JsonRequired] string Code,
+    [property: JsonRequired] string Title,
+    [property: JsonRequired] string Message,
+    [property: JsonRequired] string Recovery,
     [property: JsonRequired] SemanticDiagnosticSeverity Severity,
-    DateTimeOffset OccurredAt);
+    [property: JsonRequired] DateTimeOffset OccurredAt);
 
 public sealed record SemanticRunDetail(
-    RunId RunId,
-    string Question,
-    SemanticSqgSummary Sqg,
-    IReadOnlyList<SemanticPhysicalNode> PhysicalNodes,
+    [property: JsonRequired] RunId RunId,
+    [property: JsonRequired] string Question,
+    [property: JsonRequired] SemanticSqgSummary Sqg,
+    [property: JsonRequired] IReadOnlyList<SemanticPhysicalNode> PhysicalNodes,
     SemanticResultSet? Result,
     SemanticCommittedManifest? Manifest,
-    SemanticLineage Lineage,
-    IReadOnlyList<SemanticDetailDiagnostic> Diagnostics);
+    [property: JsonRequired] SemanticLineage Lineage,
+    [property: JsonRequired] IReadOnlyList<SemanticDetailDiagnostic> Diagnostics);
 
 public static class SemanticJsonContractOptions
 {
@@ -242,10 +245,31 @@ public sealed record SemanticScalarValue
 
     public static SemanticScalarValue Null { get; } = new(SemanticScalarKind.Null);
     public static SemanticScalarValue From(string value) => new(SemanticScalarKind.String, value);
-    public static SemanticScalarValue From(long value) =>
-        new(SemanticScalarKind.Integer, integerValue: value);
-    public static SemanticScalarValue From(double value) =>
-        new(SemanticScalarKind.Number, numberValue: value);
+    public static SemanticScalarValue From(long value)
+    {
+        if (Math.Abs((decimal)value) > SemanticScalarLimits.MaximumIntegerMagnitude)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "Integers must remain within the shared safe-integer range.");
+        }
+
+        return new(SemanticScalarKind.Integer, integerValue: value);
+    }
+    public static SemanticScalarValue From(double value)
+    {
+        if (!double.IsFinite(value) ||
+            Math.Abs(value) > (double)SemanticScalarLimits.MaximumNumberMagnitude ||
+            Math.Truncate(value) == value &&
+            Math.Abs(value) > SemanticScalarLimits.MaximumIntegerMagnitude)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "Numbers must be finite, bounded, and round-trip as JSON numbers.");
+        }
+
+        return new(SemanticScalarKind.Number, numberValue: value);
+    }
     public static SemanticScalarValue From(bool value) =>
         new(SemanticScalarKind.Boolean, booleanValue: value);
 }
@@ -286,7 +310,9 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
 
             if (reader.TryGetDouble(out var number) &&
                 double.IsFinite(number) &&
-                Math.Abs(number) <= (double)SemanticScalarLimits.MaximumNumberMagnitude)
+                Math.Abs(number) <= (double)SemanticScalarLimits.MaximumNumberMagnitude &&
+                (Math.Truncate(number) != number ||
+                 Math.Abs(number) <= SemanticScalarLimits.MaximumIntegerMagnitude))
             {
                 return SemanticScalarValue.From(number);
             }
@@ -342,7 +368,7 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
                 writer.WriteNumberValue(value.IntegerValue);
                 break;
             case SemanticScalarKind.Number:
-                writer.WriteNumberValue(value.NumberValue);
+                WriteNumber(writer, value.NumberValue);
                 break;
             case SemanticScalarKind.Boolean:
                 writer.WriteBooleanValue(value.BooleanValue);
@@ -350,6 +376,19 @@ public sealed class SemanticScalarValueJsonConverter : JsonConverter<SemanticSca
             default:
                 throw new JsonException("Unsupported scalar value.");
         }
+    }
+
+    private static void WriteNumber(Utf8JsonWriter writer, double value)
+    {
+        var text = value.ToString("R", CultureInfo.InvariantCulture);
+        if (!text.Contains('.') &&
+            !text.Contains('E') &&
+            !text.Contains('e'))
+        {
+            text += ".0";
+        }
+
+        writer.WriteRawValue(text);
     }
 }
 

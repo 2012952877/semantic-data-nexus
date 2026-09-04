@@ -26,8 +26,10 @@ All eight fields are required, and unknown JSON members are rejected.
 or `-` and begin with a letter or digit. `question` is 1-4,000 Unicode scalar
 values and rejects Unicode category C characters (control, format, surrogate,
 private-use, and unassigned). `evaluationClock` must contain `Z` or an explicit
-numeric UTC offset, and `evaluationTimezone` must be a valid IANA name,
-including the `UTC` link. Compilation mode is `regional_quarterly_profit` or
+numeric UTC offset. `evaluationTimezone` must be exact `UTC` or a canonical
+slash-separated ASCII IANA name. This check is lexical and host-independent;
+single-component aliases such as `CET`, `GMT`, and `Japan` are rejected.
+Compilation mode is `regional_quarterly_profit` or
 `monthly_regional_comparison`; execution mode is `thread`; output mode is
 `normal` or `stream`.
 
@@ -100,7 +102,9 @@ Result data is column-oriented by schema: each row is an array whose cell at
 index `n` must match column `n`. Cells may only be JSON null, string, integer,
 finite number, or boolean values. Integers use the interoperable range
 `[-9007199254740991, 9007199254740991]`. Float cells are finite JSON numbers
-with absolute value at most `10^28`. Decimal cells are canonical fixed-point
+with absolute value at most `10^28`; integral float values are also limited to
+the safe-integer range so serialization preserves the number token. Decimal
+cells are canonical fixed-point
 JSON strings with no exponent or leading zero, at most 29 significant digits,
 scale at most 28, and absolute value at most `10^28`; the string representation
 preserves trailing scale. Booleans are not integers. Dates are `yyyy-MM-dd`
@@ -113,6 +117,8 @@ also rejects unknown JSON properties, duplicate node or column IDs, invalid
 references, out-of-order diagnostic sequences, mismatched nested run IDs, and
 a question that differs from the persisted create request. Governed enum,
 boolean, and count members are required rather than defaulted when absent.
+OpenAPI marks every JSON-required member and distinguishes nullable optional
+result/manifest members from required nullable lineage-node fields.
 
 ## Errors and transport
 

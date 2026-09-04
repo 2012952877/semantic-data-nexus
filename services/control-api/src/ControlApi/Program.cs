@@ -41,6 +41,8 @@ builder.Services.AddSwaggerGen(options =>
         Description = "Microsoft Entra bearer token."
     });
     options.OperationFilter<OpenApiSecurityOperationFilter>();
+    options.SchemaFilter<JsonRequiredSchemaFilter>();
+    options.UseAllOfToExtendReferenceSchemas();
     options.MapType<RunId>(() => new OpenApiSchema
     {
         Type = "string",
@@ -64,7 +66,8 @@ builder.Services.AddSwaggerGen(options =>
                 Type = "number",
                 Format = "double",
                 Minimum = -SemanticScalarLimits.MaximumNumberMagnitude,
-                Maximum = SemanticScalarLimits.MaximumNumberMagnitude
+                Maximum = SemanticScalarLimits.MaximumNumberMagnitude,
+                Not = new OpenApiSchema { Type = "integer" }
             },
             new OpenApiSchema { Type = "boolean" }
         ]

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -222,7 +223,7 @@ public sealed class ApiEndpointTests
 
     [Theory]
     [InlineData("question", " ", "invalid_question")]
-    [InlineData("evaluationTimezone", "Not/AZone", "invalid_evaluation_timezone")]
+    [InlineData("evaluationTimezone", "Not//AZone", "invalid_evaluation_timezone")]
     public async Task InvalidRunRequestFieldsReturnStableProblems(
         string field,
         string value,
@@ -373,6 +374,7 @@ public sealed class ApiEndpointTests
     [InlineData("America/New_York")]
     [InlineData("Etc/UTC")]
     [InlineData("UTC")]
+    [InlineData("Synthetic/Zone")]
     public async Task IanaTimeZonesAreAcceptedWithInvariantGlobalization(string timeZone)
     {
         await using var factory = new ControlApiFactory();
@@ -400,6 +402,57 @@ public sealed class ApiEndpointTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("invalid_evaluation_timezone", Extension(problem!, "code"));
+    }
+
+    [Theory]
+    [InlineData("CET")]
+    [InlineData("GMT")]
+    [InlineData("Japan")]
+    [InlineData("Asia//Shanghai")]
+    [InlineData("Asia/Shang.hai")]
+    [InlineData("Asia/ComponentLongerThan14")]
+    public async Task NonCanonicalIanaAliasesAreRejected(string timeZone)
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        var request = ValidCreateRequest("invalid-iana-alias") with
+        {
+            EvaluationTimezone = timeZone
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/runs", request, JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_evaluation_timezone", Extension(problem!, "code"));
+    }
+
+    [Fact]
+    public async Task UnpairedSurrogateInRequestMapsToBadRequest()
+    {
+        await using var factory = new ControlApiFactory();
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using var content = new StringContent(
+            """
+            {
+              "clientRequestId": "invalid-surrogate",
+              "workload": "synthetic-workload",
+              "question": "\uD800",
+              "evaluationClock": "2026-08-15T09:00:00+08:00",
+              "evaluationTimezone": "UTC",
+              "compilationMode": "regional_quarterly_profit",
+              "executionMode": "thread",
+              "outputMode": "normal"
+            }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/api/v1/runs", content);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_request", Extension(problem!, "code"));
     }
 
     [Theory]
@@ -805,6 +858,49 @@ public sealed class ApiEndpointTests
         Assert.Equal(
             SemanticScalarLimits.MaximumNumberMagnitude,
             scalarAlternatives[2].GetProperty("maximum").GetDecimal());
+        Assert.Equal(
+            "integer",
+            scalarAlternatives[2].GetProperty("not").GetProperty("type").GetString());
+        var detailRequired = schemas
+            .GetProperty(nameof(SemanticRunDetail))
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        Assert.Equal(
+            new[] { "runId", "question", "sqg", "physicalNodes", "lineage", "diagnostics" }
+                .Order(),
+            detailRequired.Order());
+        var detailProperties = schemas.GetProperty(nameof(SemanticRunDetail))
+            .GetProperty("properties");
+        Assert.False(
+            detailProperties.GetProperty("question").TryGetProperty("nullable", out var questionNullable) &&
+            questionNullable.GetBoolean());
+        Assert.True(detailProperties.GetProperty("result").GetProperty("nullable").GetBoolean());
+        Assert.True(detailProperties.GetProperty("manifest").GetProperty("nullable").GetBoolean());
+        Assert.DoesNotContain("result", detailRequired);
+        Assert.DoesNotContain("manifest", detailRequired);
+        var resultRequired = schemas.GetProperty(nameof(SemanticResultSet))
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        Assert.Equal(
+            new[] { "columns", "rows", "rowCount", "truncated" }.Order(),
+            resultRequired.Order());
+        var lineageNodeSchema = schemas.GetProperty(nameof(SemanticLineageNode));
+        Assert.Contains(
+            "operation",
+            lineageNodeSchema
+                .GetProperty("required")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.True(
+            lineageNodeSchema
+                .GetProperty("properties")
+                .GetProperty("operation")
+                .GetProperty("nullable")
+                .GetBoolean());
     }
 
     [Fact]

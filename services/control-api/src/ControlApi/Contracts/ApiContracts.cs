@@ -116,6 +116,7 @@ public static class JsonContractOptions
 {
     public static void Configure(JsonSerializerOptions options)
     {
+        options.Converters.Add(new StrictStringJsonConverter());
         options.Converters.Add(new JsonStringEnumConverter<CompilationMode>(
             JsonNamingPolicy.SnakeCaseLower,
             allowIntegerValues: false));
@@ -126,6 +127,32 @@ public static class JsonContractOptions
             JsonNamingPolicy.CamelCase,
             allowIntegerValues: false));
         options.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: false));
+    }
+
+    public sealed class StrictStringJsonConverter : JsonConverter<string>
+    {
+        public override string? Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options)
+        {
+            try
+            {
+                return reader.GetString();
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new JsonException(
+                    "JSON strings must contain valid Unicode scalar values.",
+                    exception);
+            }
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            string value,
+            JsonSerializerOptions options) =>
+            writer.WriteStringValue(value);
     }
 
     public sealed class SnakeCaseCompilationModeJsonConverter()

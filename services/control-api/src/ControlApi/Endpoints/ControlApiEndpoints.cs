@@ -15,17 +15,6 @@ namespace ControlApi.Endpoints;
 
 public static class ControlApiEndpoints
 {
-    private static readonly HashSet<string> SingleComponentIanaTimeZones =
-        new(StringComparer.Ordinal)
-        {
-            "CET", "CST6CDT", "Cuba", "EET", "Egypt", "Eire", "EST", "EST5EDT",
-            "Factory", "GB", "GB-Eire", "GMT", "GMT+0", "GMT-0", "GMT0", "Greenwich",
-            "HST", "Hongkong", "Iceland", "Iran", "Israel", "Jamaica", "Japan",
-            "Kwajalein", "Libya", "MET", "MST", "MST7MDT", "NZ", "NZ-CHAT", "Navajo",
-            "PRC", "PST8PDT", "Poland", "Portugal", "ROC", "ROK", "Singapore", "Turkey",
-            "UCT", "UTC", "Universal", "W-SU", "WET", "Zulu"
-        };
-
     public static IEndpointRouteBuilder MapControlApi(this IEndpointRouteBuilder endpoints)
     {
         var api = endpoints.MapGroup("/api/v1")
@@ -585,27 +574,30 @@ public static class ControlApiEndpoints
 
     private static bool IsIanaTimeZone(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value) ||
-            value.Length > 100 ||
-            (!value.Contains('/') && !SingleComponentIanaTimeZones.Contains(value)))
+        if (value == "UTC")
+        {
+            return true;
+        }
+
+        if (string.IsNullOrEmpty(value) || value.Length > 100)
         {
             return false;
         }
 
-        try
-        {
-            var zone = TimeZoneInfo.FindSystemTimeZoneById(value);
-            _ = zone.GetUtcOffset(DateTimeOffset.UnixEpoch);
-            return true;
-        }
-        catch (TimeZoneNotFoundException)
-        {
-            return false;
-        }
-        catch (InvalidTimeZoneException)
+        var segments = value.Split('/');
+        return segments.Length >= 2 && segments.All(IsCanonicalIanaSegment);
+    }
+
+    private static bool IsCanonicalIanaSegment(string segment)
+    {
+        if (segment.Length is < 1 or > 14 || !char.IsAsciiLetter(segment[0]))
         {
             return false;
         }
+
+        return segment.All(character =>
+            char.IsAsciiLetterOrDigit(character) ||
+            character is '_' or '-' or '+');
     }
 
     private static ProblemHttpResult? Validate(SubmitFeedbackRequest request, HttpContext context)

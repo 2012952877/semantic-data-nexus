@@ -147,28 +147,81 @@ public sealed class SemanticBackendClientTests
         Assert.Equal("physical-aggregate_profit", Assert.Single(detail.PhysicalNodes).Id);
         Assert.Equal(2, detail.Result!.Columns.Count);
         Assert.Equal(SemanticScalarKind.String, detail.Result.Rows[0][0].Kind);
-        Assert.Equal(SemanticScalarKind.Number, detail.Result.Rows[0][1].Kind);
+        Assert.Equal(SemanticScalarKind.String, detail.Result.Rows[0][1].Kind);
+        Assert.Equal("2334.00", detail.Result.Rows[0][1].StringValue);
         Assert.Equal(runId, detail.Manifest!.RunId);
         Assert.Equal(4, detail.Lineage.Nodes.Count);
     }
 
     [Theory]
+    [InlineData("runId")]
+    [InlineData("question")]
+    [InlineData("sqg")]
+    [InlineData("physicalNodes")]
+    [InlineData("lineage")]
+    [InlineData("diagnostics")]
+    [InlineData("sqg/version")]
+    [InlineData("sqg/intent")]
+    [InlineData("sqg/ontology")]
+    [InlineData("sqg/resolvedMembers")]
+    [InlineData("sqg/metrics")]
+    [InlineData("sqg/dimensions")]
+    [InlineData("sqg/filters")]
+    [InlineData("sqg/filters/0/field")]
+    [InlineData("sqg/filters/0/operator")]
+    [InlineData("sqg/filters/0/value")]
+    [InlineData("sqg/policyChecks")]
+    [InlineData("physicalNodes/0/id")]
     [InlineData("physicalNodes/0/kind")]
+    [InlineData("physicalNodes/0/label")]
+    [InlineData("physicalNodes/0/plainLanguage")]
+    [InlineData("physicalNodes/0/inputs")]
+    [InlineData("physicalNodes/0/outputFields")]
+    [InlineData("result/columns")]
+    [InlineData("result/rows")]
+    [InlineData("result/columns/0/key")]
+    [InlineData("result/columns/0/label")]
     [InlineData("result/columns/0/dataType")]
     [InlineData("result/columns/0/format")]
     [InlineData("result/columns/0/nullable")]
     [InlineData("result/rowCount")]
     [InlineData("result/truncated")]
+    [InlineData("manifest/resultId")]
+    [InlineData("manifest/runId")]
+    [InlineData("manifest/nodeId")]
     [InlineData("manifest/storage")]
+    [InlineData("manifest/uri")]
     [InlineData("manifest/rowCount")]
     [InlineData("manifest/byteCount")]
+    [InlineData("manifest/checksum")]
+    [InlineData("manifest/committedAt")]
+    [InlineData("lineage/version")]
+    [InlineData("lineage/runId")]
+    [InlineData("lineage/nodes")]
+    [InlineData("lineage/edges")]
+    [InlineData("lineage/nodes/0/id")]
     [InlineData("lineage/nodes/0/kind")]
+    [InlineData("lineage/nodes/0/operation")]
+    [InlineData("lineage/nodes/0/sourceAlias")]
+    [InlineData("lineage/nodes/0/sourceType")]
+    [InlineData("lineage/nodes/0/resultId")]
+    [InlineData("lineage/nodes/0/parameters")]
+    [InlineData("lineage/nodes/0/parameters/0/name")]
     [InlineData("lineage/nodes/0/parameters/0/dataType")]
+    [InlineData("lineage/edges/0/source")]
+    [InlineData("lineage/edges/0/target")]
     [InlineData("lineage/edges/0/relation")]
     [InlineData("diagnostics/0/sequence")]
+    [InlineData("diagnostics/0/runId")]
     [InlineData("diagnostics/0/scope")]
+    [InlineData("diagnostics/0/scopeId")]
+    [InlineData("diagnostics/0/code")]
+    [InlineData("diagnostics/0/title")]
+    [InlineData("diagnostics/0/message")]
+    [InlineData("diagnostics/0/recovery")]
     [InlineData("diagnostics/0/severity")]
-    public async Task BackendFixtureRejectsMissingGovernedMembers(string path)
+    [InlineData("diagnostics/0/occurredAt")]
+    public async Task BackendFixtureRejectsMissingRequiredMembers(string path)
     {
         var runId = RunId.Parse(
             "run_0123456789abcdef0123456789abcdef",
@@ -202,6 +255,7 @@ public sealed class SemanticBackendClientTests
     [InlineData("9007199254740992")]
     [InlineData("-9007199254740992")]
     [InlineData("9223372036854775808")]
+    [InlineData("9007199254740992.0")]
     [InlineData("1e29")]
     [InlineData("-1e29")]
     public async Task BackendFixtureRejectsNumericValuesOutsideSharedRange(string value)
@@ -209,11 +263,11 @@ public sealed class SemanticBackendClientTests
         var runId = RunId.Parse(
             "run_0123456789abcdef0123456789abcdef",
             provider: null);
-        var payload = BackendDetailFixture()
-            .ToJsonString()
-            .Replace("2334.0", value, StringComparison.Ordinal);
+        var root = BackendDetailFixture();
+        root["result"]!["columns"]![1]!["dataType"] = "float";
+        root["result"]!["rows"]![0]![1] = JsonNode.Parse(value);
 
-        var exception = await GetDetailFailureAsync(payload, runId);
+        var exception = await GetDetailFailureAsync(root.ToJsonString(), runId);
 
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
     }
@@ -225,22 +279,33 @@ public sealed class SemanticBackendClientTests
             SemanticScalarLimits.MaximumIntegerMagnitude.ToString(CultureInfo.InvariantCulture));
         var negativeInteger = JsonSerializer.Deserialize<SemanticScalarValue>(
             (-SemanticScalarLimits.MaximumIntegerMagnitude).ToString(CultureInfo.InvariantCulture));
-        var positiveNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
-            "1e28");
-        var negativeNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
-            "-1e28");
         var smallNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
             "1e-29");
+        var negativeSmallNumber = JsonSerializer.Deserialize<SemanticScalarValue>(
+            "-1e-29");
 
         Assert.Equal(SemanticScalarKind.Integer, positiveInteger!.Kind);
         Assert.Equal(SemanticScalarKind.Integer, negativeInteger!.Kind);
         Assert.Equal(SemanticScalarLimits.MaximumIntegerMagnitude, positiveInteger.IntegerValue);
         Assert.Equal(-SemanticScalarLimits.MaximumIntegerMagnitude, negativeInteger.IntegerValue);
-        Assert.Equal(SemanticScalarKind.Number, positiveNumber!.Kind);
-        Assert.Equal(SemanticScalarKind.Number, negativeNumber!.Kind);
-        Assert.Equal((double)SemanticScalarLimits.MaximumNumberMagnitude, positiveNumber.NumberValue);
-        Assert.Equal(-(double)SemanticScalarLimits.MaximumNumberMagnitude, negativeNumber.NumberValue);
         Assert.Equal(1e-29, smallNumber!.NumberValue);
+        Assert.Equal(-1e-29, negativeSmallNumber!.NumberValue);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SemanticScalarValue.From(long.MaxValue));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SemanticScalarValue.From(9_007_199_254_740_992d));
+    }
+
+    [Fact]
+    public void IntegralFloatRoundTripRetainsNumberToken()
+    {
+        var scalar = JsonSerializer.Deserialize<SemanticScalarValue>("2334.0");
+
+        var json = JsonSerializer.Serialize(scalar);
+        var roundTripped = JsonSerializer.Deserialize<SemanticScalarValue>(json);
+
+        Assert.Equal("2334.0", json);
+        Assert.Equal(SemanticScalarKind.Number, roundTripped!.Kind);
     }
 
     [Fact]
@@ -388,6 +453,26 @@ public sealed class SemanticBackendClientTests
 
         var exception = await Assert.ThrowsAsync<SemanticBackendException>(() =>
             client.GetDetailAsync(runId, default));
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
+    public async Task DetailMapsUnpairedSurrogateToInvalidBackendResponse()
+    {
+        var runId = RunId.Parse(
+            "run_0123456789abcdef0123456789abcdef",
+            provider: null);
+        var payload = File.ReadAllText(Path.Combine(
+                AppContext.BaseDirectory,
+                "Fixtures",
+                "backend-run-detail.json"))
+            .Replace(
+                "\"question\": \"Compare synthetic regional revenue\"",
+                "\"question\": \"\\uD800\"",
+                StringComparison.Ordinal);
+
+        var exception = await GetDetailFailureAsync(payload, runId);
 
         Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
     }
