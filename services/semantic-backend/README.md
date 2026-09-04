@@ -82,10 +82,12 @@ Required live settings are `DATABRICKS_WORKSPACE_HOST`,
 `DATABRICKS_WAREHOUSE_ID`, and a deployment-secret `DATABRICKS_TOKEN`.
 `DATABRICKS_CATALOG` and `DATABRICKS_SCHEMA` default to synthetic identifiers.
 Live execution is bounded to 1,000 rows, 10 MiB, and a 30-second connector
-timeout. The connector owns provider cancellation when that timeout expires;
-the adapter drains cancellation rather than orphaning an HTTP task. A run is
-not reported `Cancelled` until resolver acknowledgement/cleanup completes; an
-unconfirmed provider cancellation is surfaced as a safe failure instead.
+timeout. The adapter requests provider cancellation immediately after a
+statement ID is available and waits for the connector's terminal
+acknowledgement/cleanup. A run is not reported `Cancelled` before that point;
+unconfirmed provider cancellation is surfaced as a safe failure instead. Live
+queries fetch one sentinel row and fail closed when more than 1,000 complete
+rows would otherwise be silently omitted.
 
 ## Container
 
@@ -97,7 +99,10 @@ docker run --rm -p 8080:8080 semantic-backend:m0
 ```
 
 The image runs as a non-root user and defaults to the fake resolver. Run state
-and inline results are intentionally process-local and non-durable in M0.
+and inline results are intentionally process-local and non-durable in M0. The
+root `.dockerignore` allowlists only package manifests, source trees, README
+files, and generated synthetic CSVs so local `.env` files never enter a build
+layer.
 
 Run validation with:
 

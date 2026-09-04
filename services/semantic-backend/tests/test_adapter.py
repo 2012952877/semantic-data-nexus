@@ -61,7 +61,7 @@ async def test_adapter_rejects_unmapped_member_value() -> None:
         if node.operator.value == "FILTER"
         and node.parameters.predicate.column == "commerce.sales_record.region"
     )
-    region_filter.parameters.predicate.value = "region.unknown"
+    region_filter.parameters.predicate.value = "unreviewed-source-value"
     response = response.model_copy(update={"normalized_sqg": changed})
     with pytest.raises(AdapterFailure, match="No reviewed source value mapping"):
         CompilerRuntimeAdapter().adapt(

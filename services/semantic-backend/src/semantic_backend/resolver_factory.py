@@ -108,4 +108,5 @@ def resolver_from_environment(
         ),
         timeout_seconds=config.statement_timeout_seconds + 2,
         close=client.aclose,
+        provider_cancel=client.cancel,
     )

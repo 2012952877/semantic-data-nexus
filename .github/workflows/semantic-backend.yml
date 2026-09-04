@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "data/synthetic/**"
+      - ".dockerignore"
+      - ".gitignore"
       - "evals/**"
       - "connectors/databricks/**"
       - "services/semantic-api/**"
@@ -15,6 +17,8 @@ on:
       - main
     paths:
       - "data/synthetic/**"
+      - ".dockerignore"
+      - ".gitignore"
       - "evals/**"
       - "connectors/databricks/**"
       - "services/semantic-api/**"

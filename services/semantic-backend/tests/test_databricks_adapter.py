@@ -160,6 +160,19 @@ def test_translator_rejects_unreviewed_identifier_and_local_operator() -> None:
         translator.translate(local)
 
 
+def test_nested_limit_preserves_sentinel_row() -> None:
+    fragment = validated_fragment().model_copy(
+        update={"operations": (OperatorSpec(kind=OperatorKind.LIMIT, limit=1_001),)}
+    )
+    translated = DatabricksFragmentTranslator(
+        catalog="synthetic_demo",
+        schema="analytics",
+    ).translate(fragment)
+    assert translated.sql.count("LIMIT 1001") == 2
+    assert "LIMIT 1000" not in translated.sql
+    validate_fragment(translated)
+
+
 @dataclass
 class StubConnector:
     fragment: object | None = None
@@ -225,6 +238,53 @@ async def test_live_adapter_converts_typed_result_to_arrow() -> None:
     )
     assert isinstance(table, pa.Table)
     assert table.to_pylist() == [{"region": "北辰区", "profit": 2334.0}]
+
+
+async def test_resolver_run_reuse_clears_stale_metadata_and_bounds_retention() -> None:
+    adapter = DatabricksSourceAdapter(
+        StubConnector(),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+    )
+    run_id = "run_00000000000000000000000000000104"
+    await adapter.prepare_run(run_id)
+    for node_id in ("first", "second"):
+        await adapter.execute(
+            ExecutionContext(
+                run_id=run_id,
+                node_id=node_id,
+                attempt=1,
+                cancellation_handle=f"opaque-{node_id}",
+            ),
+            validated_fragment(),
+            asyncio.Event(),
+        )
+    assert {item.node_id for item in adapter.provenance(run_id)} == {"first", "second"}
+    assert adapter._run_idle == {}
+
+    for index in range(101):
+        other_run_id = f"run_{index:032x}"
+        await adapter.prepare_run(other_run_id)
+        await adapter.finish_run(other_run_id)
+    assert len(adapter._provenance_runs) == 100
+    assert run_id in adapter._active_runs
+    assert {item.node_id for item in adapter.provenance(run_id)} == {"first", "second"}
+
+    await adapter.finish_run(run_id)
+    await adapter.prepare_run(run_id)
+    await adapter.execute(
+        ExecutionContext(
+            run_id=run_id,
+            node_id="reused",
+            attempt=1,
+            cancellation_handle="opaque-reused",
+        ),
+        validated_fragment(),
+        asyncio.Event(),
+    )
+    await adapter.finish_run(run_id)
+    assert [item.node_id for item in adapter.provenance(run_id)] == ["reused"]
+    assert len(adapter._provenance_runs) == 100
+    await adapter.aclose()
 
 
 async def test_live_adapter_fails_on_sentinel_row_instead_of_silent_truncation() -> None:
@@ -452,6 +512,17 @@ def test_boolean_renderer_preserves_three_valued_null_semantics() -> None:
             ),
         ),
     )
+    is_null_not = TypedExpression(
+        kind=ExpressionKind.IS_NULL,
+        data_type=ScalarType.BOOLEAN,
+        args=(
+            TypedExpression(
+                kind=ExpressionKind.NOT,
+                data_type=ScalarType.BOOLEAN,
+                args=(TypedExpression.col("b", ScalarType.BOOLEAN),),
+            ),
+        ),
+    )
     fragment = validated_fragment().model_copy(
         update={
             "operations": (
@@ -460,6 +531,7 @@ def test_boolean_renderer_preserves_three_valued_null_semantics() -> None:
                     expressions=(
                         NamedExpression(name="nested", expression=nested),
                         NamedExpression(name="is_null", expression=is_null),
+                        NamedExpression(name="is_null_not", expression=is_null_not),
                     ),
                 ),
             )
@@ -470,15 +542,17 @@ def test_boolean_renderer_preserves_three_valued_null_semantics() -> None:
     try:
         nested_sql = translator._expression(nested).replace("`", '"')
         is_null_sql = translator._expression(is_null).replace("`", '"')
+        is_null_not_sql = translator._expression(is_null_not).replace("`", '"')
         row = connection.execute(
             "SELECT "
             f"{nested_sql}, "
-            f"{is_null_sql} "
+            f"{is_null_sql}, "
+            f"{is_null_not_sql} "
             "FROM (SELECT TRUE AS a, NULL::BOOLEAN AS b, FALSE AS c)"
         ).fetchone()
     finally:
         connection.close()
-    assert row == (None, True)
+    assert row == (None, True, True)
 
 
 def test_arithmetic_renderer_preserves_nested_rhs_grouping() -> None:
@@ -540,6 +614,144 @@ class AcknowledgedCancelConnector:
         self.started.set()
         await self.release.wait()
         raise StatementCanceledError("statement-synthetic")
+
+
+@dataclass
+class SubmittedCancelConnector:
+    submitted: asyncio.Event
+    release: asyncio.Event
+
+    async def resolve(self, fragment, *, on_statement_submitted=None):
+        assert on_statement_submitted is not None
+        await on_statement_submitted("statement-synthetic")
+        self.submitted.set()
+        await self.release.wait()
+        raise StatementCanceledError("statement-synthetic")
+
+
+async def test_cancel_calls_provider_and_waits_for_terminal_ack() -> None:
+    submitted = asyncio.Event()
+    release = asyncio.Event()
+    provider_called = asyncio.Event()
+    provider_ids: list[str] = []
+
+    async def provider_cancel(statement_id: str) -> None:
+        provider_ids.append(statement_id)
+        provider_called.set()
+
+    adapter = DatabricksSourceAdapter(
+        SubmittedCancelConnector(submitted, release),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+        timeout_seconds=1,
+        provider_cancel=provider_cancel,
+    )
+    context = ExecutionContext(
+        run_id="run_00000000000000000000000000000102",
+        node_id="source",
+        attempt=1,
+        cancellation_handle="opaque-provider-cancel",
+    )
+    task = asyncio.create_task(adapter.execute(context, validated_fragment(), asyncio.Event()))
+    await submitted.wait()
+    await adapter.cancel(context.cancellation_handle)
+    assert provider_called.is_set()
+    assert provider_ids == ["statement-synthetic"]
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert provider_ids == ["statement-synthetic"]
+    await adapter.wait_for_run_cleanup(context.run_id)
+
+
+async def test_adapter_timeout_cancels_provider_once_and_drains_terminal() -> None:
+    submitted = asyncio.Event()
+    release = asyncio.Event()
+    provider_ids: list[str] = []
+
+    async def provider_cancel(statement_id: str) -> None:
+        provider_ids.append(statement_id)
+        release.set()
+
+    adapter = DatabricksSourceAdapter(
+        SubmittedCancelConnector(submitted, release),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+        timeout_seconds=0.01,
+        provider_cancel=provider_cancel,
+    )
+    context = ExecutionContext(
+        run_id="run_00000000000000000000000000000106",
+        node_id="source",
+        attempt=1,
+        cancellation_handle="opaque-adapter-timeout",
+    )
+    with pytest.raises(ResolverFailure, match="bounded adapter timeout"):
+        await adapter.execute(context, validated_fragment(), asyncio.Event())
+    assert provider_ids == ["statement-synthetic"]
+    with pytest.raises(ResolverFailure, match="bounded adapter timeout"):
+        await adapter.wait_for_run_cleanup(context.run_id)
+
+
+async def test_runtime_cannot_abort_adapter_owned_provider_cancel() -> None:
+    submitted = asyncio.Event()
+    connector_release = asyncio.Event()
+    provider_started = asyncio.Event()
+    provider_release = asyncio.Event()
+
+    async def provider_cancel(statement_id: str) -> None:
+        assert statement_id == "statement-synthetic"
+        provider_started.set()
+        await provider_release.wait()
+
+    adapter = DatabricksSourceAdapter(
+        SubmittedCancelConnector(submitted, connector_release),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+        timeout_seconds=1,
+        provider_cancel=provider_cancel,
+    )
+    context = ExecutionContext(
+        run_id="run_00000000000000000000000000000105",
+        node_id="source",
+        attempt=1,
+        cancellation_handle="opaque-owned-provider-cancel",
+    )
+    execution = asyncio.create_task(adapter.execute(context, validated_fragment(), asyncio.Event()))
+    await submitted.wait()
+    cancellation = asyncio.create_task(adapter.cancel(context.cancellation_handle))
+    await provider_started.wait()
+    cancellation.cancel()
+    await asyncio.sleep(0)
+    assert not cancellation.done()
+    connector_release.set()
+    cleanup = asyncio.create_task(adapter.wait_for_run_cleanup(context.run_id))
+    await asyncio.sleep(0)
+    assert not cleanup.done()
+    provider_release.set()
+    await cancellation
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+    await cleanup
+
+
+async def test_cleanup_rereads_and_awaits_late_provider_cancel_task() -> None:
+    adapter = DatabricksSourceAdapter(
+        StubConnector(),
+        DatabricksFragmentTranslator(catalog="synthetic_demo", schema="analytics"),
+    )
+    run_id = "run_00000000000000000000000000000107"
+    release = asyncio.Event()
+    await adapter.prepare_run(run_id)
+    task = asyncio.create_task(release.wait())
+    adapter._provider_cancel_tasks["late-handle"] = task
+    adapter._provider_cancel_runs["late-handle"] = run_id
+    cleanup = asyncio.create_task(adapter.wait_for_run_cleanup(run_id))
+    await asyncio.sleep(0)
+    assert not cleanup.done()
+    release.set()
+    await cleanup
+    assert "late-handle" not in adapter._provider_cancel_tasks
+    await adapter.finish_run(run_id)
+    await adapter.aclose()
 
 
 @dataclass

@@ -50,6 +50,9 @@ async def test_simple_compiler_adapter_runtime_commits_profit_result(service) ->
     reads_from = next(edge for edge in detail.lineage.edges if edge.relation == "reads_from")
     assert lineage_kinds[reads_from.source] == "physical"
     assert lineage_kinds[reads_from.target] == "source"
+    depends_on = next(edge for edge in detail.lineage.edges if edge.relation == "depends_on")
+    assert depends_on.source == "physical:physical-project_result"
+    assert depends_on.target == "physical:physical-sort_profit"
 
 
 async def test_governed_member_id_maps_to_synthetic_source_value(service) -> None:

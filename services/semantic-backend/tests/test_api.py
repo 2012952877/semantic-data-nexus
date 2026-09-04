@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 from conftest import request_for, wait_for_terminal
 from httpx import ASGITransport, AsyncClient
@@ -10,6 +12,8 @@ from query_runtime.events import InMemoryEventStore
 
 from semantic_backend.api import create_app
 from semantic_backend.models import RunState
+
+CONTRACT_FIXTURES = Path(__file__).parents[1] / "contract-fixtures" / "v1"
 
 
 async def test_health_start_status_detail_and_idempotency(service) -> None:
@@ -27,7 +31,7 @@ async def test_health_start_status_detail_and_idempotency(service) -> None:
         assert second.status_code == 202
         assert first.json()["runId"] == request.run_id
 
-        for _ in range(200):
+        for _ in range(1_000):
             response = await client.get(f"/v1/runs/{request.run_id}")
             if response.json()["state"] in {"Succeeded", "Failed", "Cancelled"}:
                 break
@@ -37,6 +41,33 @@ async def test_health_start_status_detail_and_idempotency(service) -> None:
         detail = await client.get(f"/v1/runs/{request.run_id}/detail")
         assert detail.status_code == 200
         assert detail.json()["manifest"]["rowCount"] == 4
+
+
+async def test_real_bff_fixture_starts_through_http_boundary(service) -> None:
+    app = create_app(service)
+    transport = ASGITransport(app=app)
+    payload = json.loads((CONTRACT_FIXTURES / "bff-start-request.json").read_text(encoding="utf-8"))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/runs", json=payload)
+        assert response.status_code == 202
+        assert response.json()["runId"] == payload["runId"]
+        detail = await client.get(f"/v1/runs/{payload['runId']}/detail")
+        assert detail.status_code == 200
+        assert detail.json()["question"] == payload["question"]
+        assert (await client.post(f"/v1/runs/{payload['runId']}/cancel")).status_code == 200
+
+
+async def test_long_question_keeps_full_detail_and_bounded_sqg_intent(service) -> None:
+    question = "上季度各区域利润是多少?" + ("a" * 600)
+    request = request_for("run_00000000000000000000000000000103").model_copy(
+        update={"question": question}
+    )
+    started = await service.start(request)
+    detail = await service.get_detail(request.run_id)
+    assert started.state in {RunState.STARTING, RunState.RUNNING}
+    assert detail.question == question
+    assert detail.sqg.intent == question[:512]
+    await service.cancel(request.run_id)
 
 
 async def test_conflicting_id_and_validation_fail_closed(service) -> None:

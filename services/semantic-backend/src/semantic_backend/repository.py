@@ -84,7 +84,7 @@ class InMemoryRunRepository:
                 question=request.question,
                 sqg=SqgSummary(
                     version="sqg.v0",
-                    intent=request.question,
+                    intent=request.question[:512],
                     ontology="pending",
                     policy_checks=["validation_pending"],
                 ),

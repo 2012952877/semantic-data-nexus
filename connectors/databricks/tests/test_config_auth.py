@@ -95,9 +95,7 @@ async def test_environment_pat_header_and_repr_do_not_leak(
 ) -> None:
     monkeypatch.setenv("SYNTHETIC_PAT", "synthetic-secret-value")
     token = await EnvironmentPatProvider("SYNTHETIC_PAT").get_token()
-    assert token.authorization_header() == {
-        "Authorization": "Bearer synthetic-secret-value"
-    }
+    assert token.authorization_header() == {"Authorization": "Bearer synthetic-secret-value"}
     assert "synthetic-secret-value" not in repr(token)
 
 

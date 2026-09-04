@@ -27,7 +27,7 @@ from query_runtime.domain import (
 )
 from query_runtime.errors import DeferredCleanupCancellation, ResultStoreFailure
 
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
 
 
 class ResultStore(Protocol):

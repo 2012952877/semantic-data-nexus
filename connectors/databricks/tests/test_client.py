@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from decimal import Decimal
@@ -26,6 +27,44 @@ from semantic_data_nexus_databricks.testing import FakeTransport
 from semantic_data_nexus_databricks.transport import HttpResponse, HttpxTransport
 
 BASE = "https://workspace.example.invalid"
+
+
+@pytest.mark.parametrize(
+    "callback_error",
+    [RuntimeError("synthetic callback failure"), asyncio.CancelledError()],
+)
+async def test_submission_callback_failure_cancels_provider_statement(
+    callback_error: BaseException,
+) -> None:
+    transport = FakeTransport()
+    transport.enqueue(
+        "POST",
+        f"{BASE}/api/2.0/sql/statements",
+        json_body={
+            "statement_id": "statement-test",
+            "status": {"state": "PENDING"},
+        },
+    )
+    transport.enqueue(
+        "POST",
+        f"{BASE}/api/2.0/sql/statements/statement-test/cancel",
+    )
+    client = StatementExecutionClient(
+        config(),
+        SyntheticTokenProvider(),
+        transport=transport,
+    )
+
+    async def callback(_: str) -> None:
+        raise callback_error
+
+    with pytest.raises(type(callback_error)):
+        await client.execute(
+            "SELECT region FROM orders",
+            on_statement_submitted=callback,
+        )
+    assert transport.requests[-1].url.endswith("/statement-test/cancel")
+    transport.assert_drained()
 
 
 class ManualClock:

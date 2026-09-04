@@ -133,7 +133,7 @@ class DiagnosticSummary(ApiModel):
 
 
 class NodeSummary(ApiModel):
-    node_id: str = Field(min_length=1, max_length=64)
+    node_id: str = Field(min_length=1, max_length=160)
     kind: str = Field(min_length=1, max_length=64)
     state: RunState
     started_at: datetime | None = None
@@ -240,7 +240,7 @@ class SqgSummary(ApiModel):
 
 
 class PhysicalNodeDetail(ApiModel):
-    id: str = Field(min_length=1, max_length=128)
+    id: str = Field(min_length=1, max_length=160)
     kind: OperatorKind
     label: str = Field(min_length=1, max_length=256)
     plain_language: str = Field(min_length=1, max_length=1_000)
@@ -356,7 +356,7 @@ class ResultSet(ApiModel):
 class CommittedManifest(ApiModel):
     result_id: str = Field(min_length=1, max_length=128)
     run_id: str
-    node_id: str = Field(min_length=1, max_length=128)
+    node_id: str = Field(min_length=1, max_length=160)
     storage: ResultStorage
     uri: str = Field(min_length=1, max_length=2_048)
     row_count: StrictInt = Field(ge=0)
@@ -371,18 +371,18 @@ class LineageParameter(ApiModel):
 
 
 class LineageNodeDetail(ApiModel):
-    id: str = Field(min_length=1, max_length=128)
+    id: str = Field(min_length=1, max_length=160)
     kind: LineageNodeKind
     operation: str | None = Field(default=None, max_length=128)
-    source_alias: str | None = Field(default=None, max_length=128)
-    source_type: str | None = Field(default=None, max_length=128)
-    result_id: str | None = Field(default=None, max_length=128)
+    source_alias: str | None = Field(default=None, max_length=160)
+    source_type: str | None = Field(default=None, max_length=160)
+    result_id: str | None = Field(default=None, max_length=160)
     parameters: list[LineageParameter] = Field(default_factory=list, max_length=100)
 
 
 class LineageEdgeDetail(ApiModel):
-    source: str = Field(min_length=1, max_length=128)
-    target: str = Field(min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=160)
+    target: str = Field(min_length=1, max_length=160)
     relation: LineageRelation
 
 
@@ -433,6 +433,15 @@ class RunDetail(ApiModel):
         known = set(lineage_ids)
         if any(edge.source not in known or edge.target not in known for edge in self.lineage.edges):
             raise ValueError("lineage edges must reference known nodes")
+        result_nodes = [node for node in self.lineage.nodes if node.kind is LineageNodeKind.RESULT]
+        if any(
+            node.result_id is None or node.id != f"result:{node.result_id}" for node in result_nodes
+        ):
+            raise ValueError("lineage result nodes must preserve their result identity")
+        if self.manifest is not None and not any(
+            node.result_id == self.manifest.result_id for node in result_nodes
+        ):
+            raise ValueError("lineage must contain the committed manifest result")
         previous = -1
         for diagnostic in self.diagnostics:
             if diagnostic.run_id != self.run_id or diagnostic.sequence <= previous:

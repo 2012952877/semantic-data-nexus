@@ -86,6 +86,21 @@ async def test_integrated_evaluation_detects_artifact_mutations(service) -> None
     )
     assert plan_report.dimension_scores["plan"] < 100
 
+    output_report = evaluate_bundle(
+        golden,
+        candidate_bundle(
+            {
+                case_id: replace(
+                    artifact,
+                    physical_plan=artifact.physical_plan.model_copy(
+                        update={"output_node_id": artifact.physical_plan.nodes[0].id}
+                    ),
+                )
+            }
+        ),
+    )
+    assert output_report.dimension_scores["plan"] < 100
+
     changed_result_detail = artifact.detail.model_copy(deep=True)
     assert changed_result_detail.result is not None
     changed_result_detail.result.rows[0][-1] = 999999.0
@@ -94,6 +109,16 @@ async def test_integrated_evaluation_detects_artifact_mutations(service) -> None
         candidate_bundle({case_id: replace(artifact, detail=changed_result_detail)}),
     )
     assert result_report.dimension_scores["execution_result"] < 100
+
+    changed_result_metadata = artifact.detail.model_copy(deep=True)
+    assert changed_result_metadata.result is not None
+    changed_result_metadata.result.row_count += 1
+    changed_result_metadata.result.truncated = True
+    result_metadata_report = evaluate_bundle(
+        golden,
+        candidate_bundle({case_id: replace(artifact, detail=changed_result_metadata)}),
+    )
+    assert result_metadata_report.dimension_scores["execution_result"] < 100
 
     changed_lineage_detail = artifact.detail.model_copy(
         update={"lineage": LineageDetail(run_id=request.run_id)},
@@ -130,6 +155,28 @@ async def test_integrated_evaluation_detects_artifact_mutations(service) -> None
         candidate_bundle({case_id: replace(artifact, detail=changed_edge_detail)}),
     )
     assert edge_report.dimension_scores["observability"] < 100
+
+    changed_node_detail = artifact.detail.model_copy(deep=True)
+    physical_node = next(
+        node for node in changed_node_detail.lineage.nodes if node.kind.value == "physical"
+    )
+    physical_node.operation = "MUTATED_OPERATION"
+    node_metadata_report = evaluate_bundle(
+        golden,
+        candidate_bundle({case_id: replace(artifact, detail=changed_node_detail)}),
+    )
+    assert node_metadata_report.dimension_scores["observability"] < 100
+
+    changed_result_identity = artifact.detail.model_copy(deep=True)
+    result_node = next(
+        node for node in changed_result_identity.lineage.nodes if node.kind.value == "result"
+    )
+    result_node.result_id = "corrupted-result-id"
+    result_identity_report = evaluate_bundle(
+        golden,
+        candidate_bundle({case_id: replace(artifact, detail=changed_result_identity)}),
+    )
+    assert result_identity_report.dimension_scores["observability"] < 100
 
     provenance_report = evaluate_bundle(
         golden,
@@ -169,6 +216,27 @@ async def test_integrated_evaluation_detects_artifact_mutations(service) -> None
         candidate_bundle({case_id: replace(artifact, detail=changed_diagnostic_detail)}),
     )
     assert governance_report.dimension_scores["governance"] < 100
+
+    info_diagnostic_detail = artifact.detail.model_copy(deep=True)
+    info_diagnostic_detail.diagnostics.append(
+        DetailDiagnostic(
+            sequence=0,
+            run_id=request.run_id,
+            scope=DiagnosticScope.RUN,
+            scope_id=request.run_id,
+            code="SYNTHETIC_INFO",
+            title="Synthetic informational mutation",
+            message="Informational mutation for evaluator regression coverage.",
+            recovery="Remove the synthetic mutation.",
+            severity=DiagnosticSeverity.INFO,
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    diagnostic_report = evaluate_bundle(
+        golden,
+        candidate_bundle({case_id: replace(artifact, detail=info_diagnostic_detail)}),
+    )
+    assert diagnostic_report.dimension_scores["governance"] < 100
 
 
 async def test_member_candidate_selects_period_filter_for_time_range(service) -> None:

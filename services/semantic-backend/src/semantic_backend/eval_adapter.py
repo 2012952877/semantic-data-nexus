@@ -84,7 +84,24 @@ def candidate_from_run(case_id: str, artifact: IntegratedRunArtifact) -> dict[st
     )
     lineage_entities = entities if has_runtime_lineage else []
     lineage_fields = fields if has_runtime_lineage else []
-    lineage_nodes = [{"id": node.id, "kind": node.kind.value} for node in detail.lineage.nodes]
+    lineage_nodes = [
+        {
+            "id": node.id,
+            "kind": node.kind.value,
+            "operation": node.operation,
+            "source_alias": node.source_alias,
+            "source_type": node.source_type,
+            "result_id": node.result_id,
+            "parameters": [
+                {
+                    "name": parameter.name,
+                    "data_type": parameter.data_type.value,
+                }
+                for parameter in node.parameters
+            ],
+        }
+        for node in detail.lineage.nodes
+    ]
     lineage_edges = [
         {
             "source": edge.source,
@@ -93,6 +110,11 @@ def candidate_from_run(case_id: str, artifact: IntegratedRunArtifact) -> dict[st
         }
         for edge in detail.lineage.edges
     ]
+    result_nodes = [node for node in detail.lineage.nodes if node.kind.value == "result"]
+    result_identity_valid = all(
+        node.result_id is not None and node.id == f"result:{node.result_id}"
+        for node in result_nodes
+    ) and any(node.result_id == detail.manifest.result_id for node in result_nodes)
     topology = _normalized_lineage(lineage_nodes, lineage_edges)
 
     return {
@@ -123,6 +145,8 @@ def candidate_from_run(case_id: str, artifact: IntegratedRunArtifact) -> dict[st
                 }
                 for row in detail.result.rows
             ],
+            "row_count": detail.result.row_count,
+            "truncated": detail.result.truncated,
             "tolerance": 0.01,
         },
         "behavior": behavior,
@@ -147,6 +171,7 @@ def candidate_from_run(case_id: str, artifact: IntegratedRunArtifact) -> dict[st
                     separators=(",", ":"),
                 ).encode()
             ).hexdigest(),
+            "result_identity_valid": result_identity_valid,
         },
         "diagnostics": [
             {
@@ -217,6 +242,7 @@ def _physical_plan(
             "operators": [node["operator"] for node in nodes],
             "edges": edges,
             "nodes": nodes,
+            "output_node_id": tails[plan.output_node_id],
         },
         grain,
         order_by,
@@ -236,7 +262,7 @@ def _json_object(value: str) -> Any:
 
 
 def _lineage_edges_valid(
-    nodes: list[dict[str, str]],
+    nodes: list[dict[str, Any]],
     edges: list[dict[str, str]],
 ) -> bool:
     kinds = {node["id"]: node["kind"] for node in nodes}
@@ -256,9 +282,9 @@ def _lineage_edges_valid(
 
 
 def _normalized_lineage(
-    nodes: list[dict[str, str]],
+    nodes: list[dict[str, Any]],
     edges: list[dict[str, str]],
-) -> dict[str, list[dict[str, str]]]:
+) -> dict[str, list[dict[str, Any]]]:
     result_sources = {
         edge["target"]: edge["source"] for edge in edges if edge["relation"] == "produces"
     }
@@ -271,7 +297,18 @@ def _normalized_lineage(
         for node in nodes
     }
     normalized_nodes = sorted(
-        ({"id": identifiers[node["id"]], "kind": node["kind"]} for node in nodes),
+        (
+            {
+                **node,
+                "id": identifiers[node["id"]],
+                "result_id": (
+                    identifiers[node["id"]].removeprefix("result:")
+                    if node["kind"] == "result"
+                    else node["result_id"]
+                ),
+            }
+            for node in nodes
+        ),
         key=lambda item: (item["kind"], item["id"]),
     )
     normalized_edges = sorted(

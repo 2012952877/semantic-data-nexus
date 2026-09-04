@@ -751,6 +751,16 @@ def evaluate_case(
             differences,
         ),
     ]
+    if "output_node_id" in expected_plan:
+        plan_checks.append(
+            _compare_exact(
+                "plan",
+                "plan.output_node_id",
+                expected_plan.get("output_node_id"),
+                actual_plan.get("output_node_id"),
+                differences,
+            )
+        )
     plan_errors = validate_plan(actual_plan_value)
     plan_checks.append(not plan_errors)
     if plan_errors:
@@ -778,6 +788,17 @@ def evaluate_case(
                 differences,
             )
         )
+    for key in ("row_count", "truncated"):
+        if key in expected_result:
+            result_checks.append(
+                _compare_exact(
+                    "execution_result",
+                    f"result.{key}",
+                    expected_result.get(key),
+                    actual_result.get(key),
+                    differences,
+                )
+            )
     tolerance = expected_result.get("tolerance", 0)
     rows_match, rows_message = compare_rows(
         expected_result.get("rows", []),
@@ -859,6 +880,7 @@ def evaluate_case(
             "edge_semantics_valid": "edge_semantics_valid",
             "topology": "topology",
             "topology_sha256": "topology_sha256",
+            "result_identity_valid": "result_identity_valid",
         }
         expected_observability = expected.get("observability", {})
         for expected_key, actual_key in observability_fields.items():

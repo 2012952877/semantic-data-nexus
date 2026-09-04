@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -76,7 +77,12 @@ _PARAMETER_TYPES = {
 
 
 class ConnectorResolver(Protocol):
-    async def resolve(self, fragment: PhysicalSourceFragment) -> TabularResult: ...
+    async def resolve(
+        self,
+        fragment: PhysicalSourceFragment,
+        *,
+        on_statement_submitted: Callable[[str], Awaitable[None]] | None = None,
+    ) -> TabularResult: ...
 
 
 @dataclass(frozen=True)
@@ -190,7 +196,7 @@ class DatabricksFragmentTranslator:
                     "DATABRICKS_TRANSLATION_INVALID",
                     "A limit requires a bounded row count.",
                 )
-            return f"SELECT * FROM ({query}) AS limited LIMIT {min(spec.limit, self.row_limit)}"
+            return f"SELECT * FROM ({query}) AS limited LIMIT {min(spec.limit, self.row_limit + 1)}"
         raise ResolverFailure(
             "DATABRICKS_TRANSLATION_UNSUPPORTED",
             f"Operator '{spec.kind.value}' cannot cross the live source boundary.",
@@ -256,7 +262,11 @@ class DatabricksFragmentTranslator:
                     when_null="TRUE",
                 )
                 if argument.kind in _BINARY_SQL
-                else f"{rendered} IS NULL"
+                else (
+                    f"{rendered} IS NULL"
+                    if argument.kind in {ExpressionKind.COLUMN, ExpressionKind.LITERAL}
+                    else f"({rendered}) IS NULL"
+                )
             )
         if expression.kind is ExpressionKind.COALESCE and expression.args:
             return f"COALESCE({', '.join(self._expression(item) for item in expression.args)})"
@@ -358,16 +368,23 @@ class DatabricksSourceAdapter:
         *,
         timeout_seconds: float = 30.0,
         close: Callable[[], Awaitable[None]] | None = None,
+        provider_cancel: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._resolver = resolver
         self._translator = translator
         self._timeout_seconds = timeout_seconds
         self._close = close
+        self._provider_cancel = provider_cancel
         self._active_cancellations: dict[str, asyncio.Event] = {}
         self._active_contexts: dict[str, ExecutionContext] = {}
+        self._active_statements: dict[str, str] = {}
+        self._provider_cancel_tasks: dict[str, asyncio.Task[None]] = {}
+        self._provider_cancel_runs: dict[str, str] = {}
         self._run_idle: dict[str, asyncio.Event] = {}
         self._run_failures: dict[str, ResolverFailure] = {}
         self._provenance: dict[tuple[str, str], ConnectorProvenance] = {}
+        self._provenance_runs: OrderedDict[str, None] = OrderedDict()
+        self._active_runs: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def execute(
@@ -388,7 +405,24 @@ class DatabricksSourceAdapter:
             self._active_contexts[context.cancellation_handle] = context
             self._run_idle.setdefault(context.run_id, asyncio.Event()).clear()
 
-        resolution = asyncio.create_task(self._resolver.resolve(connector_fragment))
+        async def on_statement_submitted(statement_id: str) -> None:
+            async with self._lock:
+                self._active_statements[context.cancellation_handle] = statement_id
+                cancellation_requested = local_cancel.is_set() or cancel_event.is_set()
+            if cancellation_requested:
+                await self._request_provider_cancel(
+                    context,
+                    statement_id,
+                )
+
+        resolution = asyncio.create_task(
+            self._resolver.resolve(
+                connector_fragment,
+                on_statement_submitted=on_statement_submitted,
+            )
+            if self._provider_cancel is not None
+            else self._resolver.resolve(connector_fragment)
+        )
         cancellation = asyncio.create_task(self._wait_for_cancellation(cancel_event, local_cancel))
         try:
             done, _ = await asyncio.wait(
@@ -397,6 +431,7 @@ class DatabricksSourceAdapter:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if local_cancel.is_set() or cancel_event.is_set():
+                await self._request_registered_provider_cancel(context)
                 await self._drain_cancelled_resolution(context, resolution)
                 raise asyncio.CancelledError
             if resolution in done:
@@ -410,8 +445,8 @@ class DatabricksSourceAdapter:
                         "The live result exceeded the complete-result row boundary.",
                     )
                 return table
-            resolution.cancel()
-            await asyncio.gather(resolution, return_exceptions=True)
+            await self._request_registered_provider_cancel(context)
+            await self._drain_uninterruptibly(context, resolution)
             raise ResolverFailure(
                 "DATABRICKS_ADAPTER_TIMEOUT",
                 "The live resolver exceeded the bounded adapter timeout.",
@@ -423,6 +458,7 @@ class DatabricksSourceAdapter:
         except asyncio.CancelledError:
             local_cancel.set()
             try:
+                await self._request_registered_provider_cancel(context)
                 await self._drain_uninterruptibly(context, resolution)
             except ResolverFailure as exc:
                 async with self._lock:
@@ -432,16 +468,50 @@ class DatabricksSourceAdapter:
         finally:
             self._active_cancellations.pop(context.cancellation_handle, None)
             self._active_contexts.pop(context.cancellation_handle, None)
+            self._active_statements.pop(context.cancellation_handle, None)
             if not any(item.run_id == context.run_id for item in self._active_contexts.values()):
-                self._run_idle[context.run_id].set()
+                idle = self._run_idle.pop(context.run_id, None)
+                if idle is not None:
+                    idle.set()
             cancellation.cancel()
             await asyncio.gather(cancellation, return_exceptions=True)
 
     async def cancel(self, cancellation_handle: str) -> None:
         async with self._lock:
             event = self._active_cancellations.get(cancellation_handle)
+            context = self._active_contexts.get(cancellation_handle)
+            statement_id = self._active_statements.get(cancellation_handle)
             if event is not None:
                 event.set()
+        if context is not None and statement_id is not None:
+            await self._request_provider_cancel(context, statement_id)
+
+    async def prepare_run(self, run_id: str) -> None:
+        async with self._lock:
+            if run_id in self._active_runs:
+                raise ResolverFailure(
+                    "DATABRICKS_RUN_ACTIVE",
+                    "The live resolver run identifier is already active.",
+                )
+            self._active_runs.add(run_id)
+            self._provenance = {
+                key: value for key, value in self._provenance.items() if key[0] != run_id
+            }
+            self._run_failures.pop(run_id, None)
+            self._run_idle.pop(run_id, None)
+            self._provenance_runs.pop(run_id, None)
+            self._provenance_runs[run_id] = None
+            self._prune_completed_locked()
+
+    async def finish_run(self, run_id: str) -> None:
+        async with self._lock:
+            if any(item.run_id == run_id for item in self._active_contexts.values()):
+                raise ResolverFailure(
+                    "DATABRICKS_RUN_NOT_IDLE",
+                    "The live resolver run cannot finish while execution is active.",
+                )
+            self._active_runs.discard(run_id)
+            self._prune_completed_locked()
 
     async def health(self) -> bool:
         return True
@@ -451,19 +521,24 @@ class DatabricksSourceAdapter:
 
     async def aclose(self) -> None:
         async with self._lock:
-            if self._active_cancellations:
+            if self._active_cancellations or self._provider_cancel_tasks:
                 raise ResolverFailure(
                     "DATABRICKS_CLOSE_ACTIVE",
-                    "The live resolver cannot close while executions are active.",
+                    "The live resolver cannot close while executions or cancellation are active.",
                 )
         if self._close is not None:
             await self._close()
+        self._run_idle.clear()
+        self._run_failures.clear()
+        self._provenance.clear()
+        self._provenance_runs.clear()
+        self._provider_cancel_runs.clear()
+        self._active_runs.clear()
 
     async def wait_for_run_cleanup(self, run_id: str) -> None:
         async with self._lock:
             event = self._run_idle.get(run_id)
             active = any(item.run_id == run_id for item in self._active_contexts.values())
-            failure = self._run_failures.pop(run_id, None) if not active else None
         if active and event is not None:
             try:
                 await asyncio.wait_for(
@@ -475,8 +550,30 @@ class DatabricksSourceAdapter:
                     "DATABRICKS_CLEANUP_TIMEOUT",
                     "The live resolver did not reach an idle state after cancellation.",
                 ) from exc
-            async with self._lock:
-                failure = self._run_failures.pop(run_id, None)
+        async with self._lock:
+            provider_tasks = [
+                task
+                for handle, task in self._provider_cancel_tasks.items()
+                if self._provider_cancel_runs.get(handle) == run_id
+            ]
+        if provider_tasks:
+            completion = asyncio.gather(*provider_tasks, return_exceptions=True)
+            while not completion.done():
+                try:
+                    await asyncio.shield(completion)
+                except asyncio.CancelledError:
+                    continue
+            completion.result()
+        async with self._lock:
+            completed_handles = [
+                handle
+                for handle, task in self._provider_cancel_tasks.items()
+                if self._provider_cancel_runs.get(handle) == run_id and task.done()
+            ]
+            for handle in completed_handles:
+                self._provider_cancel_tasks.pop(handle, None)
+                self._provider_cancel_runs.pop(handle, None)
+            failure = self._run_failures.pop(run_id, None)
         if failure is not None:
             raise failure
 
@@ -509,6 +606,51 @@ class DatabricksSourceAdapter:
         else:
             await self._record_provenance(context, result)
 
+    async def _request_provider_cancel(
+        self,
+        context: ExecutionContext,
+        statement_id: str,
+    ) -> None:
+        if self._provider_cancel is None:
+            return
+        async with self._lock:
+            task = self._provider_cancel_tasks.get(context.cancellation_handle)
+            if task is None:
+                task = asyncio.create_task(self._provider_cancel_core(context, statement_id))
+                self._provider_cancel_tasks[context.cancellation_handle] = task
+                self._provider_cancel_runs[context.cancellation_handle] = context.run_id
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
+
+    async def _request_registered_provider_cancel(
+        self,
+        context: ExecutionContext,
+    ) -> None:
+        async with self._lock:
+            statement_id = self._active_statements.get(context.cancellation_handle)
+        if statement_id is not None:
+            await self._request_provider_cancel(context, statement_id)
+
+    async def _provider_cancel_core(
+        self,
+        context: ExecutionContext,
+        statement_id: str,
+    ) -> None:
+        assert self._provider_cancel is not None
+        try:
+            await self._provider_cancel(statement_id)
+        except (DatabricksResolverError, TimeoutError):
+            failure = ResolverFailure(
+                "DATABRICKS_PROVIDER_CANCEL_FAILED",
+                "The provider did not acknowledge the cancellation request.",
+            )
+            async with self._lock:
+                self._run_failures[context.run_id] = failure
+
     async def _drain_uninterruptibly(
         self,
         context: ExecutionContext,
@@ -538,6 +680,25 @@ class DatabricksSourceAdapter:
         )
         async with self._lock:
             self._provenance[(context.run_id, context.node_id)] = provenance
+
+    def _prune_completed_locked(self) -> None:
+        while len(self._provenance_runs) > 100:
+            stale_run_id = next(
+                (
+                    candidate
+                    for candidate in self._provenance_runs
+                    if candidate not in self._active_runs
+                ),
+                None,
+            )
+            if stale_run_id is None:
+                return
+            self._provenance_runs.pop(stale_run_id, None)
+            self._provenance = {
+                key: value for key, value in self._provenance.items() if key[0] != stale_run_id
+            }
+            self._run_failures.pop(stale_run_id, None)
+            self._run_idle.pop(stale_run_id, None)
 
     async def capabilities(self, source_alias: str) -> CapabilityCatalog:
         return CapabilityCatalog(

@@ -311,6 +311,9 @@ class OrchestrationService:
                 )
                 async with record.lock:
                     record.coordinator = coordinator
+                prepare_run = getattr(self.resolver, "prepare_run", None)
+                if prepare_run is not None:
+                    await prepare_run(request.run_id)
                 async with asyncio.timeout(_RUN_TIMEOUT_SECONDS):
                     outcome = await coordinator.run(plan, run_id=request.run_id)
                 await self._apply_runtime_events(record, outcome.events)
@@ -376,6 +379,9 @@ class OrchestrationService:
         finally:
             async with record.lock:
                 record.coordinator = None
+            finish_run = getattr(self.resolver, "finish_run", None)
+            if finish_run is not None:
+                await finish_run(request.run_id)
 
     async def _begin_stage(
         self,
@@ -393,7 +399,7 @@ class OrchestrationService:
                     nodes = (
                         [
                             NodeSummary(
-                                node_id=node.id[:64],
+                                node_id=node.id,
                                 kind=node.operation.value,
                                 state=(RunState.RUNNING if node.wave == 0 else RunState.QUEUED),
                                 started_at=now if node.wave == 0 else None,
@@ -600,12 +606,20 @@ class OrchestrationService:
                 LineageEdgeDetail(
                     source=(
                         edge.target
-                        if edge.relation == LineageRelation.READS_FROM.value
+                        if edge.relation
+                        in {
+                            LineageRelation.READS_FROM.value,
+                            LineageRelation.DEPENDS_ON.value,
+                        }
                         else edge.source
                     ),
                     target=(
                         edge.source
-                        if edge.relation == LineageRelation.READS_FROM.value
+                        if edge.relation
+                        in {
+                            LineageRelation.READS_FROM.value,
+                            LineageRelation.DEPENDS_ON.value,
+                        }
                         else edge.target
                     ),
                     relation=LineageRelation(edge.relation),

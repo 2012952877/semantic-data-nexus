@@ -72,7 +72,8 @@
               "inputs": ["rows"],
               "outputs": ["rows"]
             }
-          ]
+          ],
+          "output_node_id": "physical-project_result:project_result"
         },
         "result": {
           "schema": [
@@ -85,6 +86,8 @@
             "period_quarter"
           ],
           "order_by": ["profit desc"],
+          "row_count": 4,
+          "truncated": false,
           "rows": [
             {
               "region": "北辰区",
@@ -129,7 +132,8 @@
             "realized_as"
           ],
           "edge_semantics_valid": true,
-          "topology_sha256": "8bb96a56112767c866cb0d02efe7f408e8d82fd05f535671b18cff892d8613e1"
+          "result_identity_valid": true,
+          "topology_sha256": "1900e460cc9c64b8150303a8d58201e44dd14e2cd80b7dcca19e49be26110327"
         }
       }
     },
@@ -211,7 +215,8 @@
               "inputs": ["rows"],
               "outputs": ["rows"]
             }
-          ]
+          ],
+          "output_node_id": "physical-project_result:project_result"
         },
         "result": {
           "schema": [
@@ -222,6 +227,8 @@
           ],
           "grain": ["region"],
           "order_by": [],
+          "row_count": 4,
+          "truncated": false,
           "rows": [
             {
               "region": "东湖区",
@@ -270,7 +277,8 @@
             "realized_as"
           ],
           "edge_semantics_valid": true,
-          "topology_sha256": "2fc294d15a614a1c03582d7ad060fb6029871a8af0f1bbf3bcd8d52336592990"
+          "result_identity_valid": true,
+          "topology_sha256": "8e764b12e5e9eb3ecfaf78f0dbe12d1301f6067769a8edf5a3fcba8027f5fc91"
         }
       }
     }
