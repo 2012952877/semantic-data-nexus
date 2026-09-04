@@ -244,6 +244,90 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public void DetailValidatorPreservesCanonicalDecimalPrecisionAndScale()
+    {
+        const string exact = "1234567890123456.1200";
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        valid = valid with
+        {
+            Result = valid.Result! with
+            {
+                Rows =
+                [
+                    [
+                        valid.Result.Rows[0][0],
+                        SemanticScalarValue.From(exact)
+                    ]
+                ]
+            }
+        };
+
+        SemanticRunDetailValidator.Validate(valid, runId);
+
+        Assert.Equal(
+            $"\"{exact}\"",
+            JsonSerializer.Serialize(valid.Result.Rows[0][1]));
+    }
+
+    [Theory]
+    [InlineData("+1.0")]
+    [InlineData("01.0")]
+    [InlineData("1.")]
+    [InlineData("1e2")]
+    [InlineData("-0.00")]
+    [InlineData("10000000000000000000000000001")]
+    [InlineData("0.00000000000000000000000000001")]
+    public void DetailValidatorRejectsNonCanonicalOrUnboundedDecimals(string value)
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var invalid = valid with
+        {
+            Result = valid.Result! with
+            {
+                Rows =
+                [
+                    [
+                        valid.Result.Rows[0][0],
+                        SemanticScalarValue.From(value)
+                    ]
+                ]
+            }
+        };
+
+        var exception = Assert.Throws<SemanticBackendException>(() =>
+            SemanticRunDetailValidator.Validate(invalid, runId));
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
+    public void DetailValidatorRejectsJsonNumberForDecimalColumn()
+    {
+        var runId = RunId.New();
+        var valid = StubSemanticBackendClient.Detail(runId);
+        var invalid = valid with
+        {
+            Result = valid.Result! with
+            {
+                Rows =
+                [
+                    [
+                        valid.Result.Rows[0][0],
+                        SemanticScalarValue.From(1250.50d)
+                    ]
+                ]
+            }
+        };
+
+        var exception = Assert.Throws<SemanticBackendException>(() =>
+            SemanticRunDetailValidator.Validate(invalid, runId));
+
+        Assert.Equal("semantic_backend_invalid_response", exception.DiagnosticCode);
+    }
+
+    [Fact]
     public void DetailValidatorRejectsUnboundedRowsAndNonScalarCells()
     {
         var runId = RunId.New();

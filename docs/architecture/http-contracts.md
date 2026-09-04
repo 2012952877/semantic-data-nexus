@@ -99,9 +99,12 @@ idempotency and safe start reconciliation.
 Result data is column-oriented by schema: each row is an array whose cell at
 index `n` must match column `n`. Cells may only be JSON null, string, integer,
 finite number, or boolean values. Integers use the interoperable range
-`[-9007199254740991, 9007199254740991]`; finite numbers have absolute value at
-most `10^28`. Booleans are not integers. Dates are `yyyy-MM-dd` strings and
-timestamps require an explicit UTC offset. Objects and arrays are rejected.
+`[-9007199254740991, 9007199254740991]`. Float cells are finite JSON numbers
+with absolute value at most `10^28`. Decimal cells are canonical fixed-point
+JSON strings with no exponent or leading zero, at most 29 significant digits,
+and scale at most 28; the string representation preserves trailing scale.
+Booleans are not integers. Dates are `yyyy-MM-dd` strings and timestamps
+require an explicit UTC offset. Objects and arrays are rejected.
 
 The BFF accepts at most 100 result columns, 1,000 inline rows, 1,000 physical
 nodes, 5,000 lineage nodes, 10,000 lineage edges, and 1,000 diagnostics. It

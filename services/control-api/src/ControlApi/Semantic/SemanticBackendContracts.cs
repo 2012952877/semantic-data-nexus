@@ -213,6 +213,8 @@ public static class SemanticScalarLimits
 {
     public const long MaximumIntegerMagnitude = 9_007_199_254_740_991;
     public const decimal MaximumNumberMagnitude = 10_000_000_000_000_000_000_000_000_000m;
+    public const int MaximumDecimalPrecision = 29;
+    public const int MaximumDecimalScale = 28;
 }
 
 [JsonConverter(typeof(SemanticScalarValueJsonConverter))]
@@ -512,8 +514,11 @@ public static class SemanticRunDetailValidator
                 value.Kind == SemanticScalarKind.String &&
                 value.StringValue!.EnumerateRunes().Count() <= MaximumScalarStringLength,
             SemanticScalarType.Integer => value.Kind == SemanticScalarKind.Integer,
-            SemanticScalarType.Float or SemanticScalarType.Decimal =>
+            SemanticScalarType.Float =>
                 value.Kind is SemanticScalarKind.Integer or SemanticScalarKind.Number,
+            SemanticScalarType.Decimal =>
+                value.Kind == SemanticScalarKind.String &&
+                ValidDecimal(value.StringValue),
             SemanticScalarType.Boolean => value.Kind == SemanticScalarKind.Boolean,
             SemanticScalarType.Date =>
                 value.Kind == SemanticScalarKind.String &&
@@ -647,6 +652,61 @@ public static class SemanticRunDetailValidator
 
     private static bool ValidOptionalLabel(string? value) =>
         value is null || ValidLabel(value);
+
+    private static bool ValidDecimal(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        var unsigned = value.AsSpan();
+        var negative = unsigned[0] == '-';
+        if (negative)
+        {
+            unsigned = unsigned[1..];
+        }
+
+        var separator = unsigned.IndexOf('.');
+        var integer = separator < 0 ? unsigned : unsigned[..separator];
+        var fraction = separator < 0 ? ReadOnlySpan<char>.Empty : unsigned[(separator + 1)..];
+        if (integer.IsEmpty ||
+            integer.Length > 1 && integer[0] == '0' ||
+            separator >= 0 && fraction.IsEmpty ||
+            fraction.Length > SemanticScalarLimits.MaximumDecimalScale ||
+            !AllAsciiDigits(integer) ||
+            !AllAsciiDigits(fraction))
+        {
+            return false;
+        }
+
+        var coefficient = string.Concat(integer, fraction).AsSpan().TrimStart('0');
+        if (coefficient.Length > SemanticScalarLimits.MaximumDecimalPrecision ||
+            !decimal.TryParse(
+                value,
+                NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var parsed) ||
+            Math.Abs(parsed) > SemanticScalarLimits.MaximumNumberMagnitude)
+        {
+            return false;
+        }
+
+        return !negative || parsed != decimal.Zero;
+    }
+
+    private static bool AllAsciiDigits(ReadOnlySpan<char> value)
+    {
+        foreach (var character in value)
+        {
+            if (!char.IsAsciiDigit(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static bool ValidText(string? value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) &&

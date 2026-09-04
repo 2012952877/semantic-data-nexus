@@ -306,7 +306,7 @@ public sealed class StubSemanticBackendClient : ISemanticBackendClient
                 [
                     [
                         SemanticScalarValue.From("North"),
-                        SemanticScalarValue.From(1250.50d)
+                        SemanticScalarValue.From("1250.50")
                     ]
                 ],
                 1,
