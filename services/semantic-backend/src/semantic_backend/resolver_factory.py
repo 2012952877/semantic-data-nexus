@@ -13,6 +13,22 @@ class ResolverConfigurationError(RuntimeError):
     pass
 
 
+def _fake_delay_seconds(values: Mapping[str, str]) -> float:
+    raw = values.get("SEMANTIC_NEXUS_FAKE_DELAY_MS", "").strip()
+    if not raw:
+        return 0
+    if not raw.isascii() or not raw.isdecimal():
+        raise ResolverConfigurationError(
+            "SEMANTIC_NEXUS_FAKE_DELAY_MS must be an integer from 0 through 5000"
+        )
+    delay_ms = int(raw)
+    if delay_ms > 5_000:
+        raise ResolverConfigurationError(
+            "SEMANTIC_NEXUS_FAKE_DELAY_MS must be an integer from 0 through 5000"
+        )
+    return delay_ms / 1_000
+
+
 def resolver_from_environment(
     adapter: CompilerRuntimeAdapter,
     environment: Mapping[str, str] | None = None,
@@ -38,9 +54,11 @@ def resolver_from_environment(
             max_rows=100_000,
             max_bytes=32 * 1024 * 1024,
         )
+        delay_seconds = _fake_delay_seconds(values)
         return FakeResolver(
             tables={source.alias: load_synthetic_sales()},
             catalogs={source.alias: catalog},
+            delays={source.alias: delay_seconds} if delay_seconds else None,
         )
     if mode != "databricks":
         raise ResolverConfigurationError("SEMANTIC_NEXUS_RESOLVER must be 'fake' or 'databricks'")
