@@ -294,7 +294,12 @@ STATE_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
         {ExecutionState.READY, ExecutionState.CANCELLED, ExecutionState.SKIPPED}
     ),
     ExecutionState.READY: frozenset(
-        {ExecutionState.RUNNING, ExecutionState.CANCELLED, ExecutionState.SKIPPED}
+        {
+            ExecutionState.RUNNING,
+            ExecutionState.FAILED,
+            ExecutionState.CANCELLED,
+            ExecutionState.SKIPPED,
+        }
     ),
     ExecutionState.RUNNING: frozenset(
         {

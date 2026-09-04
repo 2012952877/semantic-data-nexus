@@ -100,13 +100,22 @@ class _YieldingAppendStore(InMemoryEventStore):
 
 
 class _FailOnceNodeTerminalStore(InMemoryEventStore):
-    def __init__(self, terminal_code: str = "NODE_SUCCEEDED") -> None:
+    def __init__(
+        self,
+        terminal_code: str = "NODE_SUCCEEDED",
+        scope_id: str | None = None,
+    ) -> None:
         super().__init__()
         self.terminal_code = terminal_code
+        self.scope_id = scope_id
         self.failed = False
 
     async def append(self, event: DiagnosticEvent) -> None:
-        if event.code == self.terminal_code and not self.failed:
+        if (
+            event.code == self.terminal_code
+            and (self.scope_id is None or event.scope_id == self.scope_id)
+            and not self.failed
+        ):
             self.failed = True
             raise RuntimeError("synthetic event-store failure")
         await super().append(event)
@@ -314,6 +323,57 @@ async def test_cancelled_terminal_append_failure_returns_failed_run() -> None:
         for event in outcome.events
     )
     assert any(event.code == "RUN_FAILED" for event in outcome.events)
+    assert not any(
+        event.code == "STATE_TRANSITION_INVALID" for event in outcome.events
+    )
+    assert [event.sequence for event in outcome.events] == list(
+        range(len(outcome.events))
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_cancel_append_failure_can_fallback_from_ready() -> None:
+    fixture = join_sort_fixture()
+    fixture.resolver._delays.update(
+        {"region_source": 1.0, "score_source": 1.0}
+    )
+    queued_node_id = "source-scores"
+    events = _FailOnceNodeTerminalStore(
+        "NODE_CANCELLED", scope_id=queued_node_id
+    )
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+        max_concurrency=1,
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-queued-cancel-failure")
+    )
+    await _wait_for_event(
+        coordinator, "run-queued-cancel-failure", "NODE_STARTED"
+    )
+    assert await coordinator.cancel("run-queued-cancel-failure")
+    outcome = await task
+
+    assert outcome.summary.state is ExecutionState.FAILED
+    assert outcome.summary.diagnostic_code == "EVENT_STORE_WRITE_FAILED"
+    assert outcome.manifest is None
+    assert events.failed
+    assert not any(
+        event.scope_id == queued_node_id and event.code == "NODE_STARTED"
+        for event in outcome.events
+    )
+    assert not any(
+        event.scope_id == queued_node_id and event.code == "NODE_CANCELLED"
+        for event in outcome.events
+    )
+    assert any(
+        event.scope_id == queued_node_id
+        and event.state is ExecutionState.FAILED
+        and event.code == "EVENT_STORE_WRITE_FAILED"
+        for event in outcome.events
+    )
     assert not any(
         event.code == "STATE_TRANSITION_INVALID" for event in outcome.events
     )
