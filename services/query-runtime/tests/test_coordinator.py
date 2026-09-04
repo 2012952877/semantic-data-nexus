@@ -100,12 +100,13 @@ class _YieldingAppendStore(InMemoryEventStore):
 
 
 class _FailOnceNodeTerminalStore(InMemoryEventStore):
-    def __init__(self) -> None:
+    def __init__(self, terminal_code: str = "NODE_SUCCEEDED") -> None:
         super().__init__()
+        self.terminal_code = terminal_code
         self.failed = False
 
     async def append(self, event: DiagnosticEvent) -> None:
-        if event.code == "NODE_SUCCEEDED" and not self.failed:
+        if event.code == self.terminal_code and not self.failed:
             self.failed = True
             raise RuntimeError("synthetic event-store failure")
         await super().append(event)
@@ -276,6 +277,79 @@ async def test_node_terminal_append_failure_reports_event_store_failure() -> Non
         and event.code == "EVENT_STORE_WRITE_FAILED"
         for event in outcome.events
     )
+    assert not any(
+        event.code == "STATE_TRANSITION_INVALID" for event in outcome.events
+    )
+    assert [event.sequence for event in outcome.events] == list(
+        range(len(outcome.events))
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_terminal_append_failure_returns_failed_run() -> None:
+    fixture = delayed_fixture()
+    events = _FailOnceNodeTerminalStore("NODE_CANCELLED")
+    coordinator = QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+    )
+    task = asyncio.create_task(
+        coordinator.run(fixture.plan, run_id="run-cancel-append-failure")
+    )
+    await _wait_for_event(
+        coordinator, "run-cancel-append-failure", "NODE_STARTED"
+    )
+    assert await coordinator.cancel("run-cancel-append-failure")
+    outcome = await task
+
+    assert outcome.summary.state is ExecutionState.FAILED
+    assert outcome.summary.diagnostic_code == "EVENT_STORE_WRITE_FAILED"
+    assert outcome.manifest is None
+    assert not any(event.code == "NODE_CANCELLED" for event in outcome.events)
+    assert any(
+        event.scope == "node"
+        and event.state is ExecutionState.FAILED
+        and event.code == "EVENT_STORE_WRITE_FAILED"
+        for event in outcome.events
+    )
+    assert any(event.code == "RUN_FAILED" for event in outcome.events)
+    assert not any(
+        event.code == "STATE_TRANSITION_INVALID" for event in outcome.events
+    )
+    assert [event.sequence for event in outcome.events] == list(
+        range(len(outcome.events))
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_terminal_append_failure_returns_failed_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = simple_profit_fixture()
+    events = _FailOnceNodeTerminalStore("NODE_FAILED")
+
+    async def fail_execute(context, fragment, cancel_event):
+        raise ValueError("synthetic node failure")
+
+    monkeypatch.setattr(fixture.resolver, "execute", fail_execute)
+    outcome = await QueryCoordinator(
+        resolver=fixture.resolver,
+        result_store=InlineResultStore(),
+        event_store=events,
+    ).run(fixture.plan, run_id="run-failed-append-failure")
+
+    assert outcome.summary.state is ExecutionState.FAILED
+    assert outcome.summary.diagnostic_code == "EVENT_STORE_WRITE_FAILED"
+    assert outcome.manifest is None
+    assert not any(event.code == "NODE_FAILED" for event in outcome.events)
+    assert any(
+        event.scope == "node"
+        and event.state is ExecutionState.FAILED
+        and event.code == "EVENT_STORE_WRITE_FAILED"
+        for event in outcome.events
+    )
+    assert any(event.code == "RUN_FAILED" for event in outcome.events)
     assert not any(
         event.code == "STATE_TRANSITION_INVALID" for event in outcome.events
     )

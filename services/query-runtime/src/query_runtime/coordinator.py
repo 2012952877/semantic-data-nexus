@@ -577,7 +577,7 @@ class QueryCoordinator:
                         resolver_cancel_requested = True
                     if was_cancelled:
                         raise asyncio.CancelledError
-                    await self._emit_node_terminal(
+                    diagnostic_code = await self._emit_node_terminal(
                         machine,
                         emitter,
                         scope="node",
@@ -590,7 +590,7 @@ class QueryCoordinator:
                     return _NodeOutcome(
                         node.id,
                         machine.state,
-                        diagnostic_code="NODE_TIMEOUT",
+                        diagnostic_code=diagnostic_code,
                     )
                 table, manifest = execution.result()
                 reserved = True
@@ -598,7 +598,7 @@ class QueryCoordinator:
                     await memory.release(run_id, node.id)
                     reserved = False
                     raise asyncio.CancelledError
-                await self._emit_node_terminal(
+                diagnostic_code = await self._emit_node_terminal(
                     machine,
                     emitter,
                     scope="node",
@@ -613,6 +613,15 @@ class QueryCoordinator:
                         "rows": table.num_rows,
                     },
                 )
+                if diagnostic_code != "NODE_SUCCEEDED":
+                    await memory.release(run_id, node.id)
+                    reserved = False
+                    cancel_event.set()
+                    return _NodeOutcome(
+                        node.id,
+                        machine.state,
+                        diagnostic_code=diagnostic_code,
+                    )
                 return _NodeOutcome(
                     node.id,
                     machine.state,
@@ -628,7 +637,7 @@ class QueryCoordinator:
                 and not resolver_cancel_requested
             ):
                 self._request_resolver_cancel(execution_context)
-            await self._emit_node_terminal(
+            diagnostic_code = await self._emit_node_terminal(
                 machine,
                 emitter,
                 scope="node",
@@ -639,7 +648,7 @@ class QueryCoordinator:
                 duration_ms=_duration(started),
             )
             return _NodeOutcome(
-                node.id, machine.state, diagnostic_code="NODE_TIMEOUT"
+                node.id, machine.state, diagnostic_code=diagnostic_code
             )
         except asyncio.CancelledError:
             if machine.state in TERMINAL_STATES:
@@ -666,7 +675,7 @@ class QueryCoordinator:
                 and not resolver_cancel_requested
             ):
                 self._request_resolver_cancel(execution_context)
-            await self._emit_node_terminal(
+            diagnostic_code = await self._emit_node_terminal(
                 machine,
                 emitter,
                 scope="node",
@@ -677,7 +686,7 @@ class QueryCoordinator:
                 duration_ms=_duration(started),
             )
             return _NodeOutcome(
-                node.id, machine.state, diagnostic_code="NODE_CANCELLED"
+                node.id, machine.state, diagnostic_code=diagnostic_code
             )
         except Exception as exc:
             if reserved:
@@ -690,7 +699,7 @@ class QueryCoordinator:
                 message = exc.message
             else:
                 message = "Node failed without publishing an output"
-            await self._emit_node_terminal(
+            diagnostic_code = await self._emit_node_terminal(
                 machine,
                 emitter,
                 scope="node",
@@ -700,9 +709,53 @@ class QueryCoordinator:
                 message=message,
                 duration_ms=_duration(started),
             )
-            return _NodeOutcome(node.id, machine.state, diagnostic_code=code)
+            return _NodeOutcome(
+                node.id, machine.state, diagnostic_code=diagnostic_code
+            )
 
     async def _emit_node_terminal(
+        self,
+        machine: StateMachine,
+        emitter: _Emitter,
+        *,
+        scope: str,
+        scope_id: str,
+        state: ExecutionState,
+        code: str,
+        message: str,
+        duration_ms: int | None = None,
+        metadata: dict[str, str | int | bool | None] | None = None,
+    ) -> str:
+        try:
+            await self._persist_node_terminal(
+                machine,
+                emitter,
+                scope=scope,
+                scope_id=scope_id,
+                state=state,
+                code=code,
+                message=message,
+                duration_ms=duration_ms,
+                metadata=metadata,
+            )
+            return code
+        except RuntimeFailure as exc:
+            if exc.code != "EVENT_STORE_WRITE_FAILED":
+                raise
+        await self._persist_node_terminal(
+            machine,
+            emitter,
+            scope=scope,
+            scope_id=scope_id,
+            state=ExecutionState.FAILED,
+            code="EVENT_STORE_WRITE_FAILED",
+            message="Node terminal event could not be persisted",
+            duration_ms=duration_ms,
+            metadata=metadata,
+        )
+        return "EVENT_STORE_WRITE_FAILED"
+
+    async def _persist_node_terminal(
         self,
         machine: StateMachine,
         emitter: _Emitter,
