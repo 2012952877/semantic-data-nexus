@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from typing import Protocol
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from query_runtime.arrow_memory import retained_table_size
 from query_runtime.domain import (
     CommittedManifest,
     ResultHandle,
@@ -94,6 +96,7 @@ class InlineResultStore:
     ) -> CommittedManifest:
         validate_id(run_id, "run_id")
         validate_id(node_id, "node_id")
+        retained_bytes = retained_table_size(table)
         result_id = uuid.uuid4().hex
         uri = f"inline://{run_id}/{node_id}/{result_id}"
         handle = ResultHandle(
@@ -107,8 +110,8 @@ class InlineResultStore:
             result=handle,
             schema=arrow_schema(table.schema),
             row_count=table.num_rows,
-            byte_count=table.nbytes,
-            parts=(ResultPart(path=uri, rows=table.num_rows, bytes=table.nbytes),),
+            byte_count=retained_bytes,
+            parts=(ResultPart(path=uri, rows=table.num_rows, bytes=retained_bytes),),
             committed_at=utc_now(),
         )
         if cancel_event is not None and cancel_event.is_set():
@@ -157,7 +160,7 @@ class ParquetResultStore:
         run_root = self._safe_child(run_id, node_id)
         run_root.mkdir(parents=True, exist_ok=True)
         temporary = run_root / f".tmp-{result_id}"
-        final = run_root / result_id
+        final = self._safe_child(run_id, node_id, result_id)
         temporary.mkdir()
         write_task = asyncio.create_task(
             asyncio.to_thread(
@@ -310,6 +313,11 @@ class ParquetResultStore:
         manifest = CommittedManifest.model_validate(
             json.loads(manifest_path.read_text(encoding="utf-8"))
         )
+        if handle != manifest.result:
+            raise ResultStoreFailure(
+                "RESULT_HANDLE_INVALID",
+                "Parquet result handle does not match the committed manifest",
+            )
         return await asyncio.to_thread(
             self._read_page_sync, result_path, manifest, offset, limit
         )
@@ -352,7 +360,9 @@ class ParquetResultStore:
     def _safe_child(self, *parts: str) -> Path:
         for part in parts:
             validate_id(part, "path component")
-        candidate = self.root.joinpath(*parts).resolve()
+        candidate = self.root.joinpath(
+            *(_encode_path_component(part) for part in parts)
+        ).resolve()
         if self.root != candidate and self.root not in candidate.parents:
             raise ResultStoreFailure(
                 "RESULT_PATH_TRAVERSAL", "Result path escapes the configured root"
@@ -374,7 +384,9 @@ class HybridResultStore:
         cancel_event: asyncio.Event | None = None,
     ) -> CommittedManifest:
         store: ResultStore = (
-            self.inline if table.nbytes <= self.inline_max_bytes else self.parquet
+            self.inline
+            if retained_table_size(table) <= self.inline_max_bytes
+            else self.parquet
         )
         return await store.commit(run_id, node_id, table, cancel_event)
 
@@ -391,3 +403,8 @@ def _validate_page(offset: int, limit: int) -> None:
             "RESULT_PAGE_INVALID",
             "Page offset must be non-negative and limit must be between 1 and 10000",
         )
+
+
+def _encode_path_component(value: str) -> str:
+    digest = hashlib.sha256(value.encode("ascii")).hexdigest()
+    return f"id-{digest}"

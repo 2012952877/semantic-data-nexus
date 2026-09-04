@@ -12,6 +12,7 @@ from typing import Any
 
 import pyarrow as pa
 
+from query_runtime.arrow_memory import BufferIdentity, retained_buffer_sizes
 from query_runtime.domain import (
     TERMINAL_STATES,
     CommittedManifest,
@@ -60,6 +61,11 @@ class _MemoryBudget:
         self.maximum = maximum
         self.current = 0
         self._reservations: dict[tuple[str, str], int] = {}
+        self._reservation_buffers: dict[
+            tuple[str, str], frozenset[BufferIdentity]
+        ] = {}
+        self._buffer_sizes: dict[BufferIdentity, int] = {}
+        self._buffer_references: dict[BufferIdentity, int] = {}
         self._deferred: set[tuple[str, str]] = set()
         self._retainers: dict[tuple[str, str], int] = {}
         self._release_pending: set[tuple[str, str]] = set()
@@ -80,7 +86,11 @@ class _MemoryBudget:
             self.current += size
             self._reservations[(run_id, node_id)] = size
 
-    async def reconcile(self, run_id: str, node_id: str, size: int) -> None:
+    async def reconcile(
+        self, run_id: str, node_id: str, table: pa.Table
+    ) -> None:
+        buffers = retained_buffer_sizes(table)
+        size = sum(buffers.values())
         async with self._lock:
             key = (run_id, node_id)
             reserved = self._reservations[key]
@@ -90,8 +100,16 @@ class _MemoryBudget:
                     "Node output exceeded its pre-admitted memory reservation",
                     details={"reserved_bytes": reserved, "actual_bytes": size},
                 )
-            self.current -= reserved - size
+            self.current -= reserved
             self._reservations[key] = size
+            identities = frozenset(buffers)
+            self._reservation_buffers[key] = identities
+            for identity, buffer_size in buffers.items():
+                references = self._buffer_references.get(identity, 0)
+                if references == 0:
+                    self.current += buffer_size
+                    self._buffer_sizes[identity] = buffer_size
+                self._buffer_references[identity] = references + 1
 
     async def release(self, run_id: str, node_id: str) -> None:
         async with self._lock:
@@ -99,10 +117,7 @@ class _MemoryBudget:
             if self._retainers.get(key, 0) > 0:
                 self._release_pending.add(key)
                 return
-            size = self._reservations.pop(key, 0)
-            self._deferred.discard(key)
-            self._release_pending.discard(key)
-            self.current = max(0, self.current - size)
+            self._release_key(key)
 
     async def defer(self, run_id: str, node_id: str) -> None:
         async with self._lock:
@@ -128,10 +143,7 @@ class _MemoryBudget:
             if retained <= 1:
                 self._retainers.pop(key, None)
                 if key in self._release_pending:
-                    size = self._reservations.pop(key, 0)
-                    self._deferred.discard(key)
-                    self._release_pending.discard(key)
-                    self.current = max(0, self.current - size)
+                    self._release_key(key)
                 return
             self._retainers[key] = retained - 1
 
@@ -150,9 +162,25 @@ class _MemoryBudget:
                 and key not in self._deferred
                 and key not in retained
             ]
-            released = sum(self._reservations.pop(key) for key in keys)
-            self._release_pending.difference_update(keys)
-            self.current = max(0, self.current - released)
+            for key in keys:
+                self._release_key(key)
+
+    def _release_key(self, key: tuple[str, str]) -> None:
+        reserved = self._reservations.pop(key, 0)
+        identities = self._reservation_buffers.pop(key, frozenset())
+        if identities:
+            for identity in identities:
+                references = self._buffer_references[identity] - 1
+                if references == 0:
+                    self.current -= self._buffer_sizes.pop(identity)
+                    self._buffer_references.pop(identity)
+                else:
+                    self._buffer_references[identity] = references
+        else:
+            self.current -= reserved
+        self._deferred.discard(key)
+        self._release_pending.discard(key)
+        self.current = max(0, self.current)
 
 
 class _Emitter:
@@ -717,7 +745,7 @@ class QueryCoordinator:
         try:
             table = await self._perform_node(node, inputs, cancel_event)
             self.executor.enforce_limits(table)
-            await memory.reconcile(run_id, node.id, table.nbytes)
+            await memory.reconcile(run_id, node.id, table)
             if cancel_event.is_set():
                 raise asyncio.CancelledError
             manifest = await self.result_store.commit(
@@ -972,7 +1000,10 @@ class QueryCoordinator:
         dependency_ids: tuple[str, ...],
         retained_inputs: tuple[pa.Table, ...],
     ) -> None:
-        release = asyncio.create_task(
+        loop = execution.get_loop()
+        if loop.is_closed():
+            return
+        release = loop.create_task(
             self._release_late_execution(
                 execution,
                 memory,

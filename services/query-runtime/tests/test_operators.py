@@ -6,6 +6,7 @@ import math
 import pyarrow as pa
 import pytest
 
+from query_runtime.arrow_memory import retained_table_size
 from query_runtime.domain import (
     AggregateFunction,
     AggregateSpec,
@@ -22,7 +23,7 @@ from query_runtime.domain import (
     TimeGrain,
     TypedExpression,
 )
-from query_runtime.errors import OperatorFailure
+from query_runtime.errors import OperatorFailure, ResourceLimitFailure
 from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits
 
 
@@ -294,6 +295,49 @@ async def test_duckdb_normalization_preserves_distinct_unicode_identifiers(
         asyncio.Event(),
     )
     assert result.column_names == ["ß", "ss"]
+
+
+def test_one_row_slice_retained_backing_buffer_exceeds_table_limit() -> None:
+    full = pa.table({"value": list(range(100_000))})
+    sliced = full.slice(0, 1)
+    assert sliced.nbytes < full.get_total_buffer_size()
+    executor = DuckDBOperatorExecutor(
+        ResourceLimits(max_bytes=full.get_total_buffer_size() - 1)
+    )
+    with pytest.raises(ResourceLimitFailure) as error:
+        executor.enforce_limits(sliced)
+    assert error.value.code == "LIMIT_BYTES_EXCEEDED"
+
+
+@pytest.mark.parametrize("length", (0, 1))
+def test_buffer_view_accounts_retained_root_allocation(length: int) -> None:
+    root = pa.allocate_buffer(1024 * 1024)
+    view = root.slice(0, length * 8)
+    array = pa.Array.from_buffers(pa.int64(), length, [None, view])
+    table = pa.table({"value": array})
+    assert table.get_total_buffer_size() == length * 8
+    executor = DuckDBOperatorExecutor(ResourceLimits(max_bytes=1024))
+    with pytest.raises(ResourceLimitFailure) as error:
+        executor.enforce_limits(table)
+    assert error.value.details["bytes"] == root.size
+
+
+def test_nested_dictionary_buffers_are_accounted() -> None:
+    dictionary = pa.array(["alpha", "beta"]).dictionary_encode()
+    nested = pa.StructArray.from_arrays([dictionary], names=["category"])
+    table = pa.table({"record": nested})
+    assert retained_table_size(table) >= table.get_total_buffer_size()
+
+
+def test_list_view_nested_dictionary_buffers_are_accounted() -> None:
+    dictionary = pa.array(["alpha", "beta"]).dictionary_encode()
+    list_view = pa.ListViewArray.from_arrays(
+        pa.array([0], type=pa.int32()),
+        pa.array([2], type=pa.int32()),
+        dictionary,
+    )
+    table = pa.table({"categories": list_view})
+    assert retained_table_size(table) >= table.get_total_buffer_size()
 
 
 def test_memory_limit_rejects_non_numeric_configuration() -> None:

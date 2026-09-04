@@ -11,6 +11,7 @@ from typing import Any
 import duckdb
 import pyarrow as pa
 
+from query_runtime.arrow_memory import retained_table_size
 from query_runtime.domain import AggregateFunction, OperatorKind, OperatorSpec
 from query_runtime.errors import OperatorFailure, ResourceLimitFailure, RuntimeFailure
 from query_runtime.expressions import quote_identifier, render_expression
@@ -308,11 +309,12 @@ class DuckDBOperatorExecutor:
                 "Operator output exceeded the configured row limit",
                 details={"rows": table.num_rows, "limit": self.limits.max_rows},
             )
-        if table.nbytes > self.limits.max_bytes:
+        retained_bytes = retained_table_size(table)
+        if retained_bytes > self.limits.max_bytes:
             raise ResourceLimitFailure(
                 "LIMIT_BYTES_EXCEEDED",
                 "Operator output exceeded the configured byte limit",
-                details={"bytes": table.nbytes, "limit": self.limits.max_bytes},
+                details={"bytes": retained_bytes, "limit": self.limits.max_bytes},
             )
 
 

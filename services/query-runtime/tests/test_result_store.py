@@ -89,6 +89,59 @@ async def test_forged_inline_handle_cannot_cross_run_boundary() -> None:
     assert error.value.code == "RESULT_HANDLE_INVALID"
 
 
+@pytest.mark.asyncio
+async def test_forged_parquet_handle_must_match_manifest_exactly(
+    tmp_path: Path,
+) -> None:
+    store = ParquetResultStore(tmp_path)
+    manifest = await store.commit(
+        "services", "node", pa.table({"x": [1]})
+    )
+    forged = manifest.result.model_copy(update={"run_id": "SERVICES"})
+    with pytest.raises(ResultStoreFailure) as error:
+        await store.read_page(forged, 0, 1)
+    assert error.value.code == "RESULT_HANDLE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_windows_aliasable_ids_map_to_distinct_paths(tmp_path: Path) -> None:
+    store = ParquetResultStore(tmp_path)
+    manifests = [
+        await store.commit(run_id, "node", pa.table({"x": [1]}))
+        for run_id in ("SERVICES", "services", "services.")
+    ]
+    paths = [Path(manifest.result.uri) for manifest in manifests]
+    assert len({str(path) for path in paths}) == 3
+    assert all(path.is_dir() for path in paths)
+    for manifest in manifests:
+        assert (await store.read_page(manifest.result, 0, 1)).num_rows == 1
+
+
+@pytest.mark.asyncio
+async def test_maximum_length_id_has_bounded_filesystem_component(
+    tmp_path: Path,
+) -> None:
+    store = ParquetResultStore(tmp_path)
+    run_id = "r" * 128
+    manifest = await store.commit(run_id, "n" * 128, pa.table({"x": [1]}))
+    path = Path(manifest.result.uri)
+    assert all(len(part) <= 255 for part in path.parts)
+    assert (await store.read_page(manifest.result, 0, 1)).num_rows == 1
+
+
+@pytest.mark.asyncio
+async def test_hybrid_threshold_uses_retained_slice_buffer_size(
+    tmp_path: Path,
+) -> None:
+    full = pa.table({"value": list(range(100_000))})
+    sliced = full.slice(0, 1)
+    store = HybridResultStore(
+        tmp_path, inline_max_bytes=sliced.nbytes
+    )
+    manifest = await store.commit("run-slice", "node-slice", sliced)
+    assert manifest.result.storage == "parquet"
+
+
 class _SlowWriteStore(ParquetResultStore):
     def _write_temporary(
         self,

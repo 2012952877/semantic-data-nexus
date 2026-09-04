@@ -8,7 +8,12 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from query_runtime.coordinator import QueryCoordinator, _Emitter, validate_physical_plan
+from query_runtime.coordinator import (
+    QueryCoordinator,
+    _Emitter,
+    _MemoryBudget,
+    validate_physical_plan,
+)
 from query_runtime.domain import (
     BoundSource,
     CapabilityCatalog,
@@ -174,14 +179,20 @@ def _memory_chain_fixture() -> tuple[PhysicalPlan, FakeResolver, int]:
 async def _wait_for_run_started(
     coordinator: QueryCoordinator, run_id: str
 ) -> None:
+    await _wait_for_event(coordinator, run_id, "RUN_STARTED")
+
+
+async def _wait_for_event(
+    coordinator: QueryCoordinator, run_id: str, code: str
+) -> None:
     for _ in range(100):
         if any(
-            event.code == "RUN_STARTED"
+            event.code == code
             for event in await coordinator.event_store.list(run_id)
         ):
             return
         await asyncio.sleep(0)
-    raise AssertionError(f"run '{run_id}' did not start")
+    raise AssertionError(f"run '{run_id}' did not emit {code}")
 
 
 async def _wait_for_coordinator_cleanup(coordinator: QueryCoordinator) -> None:
@@ -256,12 +267,17 @@ async def test_cancel_and_timeout_propagate(tmp_path: Path) -> None:
         result_store=ParquetResultStore(tmp_path / "cancel"),
     )
     task = asyncio.create_task(coordinator.run(fixture.plan, run_id="run-cancel"))
-    await asyncio.sleep(0.03)
+    await _wait_for_event(coordinator, "run-cancel", "NODE_STARTED")
     assert await coordinator.cancel("run-cancel")
     cancelled = await task
     assert cancelled.summary.state is ExecutionState.CANCELLED
     assert cancelled.manifest is None
+    for _ in range(100):
+        if fixture.resolver.cancelled:
+            break
+        await asyncio.sleep(0)
     assert fixture.resolver.cancelled == [("run-cancel", "source-profit")]
+    await _wait_for_coordinator_cleanup(coordinator)
 
     timeout_fixture = delayed_fixture()
     timed_out = await QueryCoordinator(
@@ -770,6 +786,7 @@ async def test_noncooperative_resolver_cannot_extend_node_deadline(
     assert blocked.summary.diagnostic_code == "LIMIT_IN_FLIGHT_BYTES_EXCEEDED"
     await asyncio.sleep(0.25)
     assert coordinator._memory.current == 0
+    await _wait_for_coordinator_cleanup(coordinator)
 
 
 @pytest.mark.asyncio
@@ -916,6 +933,46 @@ async def test_intermediate_tables_release_after_final_consumer() -> None:
         ),
     ).run(plan, run_id="run-memory-release")
     assert outcome.summary.state is ExecutionState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_global_budget_counts_shared_backing_buffer_once() -> None:
+    full = pa.table({"value": list(range(100_000))})
+    sliced = full.slice(0, 1)
+    retained_bytes = full.get_total_buffer_size()
+    assert sliced.nbytes < retained_bytes
+    assert sliced.get_total_buffer_size() == retained_bytes
+
+    memory = _MemoryBudget(retained_bytes * 2)
+    await memory.reserve("run-shared", "full", retained_bytes)
+    await memory.reconcile("run-shared", "full", full)
+    await memory.reserve("run-shared", "slice", retained_bytes)
+    await memory.reconcile("run-shared", "slice", sliced)
+    assert memory.current == retained_bytes
+
+    await memory.release("run-shared", "full")
+    assert memory.current == retained_bytes
+    await memory.release("run-shared", "slice")
+    assert memory.current == 0
+
+
+@pytest.mark.asyncio
+async def test_global_budget_accounts_root_buffer_views_once() -> None:
+    root = pa.allocate_buffer(1024 * 1024)
+    first = pa.table(
+        {"value": pa.Array.from_buffers(pa.int64(), 1, [None, root.slice(0, 8)])}
+    )
+    second = pa.table(
+        {"value": pa.Array.from_buffers(pa.int64(), 1, [None, root.slice(8, 8)])}
+    )
+    memory = _MemoryBudget(root.size * 2)
+    await memory.reserve("run-views", "first", root.size)
+    await memory.reconcile("run-views", "first", first)
+    await memory.reserve("run-views", "second", root.size)
+    await memory.reconcile("run-views", "second", second)
+    assert memory.current == root.size
+    await memory.release_run("run-views")
+    assert memory.current == 0
 
 
 @pytest.mark.asyncio
