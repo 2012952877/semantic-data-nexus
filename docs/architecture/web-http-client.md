@@ -43,6 +43,8 @@ Run IDs use `run_` followed by 32 lowercase hexadecimal characters. The typed BF
 
 The Web maps pre-start states to `queued`, active and cancel-requested states to `running`, and `Cancelled` to the existing UI state `canceled`. It derives elapsed and stage durations from the typed timestamps, validates token totals, and projects BFF stage identifiers onto the workbench's five-stage ledger.
 
+Run provenance is kept distinct. `workload` and `compilationMode` come from validated run metadata; `ontology` remains `unknown` until validated semantic detail supplies `sqg.ontology`; and `model` is always `unknown` in HTTP mode because the BFF contract exposes no model field. Compilation mode is never mapped into model. The static regional-sales v1.4 and Nexus Planner labels remain Mock-only.
+
 `GET /api/v1/runs` returns `{ "items": RunMetadata[], "count": number }`; `count` must equal `items.length`.
 
 ## Detail contract

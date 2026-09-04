@@ -26,6 +26,9 @@ const formatDuration = (milliseconds: number) =>
       <dl class="run-facts">
         <div><dt>耗时</dt><dd>{{ formatDuration(run.elapsedMs) }}</dd></div>
         <div><dt>Token</dt><dd>{{ run.tokens.input + run.tokens.output }}</dd></div>
+        <div><dt>工作负载</dt><dd>{{ run.workload ?? 'unknown' }}</dd></div>
+        <div><dt>语义本体</dt><dd>{{ run.ontology ?? 'unknown' }}</dd></div>
+        <div><dt>编译模式</dt><dd>{{ run.compilationMode ?? 'unknown' }}</dd></div>
         <div><dt>模型</dt><dd>{{ run.model }}</dd></div>
       </dl>
     </header>

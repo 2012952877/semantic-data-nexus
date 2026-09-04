@@ -699,7 +699,7 @@ const mapStages = (stages: BffStageSummary[]): Stage[] => {
 const emptySqg = (summary: BffRunSummary): SqgSummary => ({
   version: 'unavailable',
   intent: summary.question,
-  ontology: summary.workload,
+  ontology: 'unknown',
   resolvedMembers: [],
   metrics: [],
   dimensions: [],
@@ -730,7 +730,10 @@ const mapSummary = (summary: BffRunSummary): Run => {
     createdAt: summary.createdAt,
     ...(summary.completedAt === null ? {} : { completedAt: summary.completedAt }),
     elapsedMs,
-    model: summary.compilationMode,
+    workload: summary.workload,
+    ontology: 'unknown',
+    compilationMode: summary.compilationMode,
+    model: 'unknown',
     executionMode: summary.executionMode,
     outputMode: summary.outputMode,
     tokens: {
@@ -802,6 +805,7 @@ const mapDetail = (summary: BffRunSummary, detail: BffRunDetail): Run => {
   return {
     ...mapSummary(summary),
     ...(isEmpty ? { state: 'empty' as const, scenario: 'empty' as const } : {}),
+    ontology: detail.sqg.ontology,
     sqg: clone(detail.sqg),
     nodes: clone(detail.physicalNodes),
     ...(detail.result === null ? {} : { result: mapResult(detail.result) }),

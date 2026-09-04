@@ -19,6 +19,9 @@ test('stable routes render their primary surfaces', async ({ page }) => {
   await expect(page.getByText('未探测或推断后端健康度', { exact: false })).toBeVisible()
   await page.goto('/runs/run_00000000000000000000000000000001')
   await expect(page.locator('.run-id')).not.toContainText('合成数据')
+  await expect(page.getByText('unknown', { exact: true })).toBeVisible()
+  await expect(page.getByText('regional_quarterly_profit', { exact: true })).toBeVisible()
+  await expect(page.getByText('Nexus Planner Small', { exact: true })).toHaveCount(0)
 
   await page.goto('/runs')
   await expect(page.getByRole('table', { name: '运行列表' })).toBeVisible()

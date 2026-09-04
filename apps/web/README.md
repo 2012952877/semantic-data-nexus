@@ -75,7 +75,7 @@ Mock 历史使用带 `version: 1` 的逐运行记录（键前缀 `semantic-nexus
 
 ## HTTP 行为
 
-HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；path-bound summary 必须与请求的 `runId` 一致。Decimal 列只接受保留精度与 scale 的 canonical fixed-point JSON string；Float 列还执行 BFF 的 10^28 magnitude 与 safe-integer 边界。模糊失败重试会复用完整创建载荷与原 `clientRequestId`，已知 `runId` 后只恢复轮询；版本栅栏、共享终态快照和按运行跟踪的取消请求保证终态不可回退。创建后若状态或详情暂不可用，界面保留最后确认的运行 ID、取消与状态恢复操作，不会错误声称运行未启动。明确拒绝的创建只凭持久化 `Failed` summary 与 diagnostics 展示；HTTP 零行只显示 BFF diagnostics 或通用建议，不复用 Mock 合成数据范围。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 synthetic unavailable/unknown。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
+HTTP 模式只调用 [`/api/v1/runs` 契约](../../docs/architecture/web-http-client.md)，并与 BFF integration PR #22 的 typed wire contract 对齐。每一个成功响应在映射到界面 `Run` 前都会完整校验；path-bound summary 必须与请求的 `runId` 一致。Workload、ontology、compilation mode 与 model 独立建模：summary 提供 workload/compilation mode，detail 提供 ontology，BFF 没有 model 字段所以明确显示 `unknown`，绝不把 compilation mode 伪装成模型。Mock 的区域销售 v1.4 与 Nexus Planner 标签只在 Mock 模式展示。Decimal 列只接受 canonical fixed-point JSON string；Float 列执行 BFF 的 10^28 magnitude 与 safe-integer 边界。模糊失败重试会复用完整创建载荷与原 `clientRequestId`；版本栅栏、共享终态快照和按运行跟踪的取消请求保证终态不可回退。创建后若状态或详情暂不可用，界面保留最后确认的运行 ID、取消与状态恢复操作。明确拒绝的创建只凭持久化 `Failed` summary 与 diagnostics 展示；HTTP 零行只显示 BFF diagnostics 或通用建议。BFF v1 未定义目录或浏览器健康端点，因此 HTTP 页面明确显示 unavailable/unknown。Vue 只使用文本插值，不渲染 BFF 提供的 HTML。
 
 确定性 HTTP stub 同时供 Vitest 和主要 Playwright 套件使用。主要套件强制 `VITE_NEXUS_CLIENT=http`，覆盖真实 HTTP 创建、轮询、列表、详情、取消、跨标签页历史与不安全 HTML 文本；独立的 Mock Chromium 套件保留原生 Web Locks 租约栅栏与过期行为。
 

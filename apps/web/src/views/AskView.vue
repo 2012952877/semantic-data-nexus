@@ -27,6 +27,19 @@ const isMock = client.mode === 'mock'
 const currentRunActive = computed(() =>
   currentRun.value?.state === 'queued' || currentRun.value?.state === 'running')
 const hasResumableRun = computed(() => Boolean(!isMock && formError.value && currentRun.value))
+const provenance = computed(() => isMock
+  ? {
+      workload: 'regional-sales',
+      ontology: '区域销售 · v1.4',
+      compilationMode: 'Mock 受控编译',
+      model: 'Nexus Planner Small',
+    }
+  : {
+      workload: currentRun.value?.workload ?? 'unknown',
+      ontology: currentRun.value?.ontology ?? 'unknown',
+      compilationMode: currentRun.value?.compilationMode ?? 'unknown',
+      model: currentRun.value?.model ?? 'unknown',
+    })
 const cancellationTargetEnded = computed(() => Boolean(
   cancelError.value
   && currentRun.value
@@ -36,7 +49,7 @@ const cancellationTargetEnded = computed(() => Boolean(
 const requestForCurrentInput = (): AskRequest => ({
   question: question.value.trim(),
   scenario: scenario.value,
-  model: 'Nexus Planner Small',
+  model: isMock ? 'Nexus Planner Small' : 'unknown',
   executionMode: '受控执行',
   outputMode: '表格',
 })
@@ -133,9 +146,10 @@ const useExample = (example: string) => {
 
         <div class="scope-ledger">
           <dl>
-            <div><dt>语义范围</dt><dd>区域销售 · v1.4</dd></div>
-            <div><dt>成员解析</dt><dd>已发布成员优先</dd></div>
-            <div><dt>模型</dt><dd>Nexus Planner Small</dd></div>
+            <div><dt>工作负载</dt><dd>{{ provenance.workload }}</dd></div>
+            <div><dt>语义本体</dt><dd>{{ provenance.ontology }}</dd></div>
+            <div><dt>编译模式</dt><dd>{{ provenance.compilationMode }}</dd></div>
+            <div><dt>模型</dt><dd>{{ provenance.model }}</dd></div>
             <div><dt>执行方式</dt><dd>受控执行</dd></div>
             <div><dt>输出</dt><dd>表格</dd></div>
           </dl>

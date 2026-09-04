@@ -100,6 +100,9 @@ export interface Run {
   createdAt: string
   completedAt?: string
   elapsedMs: number
+  workload?: string
+  ontology?: string
+  compilationMode?: string
   model: string
   executionMode: string
   outputMode: string

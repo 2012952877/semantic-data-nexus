@@ -105,6 +105,13 @@ describe('HttpSemanticNexusClient', () => {
     expect(run?.result?.rows).toEqual([{ region: '北辰区', profit: '2334.00' }])
     expect(run?.manifest?.uri).toContain('inline://run_0123456789abcdef')
     expect(run?.lineage.sources[0]?.name).toBe('synthetic_sales')
+    expect(run).toMatchObject({
+      workload: 'synthetic-workload',
+      ontology: 'synthetic-commerce@2026.1',
+      compilationMode: 'regional_quarterly_profit',
+      model: 'unknown',
+    })
+    expect(run?.model).not.toBe(run?.compilationMode)
   })
 
   it('reuses the complete create payload and resumes a known run after ambiguous failures', async () => {

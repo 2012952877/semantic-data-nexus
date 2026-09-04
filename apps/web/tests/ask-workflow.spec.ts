@@ -43,6 +43,9 @@ describe('ask workflow', () => {
 
   it('progresses through governed stages and returns a result', async () => {
     const wrapper = mountAsk()
+    expect(wrapper.text()).toContain('区域销售 · v1.4')
+    expect(wrapper.text()).toContain('Nexus Planner Small')
+    expect(wrapper.text()).toContain('Mock 受控编译')
     await askQuestion(wrapper)
 
     expect(wrapper.text()).toContain('运行中')
@@ -153,6 +156,16 @@ describe('ask workflow', () => {
 
     expect(wrapper.text()).toContain('正在编排')
     expect(wrapper.find('button.secondary-button').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('区域销售 · v1.4')
+    expect(wrapper.text()).not.toContain('Nexus Planner Small')
+    expect(wrapper.findAll('.scope-ledger dd').map((item) => item.text())).toEqual([
+      'unknown',
+      'unknown',
+      'unknown',
+      'unknown',
+      '受控执行',
+      '表格',
+    ])
   })
 
   it('keeps a known HTTP run actionable and resumes it after status loss', async () => {
