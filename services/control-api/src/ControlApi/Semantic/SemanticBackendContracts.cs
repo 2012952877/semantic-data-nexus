@@ -359,8 +359,6 @@ public static class SemanticRunDetailValidator
         }
     }
 
-    #pragma warning restore CA1720
-
     private static void ValidatePhysicalNodes(IReadOnlyList<SemanticPhysicalNode>? nodes)
     {
         if (nodes is null || nodes.Count > MaximumPhysicalNodes)
@@ -383,6 +381,8 @@ public static class SemanticRunDetailValidator
                 throw Invalid("The semantic backend returned an invalid physical node.");
             }
         }
+
+        #pragma warning restore CA1720
     }
 
     private static void ValidateResult(SemanticResultSet result)
