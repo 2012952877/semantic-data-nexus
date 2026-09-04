@@ -5,3 +5,8 @@ artifacts
 .git
 .gitignore
 README.md
+.env
+.env.*
+**/.env
+**/.env.*
+*.env

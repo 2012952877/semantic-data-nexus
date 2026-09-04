@@ -1,0 +1,9 @@
+node_modules
+dist
+test-results
+playwright-report
+.env
+.env.*
+tests
+e2e
+*.md

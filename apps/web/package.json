@@ -9,7 +9,8 @@
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
-    "test:e2e": "playwright test && playwright test --config playwright.mock.config.ts"
+    "test:e2e": "playwright test && playwright test --config playwright.mock.config.ts",
+    "test:e2e:full-stack": "playwright test --config playwright.full-stack.config.ts"
   },
   "dependencies": {
     "vue": "^3.5.18",
