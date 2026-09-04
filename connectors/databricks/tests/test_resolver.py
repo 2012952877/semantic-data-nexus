@@ -38,6 +38,24 @@ BASE = "https://workspace.example.invalid"
         "SELECT http_request('DELETE', 'https://service.example.invalid/resource')",
         "SELECT synthetic_sql_udf(amount) FROM orders",
         "SELECT synthetic.python_udf(amount) FROM orders",
+        "SELECT DATE_TO_DATE_STR(order_date) FROM orders",
+        "SELECT TS_OR_DS_ADD(order_date, 1) FROM orders",
+        "SELECT TS_OR_DS_TO_DATE(order_date) FROM orders",
+        "SELECT synthetic.SUM(amount) FROM orders",
+        "SELECT `SUM`(amount) FROM orders",
+        "SELECT CURRENT_USER",
+        "SELECT MOD(5, 2)",
+        "SELECT ELEMENT_AT(items, 1) FROM orders",
+        "SELECT LIKE(region, 'n%') FROM orders",
+        "SELECT SUM(TRY_CAST(amount AS INT)) FROM orders",
+        "SELECT ABS(CEIL(amount)) FROM orders",
+        "SELECT CURRENT_DATE, CURDATE()",
+        "SELECT ISNULL(amount) FROM orders",
+        "SELECT TABLE(1)",
+        "SELECT synthetic.CURRENT_DATE()",
+        "SELECT catalog.synthetic.CURRENT_DATE()",
+        "SELECT CURDATE",
+        "SELECT ABS(CURDATE)",
     ],
 )
 def test_unsafe_or_multi_statement_sql_is_rejected(sql: str) -> None:
@@ -53,6 +71,8 @@ def test_unsafe_or_multi_statement_sql_is_rejected(sql: str) -> None:
         "SELECT region FROM orders /* DELETE FROM orders */",
         "SELECT region FROM orders; -- trailing comment",
         "WITH safe_rows AS (SELECT region FROM orders) SELECT * FROM safe_rows",
+        "WITH safe_rows(region) AS (SELECT region FROM orders) SELECT region FROM safe_rows",
+        "SELECT * FROM (SELECT region FROM orders) AS safe_rows(region)",
     ],
 )
 def test_literals_comments_and_read_only_ctes_are_safe(sql: str) -> None:

@@ -34,10 +34,12 @@ python -m build
 All normal tests use `FakeTransport` and make no network calls.
 The read-only boundary parses Databricks SQL with `sqlglot` and accepts exactly one query AST;
 parse failures, command/DDL/DML nodes (including inside CTEs), positional parameters, and
-functions outside the M0 allowlist fail closed. The allowlist contains the advertised aggregates
-plus `ABS`, `CAST`, `COALESCE`, `CURRENT_DATE`, `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `DATE_TRUNC`,
-`DAY`, `LOWER`, `MONTH`, `ROUND`, `TO_DATE`, `UPPER`, and `YEAR`. Unresolved calls and UDFs are
-not authorized in M0.
+functions outside the M0 allowlist fail closed. Function authorization uses the exact,
+unqualified, unquoted source identifier rather than SQLGlot's canonical function name. The
+allowlist contains the advertised aggregates plus `ABS`, `CAST`, `COALESCE`, `CURRENT_DATE`,
+`DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `DATE_TRUNC`, `DAY`, `LOWER`, `MONTH`, `ROUND`, `TO_DATE`,
+`UPPER`, and `YEAR`. Internal parser aliases, unresolved calls, qualified calls, and UDFs are not
+authorized in M0.
 
 ## Authentication
 

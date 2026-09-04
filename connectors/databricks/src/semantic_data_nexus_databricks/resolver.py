@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlglot import exp, parse
+from sqlglot import Dialect, TokenType, exp, parse
 from sqlglot.errors import SqlglotError
 
 from .client import StatementExecutionClient
@@ -15,7 +15,7 @@ from .models import (
     TabularResult,
 )
 
-_SAFE_FUNCTIONS = frozenset(
+_SAFE_SOURCE_FUNCTIONS = frozenset(
     {
         "ABS",
         "AVG",
@@ -23,6 +23,9 @@ _SAFE_FUNCTIONS = frozenset(
         "COALESCE",
         "COUNT",
         "CURRENT_DATE",
+        "DATE_ADD",
+        "DATE_SUB",
+        "DATE_TRUNC",
         "DATEDIFF",
         "DAY",
         "LOWER",
@@ -31,13 +34,66 @@ _SAFE_FUNCTIONS = frozenset(
         "MONTH",
         "ROUND",
         "SUM",
-        "TIMESTAMP_TRUNC",
-        "TS_OR_DS_ADD",
-        "TS_OR_DS_TO_DATE",
+        "TO_DATE",
         "UPPER",
         "YEAR",
     }
 )
+
+
+def _validate_function_calls(sql: str, statement: exp.Query) -> None:
+    dialect = Dialect.get_or_raise("databricks")
+    tokens = dialect.tokenizer_class().tokenize(sql)
+    parser = dialect.parser_class
+    known_function_names = parser.FUNCTIONS.keys() | parser.FUNCTION_PARSERS.keys()
+    no_paren_function_types = parser.NO_PAREN_FUNCTIONS.keys()
+    identifier_spans = {
+        (identifier.meta.get("start"), identifier.meta.get("end"))
+        for identifier in statement.find_all(exp.Identifier)
+    }
+    alias_column_list_spans = {
+        (alias.this.meta.get("start"), alias.this.meta.get("end"))
+        for alias in statement.find_all(exp.TableAlias)
+        if alias.args.get("columns") and isinstance(alias.this, exp.Identifier)
+    }
+
+    for index, token in enumerate(tokens):
+        source_name = token.text.upper()
+        has_parentheses = (
+            index + 1 < len(tokens)
+            and tokens[index + 1].token_type is TokenType.L_PAREN
+        )
+        is_bare_function = (
+            not has_parentheses
+            and (
+                token.token_type in no_paren_function_types
+                or (
+                    token.token_type in {TokenType.VAR, TokenType.IDENTIFIER}
+                    and source_name in known_function_names
+                    and (token.start, token.end) not in identifier_spans
+                )
+            )
+        )
+        if is_bare_function:
+            if (
+                source_name not in _SAFE_SOURCE_FUNCTIONS
+                or token.token_type is TokenType.IDENTIFIER
+                or (index > 0 and tokens[index - 1].token_type is TokenType.DOT)
+            ):
+                raise UnsafeStatementError("Query contains a function outside the M0 allowlist")
+            continue
+        if not has_parentheses:
+            continue
+        if (token.start, token.end) in alias_column_list_spans:
+            continue
+        if token.token_type not in parser.FUNC_TOKENS:
+            continue
+        if (
+            source_name not in _SAFE_SOURCE_FUNCTIONS
+            or token.token_type is TokenType.IDENTIFIER
+            or (index > 0 and tokens[index - 1].token_type is TokenType.DOT)
+        ):
+            raise UnsafeStatementError("Query contains a function outside the M0 allowlist")
 
 
 def validate_fragment(fragment: PhysicalSourceFragment) -> None:
@@ -70,11 +126,7 @@ def validate_fragment(fragment: PhysicalSourceFragment) -> None:
         raise UnsafeStatementError("Every CTE body must be a read-only query")
     if statement.find(exp.Parameter) is not None:
         raise UnsafeStatementError("Only named parameter markers are supported")
-    if any(
-        function.sql_name() not in _SAFE_FUNCTIONS
-        for function in statement.find_all(exp.Func)
-    ):
-        raise UnsafeStatementError("Query contains a function outside the M0 allowlist")
+    _validate_function_calls(fragment.sql, statement)
 
     placeholders = tuple(statement.find_all(exp.Placeholder))
     if any(placeholder.name == "?" or not placeholder.this for placeholder in placeholders):
