@@ -67,6 +67,12 @@ def validate(config: dict[str, Any], *, live: bool = False) -> None:
         isinstance(backend, dict) and backend.get("internal") is True,
         "backend network must remain internal",
     )
+    control_environment = control.get("environment", {})
+    _require(
+        isinstance(control_environment, dict)
+        and control_environment.get("AllowedHosts") == "127.0.0.1;localhost",
+        "control-api must allow only local proxy host names",
+    )
     semantic_environment = semantic.get("environment", {})
     _require(
         semantic_environment.get("SEMANTIC_NEXUS_RESOLVER")

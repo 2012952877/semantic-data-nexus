@@ -34,9 +34,13 @@ The local Nginx override injects the fixed, non-secret identity
 `local-compose-user` only on proxied `/api` requests. The Control API enables
 that header scheme only with `ASPNETCORE_ENVIRONMENT=Development` and already
 fails startup if local authentication is enabled in any other environment.
-The production-safe config baked into the Web image strips all development
-identity headers. Do not remove the loopback-only port binding while this local
-identity override is mounted.
+Before injection, Nginx rejects any Host other than `127.0.0.1` or `localhost`
+and rejects any non-empty Origin that is not local HTTP(S). The Control API
+independently applies the same host allowlist. These checks protect the fixed
+development identity against browser DNS rebinding; do not weaken them or the
+loopback-only port binding while the local identity override is mounted. The
+production-safe config baked into the Web image strips all development identity
+headers.
 
 To exercise the deployed Vue client in Chromium as well:
 

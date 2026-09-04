@@ -38,6 +38,7 @@ services:
       context: services/control-api
       dockerfile: Dockerfile
     environment:
+      AllowedHosts: "127.0.0.1;localhost"
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_HTTP_PORTS: "8080"
       LocalDevelopmentAuth__Enabled: "true"

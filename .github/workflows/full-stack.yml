@@ -124,6 +124,9 @@ jobs:
           docker compose exec -T semantic-backend python -c \
             "import os; assert os.environ['SEMANTIC_NEXUS_RESOLVER'] == 'fake'; assert not os.environ.get('DATABRICKS_TOKEN')"
 
+      - name: Verify local development identity boundary
+        run: python scripts/local_identity_boundary_smoke.py --base-url http://127.0.0.1:8080
+
       - name: Run real HTTP full-stack smoke
         run: python scripts/full_stack_smoke.py --base-url http://127.0.0.1:8080
 

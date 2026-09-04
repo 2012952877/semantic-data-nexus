@@ -16,6 +16,9 @@ def compose_config(host_ip: str = "127.0.0.1") -> dict[str, object]:
                 },
             },
             "control-api": {
+                "environment": {
+                    "AllowedHosts": "127.0.0.1;localhost",
+                },
                 "depends_on": {
                     "semantic-backend": {"condition": "service_healthy"},
                 },
@@ -81,6 +84,16 @@ class ComposeConfigTests(unittest.TestCase):
     def test_rejects_development_identity_on_all_interfaces(self) -> None:
         with self.assertRaisesRegex(ComposeValidationError, "bind only to loopback"):
             validate(compose_config("0.0.0.0"))
+
+    def test_rejects_broad_control_api_host_filter(self) -> None:
+        config = compose_config()
+        services = config["services"]
+        assert isinstance(services, dict)
+        control = services["control-api"]
+        assert isinstance(control, dict)
+        control["environment"] = {"AllowedHosts": "*"}
+        with self.assertRaisesRegex(ComposeValidationError, "local proxy host names"):
+            validate(config)
 
     def test_live_profile_requires_egress_and_explicit_configuration(self) -> None:
         validate(live_compose_config(), live=True)
