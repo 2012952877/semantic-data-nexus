@@ -465,14 +465,23 @@ def _is_explicit_nonliteral_reference(value: str, path: str) -> bool:
     if re.fullmatch(r"\$\{[^{}\r\n]+\}", value):
         return True
     suffix = PurePosixPath(path).suffix.lower()
-    if (
-        suffix in _SOURCE_CODE_SUFFIXES | {".md", ".yaml", ".yml"}
-        and value.startswith("$(")
-        and value.endswith(")")
+    if suffix in _SOURCE_CODE_SUFFIXES | {".md", ".yaml", ".yml"} and re.fullmatch(
+        r"""\$\(python(?:3)?\s+-c\s+(['"])import\s+secrets;\s*print\(secrets[.]token_urlsafe\(\d{1,3}\)\)\1\)""",
+        value,
     ):
         return True
-    return suffix in {".md", ".ps1"} and value.startswith(
-        "[System.Net.NetworkCredential]::new("
+    if suffix in {".md", ".ps1"} and re.fullmatch(
+        r"""\[System[.]Net[.]NetworkCredential\]::new\(\s*["']{2}\s*,\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\)[.]Password""",
+        value,
+    ):
+        return True
+    return bool(
+        suffix in _SOURCE_CODE_SUFFIXES
+        and re.fullmatch(
+            r"""(?:builder[.])?Configuration\[(?:["'][A-Za-z0-9:_.-]+["'])\]""",
+            value,
+            re.IGNORECASE,
+        )
     )
 
 
@@ -499,6 +508,8 @@ def _is_safe_literal(raw_value: str | None, path: str) -> bool:
         candidate,
     ):
         return False
+    if "'" in candidate or '"' in candidate:
+        return False
     lowered = candidate.lower()
     if lowered.startswith(
         (
@@ -519,7 +530,7 @@ def _is_safe_literal(raw_value: str | None, path: str) -> bool:
         return True
     return PurePosixPath(path).suffix.lower() in _SOURCE_CODE_SUFFIXES and bool(
         re.fullmatch(
-            r"[A-Za-z_$][A-Za-z0-9_$.\[\]():\"'-]*",
+            r"[A-Za-z_$][A-Za-z0-9_$.\[\]():-]*",
             candidate,
         )
     )
@@ -580,11 +591,42 @@ def _is_private_identifier_literal(key: str, raw_value: str | None) -> bool:
     )
 
 
+def _strip_trailing_comment(value: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quote is not None:
+            escaped = True
+            continue
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            continue
+        if character == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+        if (
+            character == "/"
+            and index + 1 < len(value)
+            and value[index + 1] == "/"
+            and (index == 0 or value[index - 1].isspace())
+        ):
+            return value[:index].rstrip()
+    return value.rstrip()
+
+
 def _assignment_rhs(line: str, match: re.Match[str]) -> str:
-    equals_index = line.find("=", match.start())
+    value_start = match.start("value")
+    search_end = value_start if value_start >= 0 else match.end()
+    equals_index = line.find("=", match.start(), search_end + 1)
     if equals_index < 0:
         return match.group("value")
-    return line[equals_index + 1 :].strip().rstrip(";")
+    return _strip_trailing_comment(line[equals_index + 1 :].strip()).rstrip(";")
 
 
 def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
@@ -593,7 +635,7 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
             yield Finding(path, line_number, rule, message)
 
     for match in _SECRET_ASSIGNMENT.finditer(line):
-        if not _is_safe_literal(match.group("value"), path):
+        if not _is_safe_literal(_assignment_rhs(line, match), path):
             yield Finding(
                 path,
                 line_number,
@@ -602,7 +644,7 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
             )
 
     for match in _HOST_ASSIGNMENT.finditer(line):
-        if not _is_safe_literal(match.group("value"), path):
+        if not _is_safe_literal(_assignment_rhs(line, match), path):
             yield Finding(
                 path,
                 line_number,
@@ -612,7 +654,7 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
 
     for match in _IDENTIFIER_ASSIGNMENT.finditer(line):
         key = match.group("key")
-        value = match.group("value")
+        value = _assignment_rhs(line, match)
         if _is_credential_key(key) and not _is_safe_literal(value, path):
             yield Finding(
                 path,

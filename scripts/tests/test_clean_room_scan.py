@@ -14,10 +14,11 @@ def _dashed_identifier(*parts: str) -> str:
 
 class CleanRoomScanTests(unittest.TestCase):
     def test_allows_reviewed_synthetic_data_and_placeholders(self) -> None:
+        token_key = "DATABRICKS_" + "TOKEN"
         content = (
-            b"DATABRICKS_WORKSPACE_HOST=https://example.invalid\n"
-            b"DATABRICKS_TOKEN=${DATABRICKS_TOKEN:?required}\n"
-        )
+            "DATABRICKS_WORKSPACE_HOST=https://example.invalid\n"
+            f"{token_key}=${{DATABRICKS_TOKEN:?required}}\n"
+        ).encode()
 
         self.assertEqual(
             scan_blob("data/synthetic/generated/regions.csv", content),
@@ -188,20 +189,82 @@ class CleanRoomScanTests(unittest.TestCase):
             ],
         )
 
-    def test_allows_only_explicit_nonliteral_credential_references(self) -> None:
-        key = "DATABRICKS_" + "TOKEN"
-        safe_values = [
-            "token_provider",
-            "${DATABRICKS_TOKEN:?required}",
-            "os.environ[TOKEN_NAME]",
-            "configuration.Token",
+    def test_inline_comments_do_not_hide_declared_private_ids(self) -> None:
+        object_name = "object" + "Id"
+        principal_name = "principal" + "Id"
+        identifier = _dashed_identifier(
+            "12345678", "9abc", "4def", "8123", "456789abcdef"
+        )
+        cases = [
+            (
+                "main.bicep",
+                f"param {object_name} string = '{identifier}' // deployment principal",
+            ),
+            (
+                "settings.ps1",
+                f"${object_name} = '{identifier}' # deployment principal",
+            ),
+            (
+                "settings.ps1",
+                f"${{{principal_name}}} = '{identifier}' # deployment principal",
+            ),
+            (
+                "settings.ts",
+                f'const {object_name}: string = "{identifier}"; // deployment principal',
+            ),
         ]
 
-        for safe_value in safe_values:
-            with self.subTest(safe_value=safe_value):
+        for path, content in cases:
+            with self.subTest(path=path):
+                findings = scan_blob(path, content.encode())
                 self.assertEqual(
-                    scan_blob("settings.py", f"{key}={safe_value}\n".encode()),
+                    [finding.rule for finding in findings],
+                    ["private-account-identifier"],
+                )
+
+    def test_allows_only_explicit_nonliteral_credential_references(self) -> None:
+        key = "DATABRICKS_" + "TOKEN"
+        safe_cases = [
+            ("settings.py", "token_provider"),
+            ("settings.env", "${DATABRICKS_TOKEN:?required}"),
+            ("settings.py", "os.environ[TOKEN_NAME]"),
+            ("settings.py", "configuration.Token"),
+            (
+                "workflow.yml",
+                "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')",
+            ),
+            (
+                "runbook.md",
+                '[System.Net.NetworkCredential]::new("", $secureToken).Password',
+            ),
+        ]
+
+        for path, safe_value in safe_cases:
+            with self.subTest(path=path, safe_value=safe_value):
+                self.assertEqual(
+                    scan_blob(path, f"{key}={safe_value}\n".encode()),
                     [],
+                )
+
+    def test_rejects_literals_wrapped_in_runtime_expressions(self) -> None:
+        key = "DATABRICKS_" + "TOKEN"
+        unsafe_cases = [
+            ("settings.py", 'get_token("shortKey7")'),
+            (
+                "runbook.md",
+                '[System.Net.NetworkCredential]::new("", "shortKey7").Password',
+            ),
+        ]
+
+        for path, unsafe_value in unsafe_cases:
+            with self.subTest(path=path, unsafe_value=unsafe_value):
+                findings = scan_blob(
+                    path,
+                    f"{key}={unsafe_value}\n".encode(),
+                )
+                self.assertEqual(
+                    [finding.rule for finding in findings],
+                    ["credential-assignment"],
                 )
 
     def test_quoted_credential_requires_an_explicit_placeholder(self) -> None:
