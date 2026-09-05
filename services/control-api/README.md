@@ -226,6 +226,9 @@ Concurrent first startups serialize, repeated applications do nothing, modified
 checksums and newer schemas fail startup. Never edit a released migration;
 append the next numbered file. Migration SQL and the version record roll back
 together on failure; application startup never drops data.
+The clean-room scanner approves the exact reviewed `001_control_plane.sql` path
+only (content checks remain active). Future migration files also need explicit
+review and scanner approval; arbitrary SQL exports are not permitted.
 
 This first schema has no down migration. Back up before upgrades. Rollback is
 supported only to a binary that understands the same schema/version; do not

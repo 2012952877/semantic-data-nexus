@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,50 @@ def _dashed_identifier(*parts: str) -> str:
 
 
 class CleanRoomScanTests(unittest.TestCase):
+    def test_reviewed_control_migration_is_ddl_only(self) -> None:
+        path = "services/control-api/src/ControlApi/Persistence/Migrations/001_control_plane.sql"
+        content = (Path(__file__).resolve().parents[2] / path).read_bytes()
+        self.assertEqual(scan_blob(path, content), [])
+        sql = re.sub(r"--[^\n]*", "", content.decode())
+        statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
+        self.assertEqual(len(statements), 4)
+        self.assertTrue(
+            all(re.match(r"CREATE\s+(TABLE|INDEX)\s", statement) for statement in statements)
+        )
+        self.assertIsNone(re.search(r"\b(INSERT|COPY|IMPORT|MERGE)\b", sql, re.IGNORECASE))
+
+    def test_ddl_exemption_does_not_allow_other_sql_or_similar_paths(self) -> None:
+        base = "services/control-api/src/ControlApi/Persistence/Migrations/"
+        paths = [
+            base + "exports.sql",
+            base + "002_unreviewed.sql",
+            base + "../001_control_plane.sql",
+            base + "./001_control_plane.sql",
+            base + "nested/001_control_plane.sql",
+            base.replace("Migrations/", "Migrations-backup/") + "001_control_plane.sql",
+            base.replace("control-api/", "control-api-copy/") + "001_control_plane.sql",
+        ]
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIn(
+                    "unapproved-raw-data",
+                    [finding.rule for finding in scan_blob(path, b"CREATE TABLE example (id integer);")],
+                )
+
+    def test_reviewed_ddl_keeps_all_content_scans(self) -> None:
+        path = "services/control-api/src/ControlApi/Persistence/Migrations/001_control_plane.sql"
+        key = "API_" + "KEY"
+        host = "adb-" + "1234567890123456.7.azuredatabricks.net"
+        identifier = _dashed_identifier("12345678", "9abc", "4def", "8123", "456789abcdef")
+        cases = [
+            (f"-- {key}=shortKey7", "credential-assignment"),
+            (f"-- https://{host}", "private-demo-host"),
+            (f"-- tenant_id={identifier}", "private-account-identifier"),
+        ]
+        for content, rule in cases:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, [finding.rule for finding in scan_blob(path, content.encode())])
+
     def test_allows_reviewed_synthetic_data_and_placeholders(self) -> None:
         token_key = "DATABRICKS_" + "TOKEN"
         content = (
