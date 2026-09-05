@@ -88,7 +88,9 @@ export class BrowserSession {
   }
 
   invalidate(): void {
+    if (this.state.authenticated) this.state.error = '会话或权限已更改，请重新确认登录。'
     this.state.authenticated = false
+    this.state.name = ''
     this.state.workspaceId = ''
     this.state.workspaces = []
     this.csrf = ''

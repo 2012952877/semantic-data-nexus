@@ -149,3 +149,19 @@ dimension. Candidates are emitted from the actual physical plan, committed
 result metadata, runtime/connector lineage, and diagnostics. Mutation tests
 prove plan, result, governance, and observability regressions are detected. It
 does not claim coverage of the full reference suite.
+# Enterprise identity boundary
+
+The HTTP service defaults to authenticated service mode. It requires
+`SEMANTIC_NEXUS_SERVICE_PUBLIC_KEY` (the BFF's RSA public PEM) and
+`SEMANTIC_NEXUS_IDENTITY_POSTGRES` (injected PostgreSQL connection reference).
+Every non-health request needs a single-use, request-bound service assertion and
+current membership in the shared identity store. Caller scope/identity headers
+are not trusted. Result and lineage aliases use the same scoped run lookup.
+
+For the original offline synthetic examples, explicitly set
+`SEMANTIC_NEXUS_AUTH_MODE=legacy-development` and
+`SEMANTIC_NEXUS_ENVIRONMENT=Development`; no other environment permits this mode.
+The original local Compose and offline CI opt in, but production never falls back.
+See [enterprise identity operations](../../docs/operations/enterprise-identity.md)
+for the real Keycloak login recipe, scope/transport contract and future endpoint
+boundaries. Process-local runtime durability remains a separate #34 responsibility.

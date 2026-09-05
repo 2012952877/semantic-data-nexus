@@ -66,9 +66,11 @@ def prepare() -> None:
     ]) + "\n")
     users = [
         {"id": "synthetic-alice", "username": "alice", "enabled": True, "emailVerified": True,
+         "email": "alice@example.test",
          "firstName": "Synthetic", "lastName": "Alice",
          "credentials": [{"type": "password", "value": synthetic_credentials[2], "temporary": False}]},
         {"id": "synthetic-bob", "username": "bob", "enabled": True, "emailVerified": True,
+         "email": "bob@example.test",
          "firstName": "Synthetic", "lastName": "Bob",
          "credentials": [{"type": "password", "value": synthetic_credentials[2], "temporary": False}]},
     ]

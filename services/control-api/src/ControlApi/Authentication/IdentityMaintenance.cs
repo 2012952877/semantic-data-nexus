@@ -8,14 +8,14 @@ namespace ControlApi.Authentication;
 // Operator-only CLI: never mapped to a public endpoint or run automatically at startup.
 public static class IdentityMaintenance
 {
-    public static async Task ExecuteAsync(IConfiguration configuration, CancellationToken ct)
+    public static async Task ExecuteAsync(IConfiguration configuration, TextReader inputReader, CancellationToken ct)
     {
         var settings = new StorageSettings(configuration);
         if (!settings.IsPostgres)
         {
             throw new StorageConfigurationException("Identity maintenance requires Postgres.");
         }
-        var input = await Console.In.ReadToEndAsync(ct);
+        var input = await inputReader.ReadToEndAsync(ct);
         var change = JsonSerializer.Deserialize<MaintenanceChange>(input) ??
             throw new InvalidOperationException("Maintenance JSON is required on stdin.");
         if (!IdentityAdministration.ValidId(change.RequestId) || !IdentityAdministration.ValidId(change.WorkspaceId) ||
@@ -60,12 +60,18 @@ public static class IdentityMaintenance
         if (change.Operation == "bootstrap")
         {
             await using var command = new NpgsqlCommand("""
-                INSERT INTO identity_principals (principal_id, issuer, subject, identity_tenant)
-                VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING;
-                INSERT INTO identity_workspaces (workspace_id, tenant_id, name) VALUES ($5,$6,$7);
+                WITH principal AS (
+                    INSERT INTO identity_principals (principal_id, issuer, subject, identity_tenant)
+                    VALUES ($1,$2,$3,$4)
+                    ON CONFLICT (principal_id) DO UPDATE SET issuer = identity_principals.issuer
+                    WHERE identity_principals.issuer = EXCLUDED.issuer AND identity_principals.subject = EXCLUDED.subject
+                      AND identity_principals.identity_tenant = EXCLUDED.identity_tenant AND identity_principals.active
+                    RETURNING principal_id
+                ), workspace AS (
+                    INSERT INTO identity_workspaces (workspace_id, tenant_id, name) VALUES ($5,$6,$7) RETURNING workspace_id
+                )
                 INSERT INTO identity_memberships (membership_id, workspace_id, principal_id, role)
-                SELECT $8,$5,principal_id,'admin' FROM identity_principals
-                WHERE principal_id = $1 AND issuer = $2 AND subject = $3 AND identity_tenant = $4 AND active
+                SELECT $8,workspace_id,principal_id,'admin' FROM principal CROSS JOIN workspace
                 """, connection, transaction);
             command.Parameters.AddWithValue(change.PrincipalId);
             command.Parameters.AddWithValue(provider.Authority);
@@ -75,7 +81,10 @@ public static class IdentityMaintenance
             command.Parameters.AddWithValue(change.TenantId);
             command.Parameters.AddWithValue(change.Name);
             command.Parameters.AddWithValue(change.MembershipId);
-            await command.ExecuteNonQueryAsync(ct);
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+            {
+                throw new InvalidOperationException("Bootstrap identity preconditions were not met.");
+            }
         }
         else if (change.Operation == "adopt-legacy")
         {
@@ -105,14 +114,20 @@ public static class IdentityMaintenance
         else if (change.Operation == "revoke-principal")
         {
             await using var revoke = new NpgsqlCommand("""
-                UPDATE identity_principals SET active = false WHERE principal_id = $1 AND issuer = $2 AND subject = $3;
+                WITH revoked AS (
+                    UPDATE identity_principals SET active = false
+                    WHERE principal_id = $1 AND issuer = $2 AND subject = $3 RETURNING principal_id
+                )
                 UPDATE identity_workspaces SET revision = revision + 1 WHERE workspace_id IN
-                    (SELECT workspace_id FROM identity_memberships WHERE principal_id = $1)
+                    (SELECT workspace_id FROM identity_memberships JOIN revoked USING (principal_id))
                 """, connection, transaction);
             revoke.Parameters.AddWithValue(change.PrincipalId);
             revoke.Parameters.AddWithValue(provider.Authority);
             revoke.Parameters.AddWithValue(change.Subject);
-            await revoke.ExecuteNonQueryAsync(ct);
+            if (await revoke.ExecuteNonQueryAsync(ct) == 0)
+            {
+                throw new InvalidOperationException("Revocation identity preconditions were not met.");
+            }
         }
         else
         {

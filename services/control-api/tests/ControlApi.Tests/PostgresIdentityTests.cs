@@ -248,6 +248,7 @@ internal sealed class EnterpriseFactory(string connection, RSA key, params strin
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+        IConfiguration enterpriseConfiguration = null!;
         builder.ConfigureAppConfiguration((_, configuration) =>
         {
             var settings = new Dictionary<string, string?>
@@ -267,9 +268,14 @@ internal sealed class EnterpriseFactory(string connection, RSA key, params strin
                 settings[$"Identity:Providers:{i}:Audience"] = "nexus-api";
             }
             configuration.AddInMemoryCollection(settings);
+            enterpriseConfiguration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
         });
         builder.ConfigureTestServices(services =>
         {
+            // Minimal-host factories finalize test configuration after Program's registration.
+            // Exercise the actual enterprise registrar with that final configuration, not X-Dev auth.
+            services.AddControlApiAuthentication(enterpriseConfiguration,
+                new AuthenticationTests.TestHostEnvironment("Development"));
             services.RemoveAll<Semantic.ISemanticBackendClient>();
             services.AddSingleton<Semantic.ISemanticBackendClient, StubSemanticBackendClient>();
             for (var i = 0; i < issuers.Length; i++)

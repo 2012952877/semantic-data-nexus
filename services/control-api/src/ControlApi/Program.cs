@@ -21,10 +21,11 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-var builder = WebApplication.CreateBuilder(args);
-if (args.Contains("--identity-maintenance", StringComparer.Ordinal))
+var maintenance = args.Contains("--identity-maintenance", StringComparer.Ordinal);
+var builder = WebApplication.CreateBuilder(args.Where(arg => arg != "--identity-maintenance").ToArray());
+if (maintenance)
 {
-    await IdentityMaintenance.ExecuteAsync(builder.Configuration, CancellationToken.None);
+    await IdentityMaintenance.ExecuteAsync(builder.Configuration, Console.In, CancellationToken.None);
     return;
 }
 
@@ -205,7 +206,9 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("api", context =>
         RateLimitPartition.GetFixedWindowLimiter(
-            context.User.FindFirst("sub")?.Value ??
+            context.Items[RunAccess.ItemKey] is TrustedContext trusted
+                ? JsonSerializer.Serialize(new[] { trusted.Principal.PrincipalId, trusted.Scope.TenantId, trusted.Scope.WorkspaceId })
+                : context.User.FindFirst("sub")?.Value ??
             context.Connection.RemoteIpAddress?.ToString() ??
             "anonymous",
             _ => new FixedWindowRateLimiterOptions

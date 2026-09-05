@@ -79,8 +79,12 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
             command.Parameters.AddWithValue(change.Role);
             command.Parameters.AddWithValue(change.Active);
             Validate(await command.ExecuteNonQueryAsync(ct) == 1);
+            await using var remove = new NpgsqlCommand(
+                "DELETE FROM identity_group_members WHERE workspace_id = $1 AND group_id = $2", connection, transaction);
+            remove.Parameters.AddWithValue(context.Scope.WorkspaceId);
+            remove.Parameters.AddWithValue(change.GroupId);
+            await remove.ExecuteNonQueryAsync(ct);
             await using var members = new NpgsqlCommand("""
-                DELETE FROM identity_group_members WHERE workspace_id = $1 AND group_id = $2;
                 INSERT INTO identity_group_members (workspace_id, group_id, membership_id)
                 SELECT $1, $2, unnest($3::text[])
                 """, connection, transaction);
@@ -127,7 +131,7 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
             command.Parameters.AddWithValue(change.Permission);
             command.Parameters.AddWithValue(NpgsqlDbType.Jsonb, JsonSerializer.Serialize(ids, TrustedContext.Json));
             command.Parameters.AddWithValue(change.Active);
-            await command.ExecuteNonQueryAsync(ct);
+            Validate(await command.ExecuteNonQueryAsync(ct) == 1);
         }, ct);
     }
 
@@ -169,9 +173,11 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
             throw new BadHttpRequestException("Identity change conflicts with the selected workspace.");
         }
         await using var record = new NpgsqlCommand("""
-            UPDATE identity_workspaces SET revision = revision + 1 WHERE workspace_id = $1;
+            WITH revised AS (
+                UPDATE identity_workspaces SET revision = revision + 1 WHERE workspace_id = $1 RETURNING workspace_id
+            )
             INSERT INTO identity_changes (workspace_id, actor_id, request_id, action, target_id, payload_sha256)
-            VALUES ($1,$2,$3,$4,$5,$6)
+            SELECT workspace_id,$2,$3,$4,$5,$6 FROM revised
             """, connection, transaction);
         record.Parameters.AddWithValue(context.Scope.WorkspaceId);
         record.Parameters.AddWithValue(context.Principal.PrincipalId);
