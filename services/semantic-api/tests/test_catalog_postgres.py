@@ -198,3 +198,64 @@ async def test_multiple_clarification_steps_preserve_expiry_and_each_replay(pg_s
     assert (
         await compiler.resume(first.clarification_id, "batch.alpha", revision=2, **kwargs) == final
     )
+
+
+async def test_existing_clarification_conflicts_with_direct_question_across_clients(pg_store):
+    first_client, request, context, authority, first = await start(pg_store)
+    second, direct, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    direct = direct.model_copy(update={"request_id": request.request_id})
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.compile(direct, context=context, deadline=deadline())
+    assert not first_client.provider.calls and not second.provider.calls
+    repeated = await second.compile(request, context=context, deadline=deadline())
+    assert repeated == first
+    async with _record(
+        first_client, first.clarification_id, context, request.catalog
+    ) as transaction:
+        assert transaction.record.request == request
+        assert transaction.record.current == first
+
+
+async def test_two_clients_generate_direct_request_once_and_replay_same_hash(pg_store):
+    first, request, context, authority = setup(store=pg_store[0])
+    request = request.model_copy(update={"request_id": pg_store[1]})
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    results = await asyncio.gather(
+        first.compile(request, context=context, deadline=deadline()),
+        second.compile(request, context=context, deadline=deadline()),
+    )
+    assert results[0] == results[1] and results[0].status == "compiled"
+    assert len(first.provider.calls) + len(second.provider.calls) == 1
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.compile(
+            request.model_copy(update={"question": "yield for alpha above score 1"}),
+            context=context,
+            deadline=deadline(),
+        )
+    assert len(first.provider.calls) + len(second.provider.calls) == 1
+    assert await second.compile(request, context=context, deadline=deadline()) == results[0]
+
+
+async def test_cancelled_direct_request_keeps_hash_reservation_and_can_retry(pg_store):
+    paused = InjectedProvider(CASES[1]["candidate"])
+    paused.pause = asyncio.Event()
+    compiler, request, context, authority = setup(store=pg_store[0], provider=paused)
+    request = request.model_copy(update={"request_id": pg_store[1]})
+    task = asyncio.create_task(compiler.compile(request, context=context, deadline=deadline()))
+    await paused.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.compile(
+            request.model_copy(update={"question": "yield for alpha above score 1"}),
+            context=context,
+            deadline=deadline(),
+        )
+    assert not second.provider.calls
+    result = await second.compile(request, context=context, deadline=deadline())
+    assert result.status == "compiled" and len(second.provider.calls) == 1

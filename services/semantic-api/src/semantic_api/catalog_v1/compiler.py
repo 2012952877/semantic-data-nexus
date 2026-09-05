@@ -103,35 +103,47 @@ class CatalogCompiler:
     ) -> Compilation:
         async with asyncio.timeout_at(self._deadline(deadline)):
             owner, initialized, identity = await self._context(request, context)
-            if initialized.ambiguities:
-                expires = datetime.now(UTC) + timedelta(
-                    seconds=self.limits.clarification_ttl_seconds
-                )
-                identifier = "clarification-" + uuid4().hex
-                response = Compilation(
-                    status="clarification",
-                    catalog=request.catalog,
-                    clarification_id=identifier,
-                    clarification_revision=1,
-                    ambiguity=initialized.ambiguities[0],
+            expires = datetime.now(UTC) + timedelta(seconds=self.limits.clarification_ttl_seconds)
+            identifier = "clarification-" + uuid4().hex
+            # Reserve every request before choosing a branch or calling the provider.
+            # A cancelled generation leaves an explicit pending record for same-hash retry.
+            stored = await self.clarifications.create(
+                ClarificationRecord(
+                    id=identifier,
+                    owner=owner,
+                    request=request,
+                    context=initialized,
+                    authority_fingerprint=identity,
                     expires_at=expires,
                 )
-                stored = await self.clarifications.create(
-                    ClarificationRecord(
-                        id=identifier,
-                        owner=owner,
-                        request=request,
-                        context=initialized,
-                        authority_fingerprint=identity,
-                        expires_at=expires,
-                        current=response,
-                    )
-                )
+            )
+            async with self.clarifications.lock(stored.id, owner) as transaction:
+                record = transaction.record
+                if (
+                    record.request != request
+                    or record.context != initialized
+                    or record.authority_fingerprint != identity
+                ):
+                    raise CompilerFailure("CLARIFICATION_CONTEXT_CHANGED")
+                response = record.current
+                if response is None:
+                    if initialized.ambiguities:
+                        response = Compilation(
+                            status="clarification",
+                            catalog=request.catalog,
+                            clarification_id=record.id,
+                            clarification_revision=1,
+                            ambiguity=initialized.ambiguities[0],
+                            expires_at=record.expires_at,
+                        )
+                    else:
+                        response = await self._generate(initialized)
                 await self._unchanged(request, context, identity)
-                return stored.current
-            response = await self._generate(initialized)
-            await self._unchanged(request, context, identity)
-            return response
+                if await transaction.now() >= record.expires_at:
+                    raise CompilerFailure("CLARIFICATION_EXPIRED")
+                if record.current is None:
+                    await transaction.save(record.model_copy(update={"current": response}))
+                return response
 
     async def _unchanged(
         self,
@@ -163,6 +175,9 @@ class CatalogCompiler:
                 record = transaction.record
                 if record.request.catalog != pin:
                     raise CompilerFailure("CLARIFICATION_NOT_AVAILABLE")
+                current = record.current
+                if current is None:
+                    raise CompilerFailure("CLARIFICATION_NOT_AVAILABLE")
                 _, initialized, identity = await self._context(record.request, context)
                 if identity != record.authority_fingerprint or initialized != record.context:
                     raise CompilerFailure("CLARIFICATION_CONTEXT_CHANGED")
@@ -175,16 +190,16 @@ class CatalogCompiler:
                     if await transaction.now() >= record.expires_at:
                         raise CompilerFailure("CLARIFICATION_EXPIRED")
                     return previous.response
-                if revision != len(record.history) + 1 or record.current.ambiguity is None:
+                if revision != len(record.history) + 1 or current.ambiguity is None:
                     raise CompilerFailure("CLARIFICATION_REVISION")
                 choice = next(
-                    (c for c in record.current.ambiguity.choices if c.id == answer_choice_id), None
+                    (c for c in current.ambiguity.choices if c.id == answer_choice_id), None
                 )
                 if choice is None:
                     raise CompilerFailure("CLARIFICATION_CHOICE")
                 answers = (
                     *record.answers,
-                    Resolution(term=record.current.ambiguity.term, choice=choice),
+                    Resolution(term=current.ambiguity.term, choice=choice),
                 )
                 _, resumed, _ = await self._context(record.request, context, answers)
                 if resumed.ambiguities:

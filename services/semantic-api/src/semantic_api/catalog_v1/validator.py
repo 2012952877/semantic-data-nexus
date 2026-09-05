@@ -47,6 +47,12 @@ class Shape:
     duplicated_entities: set[str] = field(default_factory=set)
 
 
+def _same_predicate(left: Predicate, right: Predicate) -> bool:
+    if isinstance(left, MemberPredicate) and isinstance(right, MemberPredicate):
+        return left.column == right.column and set(left.member_ids) == set(right.member_ids)
+    return left == right
+
+
 def validate(graph: SQGV1, context: CompilerContext) -> SQGV1:
     def require(condition: bool, code: str) -> None:
         if not condition:
@@ -82,7 +88,8 @@ def validate(graph: SQGV1, context: CompilerContext) -> SQGV1:
         require("FILTER:" + predicate.kind in caps, "CAPABILITY_MISSING")
         if isinstance(predicate, Comparison):
             require(
-                not column.members and column.data_type != "datetime", "GOVERNED_PREDICATE_REQUIRED"
+                not column.member_governed and column.data_type != "datetime",
+                "GOVERNED_PREDICATE_REQUIRED",
             )
             require(value_matches(predicate.value, column.data_type), "PREDICATE_TYPE")
             require(
@@ -93,10 +100,15 @@ def validate(graph: SQGV1, context: CompilerContext) -> SQGV1:
             allowed = {m.id for m in column.members}
             requested = set(predicate.member_ids)
             require(
-                len(requested) == len(predicate.member_ids) and requested <= allowed,
+                column.member_governed
+                and len(requested) == len(predicate.member_ids)
+                and requested <= allowed,
                 "MEMBER_NOT_AVAILABLE",
             )
-            if predicate not in entities[column.entity_id].required_filters:
+            if not any(
+                _same_predicate(predicate, required)
+                for required in entities[column.entity_id].required_filters
+            ):
                 require(requested == resolved_members.get(column.id, set()), "MEMBER_CONSTRAINT")
             used.update(requested)
         elif isinstance(predicate, TimePredicate):
@@ -171,7 +183,7 @@ def validate(graph: SQGV1, context: CompilerContext) -> SQGV1:
             if isinstance(op, Filter):
                 require(not shape.aggregated and not shape.projected, "FILTER_ORDER")
                 check_predicate(op.predicate, shape)
-                shape.pending = [p for p in shape.pending if p != op.predicate]
+                shape.pending = [p for p in shape.pending if not _same_predicate(p, op.predicate)]
             else:
                 require(all(not item.pending for item in inputs), "REQUIRED_FILTER_MISSING")
                 if isinstance(op, Join):
@@ -197,7 +209,11 @@ def validate(graph: SQGV1, context: CompilerContext) -> SQGV1:
                     )
                     shape.columns.update(right.columns)
                     shape.entities.update(right.entities)
-                    if relation.cardinality == "many_to_one":
+                    shape.duplicated_entities.update(right.duplicated_entities)
+                    if (
+                        relation.cardinality == "many_to_one"
+                        or relation.from_entity in source.duplicated_entities
+                    ):
                         shape.duplicated_entities.update(right.entities)
                     used.add(relation.id)
                 elif isinstance(op, Aggregate):

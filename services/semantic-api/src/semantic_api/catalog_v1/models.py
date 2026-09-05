@@ -5,7 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    model_validator,
+)
 
 Id = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")]
 Alias = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")]
@@ -71,9 +80,16 @@ class Member(NamedTerm):
 class FieldDefinition(NamedTerm):
     entity_id: Id
     data_type: Scalar
+    member_governed: StrictBool = False
     members: Annotated[tuple[Member, ...], Field(max_length=128)] = ()
     groupable: bool = True
     filterable: bool = True
+
+    @model_validator(mode="after")
+    def require_member_governance(self) -> FieldDefinition:
+        if self.members and not self.member_governed:
+            raise ValueError("Fields with members must declare member_governed")
+        return self
 
 
 class Metric(NamedTerm):

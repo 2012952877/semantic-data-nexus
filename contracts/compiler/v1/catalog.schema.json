@@ -170,6 +170,11 @@
           "title": "Data Type",
           "type": "string"
         },
+        "member_governed": {
+          "default": false,
+          "title": "Member Governed",
+          "type": "boolean"
+        },
         "members": {
           "default": [],
           "items": {

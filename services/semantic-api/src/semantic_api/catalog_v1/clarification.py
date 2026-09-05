@@ -35,7 +35,7 @@ class ClarificationRecord(Frozen):
     expires_at: AwareDatetime
     answers: tuple[Resolution, ...] = ()
     history: tuple[Answered, ...] = ()
-    current: Compilation
+    current: Compilation | None = None
 
 
 class LockedClarification(Protocol):

@@ -31,6 +31,8 @@ def export(directory: Path) -> None:
     path = directory / "examples.json"
     examples = json.loads(path.read_text(encoding="utf-8"))
     for case in examples["cases"]:
+        for field in case["catalog"]["fields"]:
+            field.setdefault("member_governed", bool(field.get("members")))
         for binding in case["bindings"]:
             binding.setdefault("source_type", "synthetic")
             binding.setdefault("utc_naive_fields", [])

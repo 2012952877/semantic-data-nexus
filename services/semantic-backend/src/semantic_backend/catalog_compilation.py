@@ -34,7 +34,7 @@ from query_runtime.domain import (
     TypedExpression,
 )
 from query_runtime.errors import RuntimeFailure
-from query_runtime.operators import ResourceLimits
+from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits
 from query_runtime.planner import (
     CapabilityPlanner,
     ExactConceptBinder,
@@ -369,6 +369,9 @@ class _CatalogResolver:
         self.resolver = resolver
         self.assets = {e.source.alias: e for e in bindings.entities}
         self.limits = limits
+        self._key_executor = DuckDBOperatorExecutor(limits)
+        self._pending_work: set[asyncio.Task[pa.Table]] = set()
+        self._closed = False
         relations = {r.id: r for r in context.semantic_catalog.relations}
         fields = {
             f.field_id: (asset.source.alias, f.column_name)
@@ -389,7 +392,12 @@ class _CatalogResolver:
     async def execute(
         self, context: ExecutionContext, fragment: SourceFragment, cancel_event: asyncio.Event
     ) -> pa.Table:
-        table = await self.resolver.execute(context, fragment, cancel_event)
+        if self._closed:
+            raise asyncio.CancelledError
+        source_work = asyncio.create_task(self.resolver.execute(context, fragment, cancel_event))
+        self._pending_work.add(source_work)
+        source_work.add_done_callback(self._pending_work.discard)
+        table = await source_work
         if table.num_rows > self.limits.max_rows or table.nbytes > self.limits.max_bytes:
             raise RuntimeFailure("SOURCE_RESULT_LIMIT", "Source exceeded the configured budget.")
         mapping = {f.column_name: f for f in self.assets[fragment.source.alias].fields}
@@ -398,12 +406,6 @@ class _CatalogResolver:
             raise RuntimeFailure(
                 "SOURCE_SCHEMA_MISMATCH", "Source schema differs from its binding."
             )
-        for key in self.unique_keys.get(fragment.source.alias, set()):
-            column = table[key]
-            if column.null_count or pc.count_distinct(column).as_py() != table.num_rows:
-                raise RuntimeFailure(
-                    "JOIN_CARDINALITY_VIOLATION", "Source violates the governed unique join key."
-                )
         for index, name in enumerate(table.column_names):
             spec = mapping[name]
             column = table.column(index)
@@ -419,7 +421,14 @@ class _CatalogResolver:
                     )
                 # Arrow removes the timezone while preserving the UTC instant.
                 # This avoids DuckDB/session timezone conversions in its v0 TIMESTAMP type.
-                table = table.set_column(index, name, column.cast(pa.timestamp("us"), safe=True))
+                try:
+                    normalized = column.cast(pa.timestamp("us"), safe=True)
+                except pa.ArrowInvalid:
+                    raise RuntimeFailure(
+                        "SOURCE_TIME_PRECISION",
+                        "Timestamps require lossless microsecond precision.",
+                    ) from None
+                table = table.set_column(index, name, normalized)
             elif not (
                 (spec.data_type is ScalarType.STRING and pa.types.is_string(kind))
                 or (spec.data_type is ScalarType.INTEGER and pa.types.is_integer(kind))
@@ -429,7 +438,56 @@ class _CatalogResolver:
                 raise RuntimeFailure(
                     "SOURCE_TYPE_MISMATCH", "Source type differs from its binding."
                 )
+        for key in sorted(self.unique_keys.get(fragment.source.alias, set())):
+            if self._closed:
+                raise asyncio.CancelledError
+            column = table[key]
+            if column.null_count:
+                raise RuntimeFailure(
+                    "JOIN_CARDINALITY_VIOLATION", "Source violates the governed unique join key."
+                )
+            if (
+                table.num_rows
+                and pa.types.is_floating(column.type)
+                and not pc.all(pc.is_finite(column)).as_py()
+            ):
+                raise RuntimeFailure("JOIN_KEY_NONFINITE", "Join keys must be finite.")
+            count_name = "_key_count" if key.casefold() != "_key_count" else "_key_count_"
+            key_work = asyncio.create_task(
+                self._key_executor.execute(
+                    OperatorSpec(
+                        kind=OperatorKind.AGGREGATE,
+                        group_by=(key,),
+                        aggregates=(
+                            AggregateSpec(name=count_name, function=AggregateFunction.COUNT),
+                        ),
+                    ),
+                    (table.select([key]),),
+                    cancel_event,
+                )
+            )
+            self._pending_work.add(key_work)
+            key_work.add_done_callback(self._pending_work.discard)
+            grouped = await key_work
+            if grouped.num_rows != table.num_rows:
+                raise RuntimeFailure(
+                    "JOIN_CARDINALITY_VIOLATION", "Source violates the governed unique join key."
+                )
         return table
+
+    async def aclose(self) -> None:
+        self._closed = True
+        tasks = [task for task in self._pending_work if not task.done()]
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if any(
+            isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
+            for result in results
+        ):
+            raise RuntimeFailure(
+                "CATALOG_SOURCE_CLEANUP_FAILED", "Source validation did not clean up safely."
+            )
 
     async def cancel(self, cancellation_handle: str) -> None:
         await self.resolver.cancel(cancellation_handle)
@@ -483,12 +541,18 @@ async def execute_catalog(
             binder=adapted.binder, sources=adapted.sources, capabilities=adapted.capabilities
         ).plan(adapted.graph)
         store = InlineResultStore()
+        source_resolver = _CatalogResolver(
+            resolver, bindings, limits, compilation.graph, authorized
+        )
         coordinator = QueryCoordinator(
-            resolver=_CatalogResolver(resolver, bindings, limits, compilation.graph, authorized),
+            resolver=source_resolver,
             result_store=store,
             limits=limits,
         )
-        outcome = await coordinator.run(plan, run_id=run_id)
+        try:
+            outcome = await coordinator.run(plan, run_id=run_id)
+        finally:
+            await source_resolver.aclose()
         if outcome.summary.state is not ExecutionState.SUCCEEDED or outcome.manifest is None:
             raise CompilerFailure(outcome.summary.diagnostic_code or "RUNTIME_FAILED")
         await compiler._unchanged(request, context, identity, compilation.resolutions)

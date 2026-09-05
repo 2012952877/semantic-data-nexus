@@ -27,31 +27,36 @@
             "id": "grid.reading.site",
             "label": "Reading site",
             "entity_id": "grid.reading",
-            "data_type": "integer"
+            "data_type": "integer",
+            "member_governed": false
           },
           {
             "id": "grid.reading.kwh",
             "label": "Kilowatt hours",
             "entity_id": "grid.reading",
-            "data_type": "number"
+            "data_type": "number",
+            "member_governed": false
           },
           {
             "id": "grid.reading.observed",
             "label": "Observed time",
             "entity_id": "grid.reading",
-            "data_type": "datetime"
+            "data_type": "datetime",
+            "member_governed": false
           },
           {
             "id": "grid.site.id",
             "label": "Site identifier",
             "entity_id": "grid.site",
-            "data_type": "integer"
+            "data_type": "integer",
+            "member_governed": false
           },
           {
             "id": "grid.site.name",
             "label": "Site name",
             "entity_id": "grid.site",
-            "data_type": "string"
+            "data_type": "string",
+            "member_governed": false
           },
           {
             "id": "grid.site.status",
@@ -69,7 +74,8 @@
                 "label": "retired",
                 "value": "R"
               }
-            ]
+            ],
+            "member_governed": true
           }
         ],
         "metrics": [
@@ -117,7 +123,7 @@
             "resource_kind": "ontology",
             "resource_id": "energy-catalog",
             "revision": 1,
-            "content_sha256": "9196fe142e3b4b8195b733976f97541accefcbe538130a19de9d1268b3e06169"
+            "content_sha256": "25a7e74fa2dd8a09b096b54978498fd7af0a5e6fd566f6a6480897b24cb6812b"
           },
           "nodes": [
             {
@@ -381,13 +387,15 @@
                 "label": "beta",
                 "value": "B-02"
               }
-            ]
+            ],
+            "member_governed": true
           },
           {
             "id": "lab.assay.score",
             "label": "Score",
             "entity_id": "lab.assay",
-            "data_type": "number"
+            "data_type": "number",
+            "member_governed": false
           }
         ],
         "metrics": [
@@ -429,7 +437,7 @@
             "resource_kind": "ontology",
             "resource_id": "laboratory-catalog",
             "revision": 4,
-            "content_sha256": "07ef8533ddd78aec9cc849ed6d06c9dbd3aa70ed9f3c894a5caa2242cf1e4d4c"
+            "content_sha256": "56c778dddab43ab7139760f3cf54eaf7d8a4223b19f8e1f0607493106c130f8e"
           },
           "nodes": [
             {

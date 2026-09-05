@@ -21,6 +21,10 @@ relation, and time-window definitions. It contains **no physical bindings**.
 IDs are arbitrary, unique within a snapshot, and not matched against commerce
 prefixes. A metric chooses a governed source field and aggregation function.
 A relation specifies typed keys and `many_to_one` or `one_to_one` cardinality.
+Each field independently declares `member_governed`. A field containing members
+must set it to true; filtering all members out of an authorized view never clears
+it. Consequently a zero-choice governed field still rejects scalar comparisons.
+The flag is part of the immutable catalog digest, not inferred from visible choices.
 
 `ResourceVersion` carries the product/v1 scope, ontology resource ID, positive
 revision, and SHA-256. The digest is the UTF-8, ASCII-escaped, sorted-key compact
@@ -75,7 +79,7 @@ test-only. No gateway or arbitrary-URL expansion is included.
 | SELECT | Authorized entity and fields, one source per entity, exact types |
 | FILTER | Typed scalar comparison; exact resolved member IDs; pinned time-window IDs; required source policies before transforms |
 | JOIN | Authorized relation, directed keys, non-fanout topology; no cross join or model-defined key |
-| AGGREGATE | Governed metric IDs/functions, groupable fields, output collisions, no aggregation of duplicated dimension metrics |
+| AGGREGATE | Governed metric IDs/functions, groupable fields, output collisions, no aggregation of duplicated dimension metrics, including through subsequent one-to-one joins |
 | PROJECT / SORT / LIMIT | Existing typed columns, unique case-insensitive output aliases, exact output schema, bounded positive limit |
 | Other operators, SQL, tools, ASK/ACT/SEARCH | Rejected; no implicit write or search authority |
 
@@ -84,6 +88,8 @@ nodes, branch reuse, semantic constraints, and the exact catalog pin. It does no
 silently widen the old six-operator semantic-core validator or existing SQG v0.
 Only the listed implemented forms may be advertised; future runtime v1 operators
 need their finalized contract and conformance before admission.
+Member predicates compare exact sets independent of their ordering, including
+required policy predicates. Duplicate member IDs remain invalid.
 
 The initializer matches authorized IDs/labels/synonyms using longest
 non-overlapping mentions. Colliding meanings produce server-owned choices rather
@@ -109,7 +115,8 @@ Install the explicit `semantic-api[postgres]` extra and give
 on `compiler_clarifications_v1`. No control-api or identity migration is changed.
 Credentials are not accepted in a query request or persisted with a clarification.
 
-The row stores the original question and authorized prompt context, allowed
+Every compile request reserves its owner/request-ID/hash before choosing the
+direct or clarification branch. The row stores the original question and authorized prompt context, allowed
 choices, exact resource pin, owner identity/membership revision, expiry, context
 fingerprint, accepted answers, and their responses. The fingerprint includes
 the access allowlists, prompt/schema, provider configuration (not credential
@@ -121,6 +128,8 @@ remain operational requirements.
 | --- | --- |
 | Same owner + request ID + same request | Same persisted clarification/result |
 | Same owner + request ID + different request | Idempotency conflict |
+| Same ID changes from clarification to direct (or vice versa) | Conflict before provider use |
+| Concurrent/repeated direct request with identical hash | One locked generation, then the persisted response |
 | First valid answer at current step | Row lock, current authorization, bounded compile, reauthorization, atomic answer/result commit |
 | Same step + same answer | Stored response, no second model call |
 | Same step + different answer / skipped step | Conflict / revision rejection |
@@ -130,7 +139,10 @@ remain operational requirements.
 | Cancellation/deadline before transaction commit | Rollback; another client may retry |
 
 Two clients serialize on `SELECT ... FOR UPDATE`. A restarted repository needs
-no process-local continuation state. This gives idempotent **compiled responses**,
+no process-local continuation state. A cancelled direct generation retains an
+explicit pending row (`current=null`), its original hash and expiry; a different
+question cannot replace it. An explicit same-hash retry may finish that pending
+request. This gives idempotent **compiled responses**,
 not exactly-once paid inference: a crash after a provider returns but before the
 database commits may require another inference on retry. Runtime execution
 idempotency/recovery is a separate concern, not implied by answer replay.
@@ -161,6 +173,12 @@ locally. The source wrapper validates Arrow types/schema and governed unique
 join keys. Timestamp inputs with a timezone are normalized to UTC-naive instants
 for the v0 runtime; naive timestamps require an explicit reviewed UTC binding.
 This avoids host/session timezone-dependent boundary comparisons.
+Unique keys are checked **after** type and timestamp normalization by a typed
+DuckDB GROUP BY using the same execution engine as JOIN, not Arrow distinct or a
+Python set. Signed zero therefore cannot double a matched fact. Floating join
+keys must be finite; decimal bindings remain unsupported; lossy sub-microsecond
+timestamp conversion is rejected. Empty dimension tables remain valid. Source
+and key-check tasks are retained and cancelled/drained before the invocation exits.
 
 `execute_catalog` requires the same absolute deadline used by compile/resume,
 rechecks current authorization and pin, applies runtime row/byte/memory limits,
@@ -179,6 +197,9 @@ is not added here.
 | One bounded repair and injection data separation | `test_catalog_v1.py::test_wire_repair_injection_data_and_same_catalog_pin` and existing `test_structured_provider.py` |
 | Restart/two-client replay, conflict, cancellation rollback, revocation, pin/expiry and lock deadline | `services/semantic-api/tests/test_catalog_postgres.py` (requires real disposable PostgreSQL) |
 | Runtime schema/key/time/budget/cancellation | `services/semantic-backend/tests/test_catalog_compilation.py` |
+| Empty-member grants, transitive fanout, order-independent predicates with duplicate rejection | `services/semantic-api/tests/test_catalog_review_regressions.py` |
+| Signed zero, non-finite/decimal/time boundaries, denied raw member access, safe one-to-one metric results | `services/semantic-backend/tests/test_catalog_review_regressions.py` |
+| Direct/clarification request-ID conflicts, two-client direct replay and cancelled reservations | New direct-request cases in `services/semantic-api/tests/test_catalog_postgres.py` |
 
 `examples.json` contains clean-room synthetic acceptance data, not runtime query
 templates. Model responses are mocked at a real HTTP socket; no model was called

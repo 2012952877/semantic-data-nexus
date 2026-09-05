@@ -64,7 +64,7 @@ jobs:
           root = ET.parse("test-results.xml").getroot()
           cases = [case for case in root.iter("testcase")
                    if "test_catalog_postgres" in case.attrib.get("classname", "")]
-          assert len(cases) >= 7, f"Expected PostgreSQL cases, got {len(cases)}"
+          assert len(cases) >= 10, f"Expected PostgreSQL cases, got {len(cases)}"
           assert all(not list(case) for case in cases), "PostgreSQL case failed or skipped"
           print(f"Real PostgreSQL clarification tests passed: {len(cases)}")
       - name: Check generated compiler contracts

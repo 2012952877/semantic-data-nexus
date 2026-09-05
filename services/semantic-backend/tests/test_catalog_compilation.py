@@ -112,12 +112,39 @@ class Authority:
         return self.access
 
 
-class NoClarification:
-    async def create(self, record):
-        raise AssertionError("These held-out positive questions are unambiguous")
+class RequestRecords:
+    """Test-only persistence; direct requests also reserve their idempotency key."""
 
-    def lock(self, *args):
-        raise AssertionError("No clarification resume in positive fixture")
+    def __init__(self):
+        self.rows = {}
+        self.mutex = asyncio.Lock()
+
+    async def create(self, record):
+        async with self.mutex:
+            for stored in self.rows.values():
+                if (
+                    stored.owner == record.owner
+                    and stored.request.request_id == record.request.request_id
+                ):
+                    if stored.request != record.request:
+                        raise CompilerFailure("IDEMPOTENCY_CONFLICT")
+                    return stored
+            self.rows[record.id] = record
+            return record
+
+    @asynccontextmanager
+    async def lock(self, identifier, owner):
+        async with self.mutex:
+            record = self.rows[identifier]
+            assert record.owner == owner
+
+            async def now():
+                return datetime.now(UTC)
+
+            async def save(updated):
+                self.rows[identifier] = updated
+
+            yield SimpleNamespace(record=record, now=now, save=save)
 
 
 class ObservedResolver(FakeResolver):
@@ -159,7 +186,7 @@ def setup(case, provider):
         catalogs=PublishedCatalogs((document,)),
         authorization=authority,
         provider=provider,
-        clarifications=NoClarification(),
+        clarifications=RequestRecords(),
         capabilities=CORE_CAPABILITIES,
     )
     request = CatalogCompileRequest(
