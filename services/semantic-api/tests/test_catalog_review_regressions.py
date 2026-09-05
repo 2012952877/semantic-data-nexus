@@ -362,3 +362,37 @@ async def test_real_catalog_provider_configuration_is_readonly():
     with pytest.raises(FrozenInstanceError):
         provider.settings = settings("http://127.0.0.1:12346/v1/chat/completions")
     await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "line one\nline two\tvalue\r\n",
+        "a" * 3998 + "\U0001f642\U0001f643",
+    ],
+)
+def test_catalog_request_preserves_valid_whitespace_and_scalar_boundary(question):
+    from semantic_api.catalog_v1.models import CatalogCompileRequest
+
+    _, request, _, _ = setup()
+    parsed = CatalogCompileRequest.model_validate(
+        {
+            **request.model_dump(mode="json"),
+            "question": question,
+        }
+    )
+    assert parsed.question == question
+
+
+@pytest.mark.parametrize("question", ["a" * 3999 + "\U0001f642\U0001f643", "a\ud800", "a\udc00"])
+def test_catalog_request_rejects_excess_scalars_and_surrogates(question):
+    from semantic_api.catalog_v1.models import CatalogCompileRequest
+
+    _, request, _, _ = setup()
+    with pytest.raises(ValidationError):
+        CatalogCompileRequest.model_validate(
+            {
+                **request.model_dump(mode="json"),
+                "question": question,
+            }
+        )

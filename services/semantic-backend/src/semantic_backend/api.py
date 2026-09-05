@@ -13,7 +13,11 @@ from semantic_backend.auth_context import AccessDenied, get_trusted_context, leg
 from semantic_backend.auth_middleware import ServiceAuthentication
 from semantic_backend.authorization import PostgresAuthorization
 from semantic_backend.catalog_disconnect import DISCONNECT_KEY, CatalogDisconnect, run_connected
-from semantic_backend.catalog_models import CatalogAnswerRequest, CatalogQueryResponse
+from semantic_backend.catalog_models import (
+    CatalogAnswerRequest,
+    CatalogAnswerResponse,
+    CatalogQueryResponse,
+)
 from semantic_backend.catalog_service import CatalogQueryService
 from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
 from semantic_backend.repository import (
@@ -136,7 +140,7 @@ def create_app(
     async def get_lineage(run_id: str) -> RunDetail:
         return await get_detail(run_id)
 
-    async def catalog_call(operation: Awaitable[CatalogQueryResponse]) -> CatalogQueryResponse:
+    async def catalog_call[T](operation: Awaitable[T]) -> T:
         try:
             return await operation
         except CompilerFailure as exc:
@@ -152,6 +156,7 @@ def create_app(
                 if code
                 in {
                     "IDEMPOTENCY_CONFLICT",
+                    "CLARIFICATION_REQUEST_MISMATCH",
                     "ATTEMPT_FENCED",
                     "COMPILATION_IN_PROGRESS",
                     "COMPILATION_OUTCOME_UNKNOWN",
@@ -192,11 +197,11 @@ def create_app(
         )
 
     @app.post(
-        "/v1/catalog/clarifications/{identifier}/answers", response_model=CatalogQueryResponse
+        "/v1/catalog/clarifications/{identifier}/answers", response_model=CatalogAnswerResponse
     )
     async def catalog_answer(
         identifier: str, request: CatalogAnswerRequest, http: Request
-    ) -> CatalogQueryResponse | Response:
+    ) -> CatalogAnswerResponse | Response:
         catalog = enabled_catalog()
         return await run_connected(
             catalog_call(catalog.answer(identifier, request, get_trusted_context())),

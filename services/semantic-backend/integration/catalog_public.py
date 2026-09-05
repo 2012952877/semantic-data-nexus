@@ -453,15 +453,31 @@ async def test_signed_public_clarification_resume_conflict_and_current_revoke(pu
     identifier = first["compilation"]["clarification_id"]
     path = f"/v1/catalog/clarifications/{identifier}/answers"
     answer = {
-        "contract_version": "catalog-answer/v1",
+        "contract_version": "catalog-answer/v2",
+        "request_id": payload["request_id"],
         "catalog": payload["catalog"],
         "revision": 1,
         "choice_id": "lab.mean_yield",
     }
+    other = await signed(case, "/v1/catalog/queries", {**payload, "request_id": "other-request"})
+    assert other.status_code == 200 and other.json()["status"] == "clarification_required"
+    unrelated = await signed(case, path, {**answer, "request_id": "other-request"})
+    assert unrelated.status_code == 409
+    assert unrelated.json()["detail"]["code"] == "CLARIFICATION_REQUEST_MISMATCH"
+    legacy = {k: v for k, v in answer.items() if k != "request_id"}
+    legacy["contract_version"] = "catalog-answer/v1"
+    assert (await signed(case, path, legacy)).status_code == 422
+    assert not case["calls"]
     done = await signed(case, path, answer)
     assert done.status_code == 200, done.text
-    assert done.json()["status"] == "succeeded"
+    assert done.json()["contract_version"] == "catalog-answer-result/v1"
+    assert done.json()["request_id"] == payload["request_id"]
+    assert done.json()["clarification_id"] == identifier
+    assert done.json()["revision"] == 1
+    assert done.json()["choice_id"] == "lab.mean_yield"
+    assert done.json()["outcome"]["status"] == "succeeded"
     assert (await signed(case, path, answer)).json() == done.json()
+    assert (await signed(case, path, {**answer, "revision": 2})).status_code == 409
     assert (await signed(case, path, {**answer, "choice_id": "lab.total_yield"})).status_code == 409
     async with await psycopg.AsyncConnection.connect(case["database"]) as connection:
         await connection.execute("SELECT pg_advisory_xact_lock(731320032)")
@@ -615,7 +631,8 @@ async def test_signed_body_disconnect_cancels_catalog_work_before_publication(
         initial = (await signed(case, path, payload)).json()
         path = f"/v1/catalog/clarifications/{initial['compilation']['clarification_id']}/answers"
         payload = {
-            "contract_version": "catalog-answer/v1",
+            "contract_version": "catalog-answer/v2",
+            "request_id": payload["request_id"],
             "catalog": payload["catalog"],
             "revision": 1,
             "choice_id": "lab.mean_yield",
@@ -779,7 +796,8 @@ async def test_outer_asgi_cancellation_owns_operation_before_cancel_checkpoints(
         first = (await signed(case, path, payload)).json()
         path = f"/v1/catalog/clarifications/{first['compilation']['clarification_id']}/answers"
         payload = {
-            "contract_version": "catalog-answer/v1",
+            "contract_version": "catalog-answer/v2",
+            "request_id": payload["request_id"],
             "catalog": payload["catalog"],
             "revision": 1,
             "choice_id": "lab.mean_yield",

@@ -47,6 +47,12 @@ test('real Keycloak session reaches guarded catalog query, runtime result and cl
   expect(result.result.rows).toEqual([['Cedar', 10], ['Delta', 7]])
   const replay = await page.request.post('/api/v1/catalog/queries', { data: energy, headers })
   expect(await replay.json()).toEqual(result)
+  const multiline = await page.request.post('/api/v1/catalog/queries', {
+    data: { ...energy, request_id: `multiline-${randomUUID()}`, question: `${energy.question}\n\t` },
+    headers,
+  })
+  expect(multiline.status(), await multiline.text()).toBe(200)
+  expect((await multiline.json()).status).toBe('succeeded')
   const foreign = await page.request.post('/api/v1/catalog/queries', {
     data: energy, headers: { ...headers, 'X-Workspace-Id': 'workspace-b' },
   })
@@ -59,13 +65,21 @@ test('real Keycloak session reaches guarded catalog query, runtime result and cl
   const pending = await clarify.json()
   expect(pending.status).toBe('clarification_required')
   const path = `/api/v1/catalog/clarifications/${pending.compilation.clarification_id}/answers`
-  const answer = { contract_version: 'catalog-answer/v1', catalog: laboratory.catalog,
+  const answer = { contract_version: 'catalog-answer/v2', request_id: laboratory.request_id, catalog: laboratory.catalog,
     revision: 1, choice_id: 'lab.mean_yield' }
+  const unrelated = await page.request.post(path, {
+    data: { ...answer, request_id: energy.request_id }, headers,
+  })
+  expect(unrelated.status()).toBe(409)
   const completed = await page.request.post(path, { data: answer, headers })
   expect(completed.status(), await completed.text()).toBe(200)
   const resolved = await completed.json()
-  expect(resolved.status).toBe('succeeded')
-  expect(resolved.result.rows).toEqual([[4]])
+  expect(resolved.contract_version).toBe('catalog-answer-result/v1')
+  expect(resolved.request_id).toBe(laboratory.request_id)
+  expect(resolved.clarification_id).toBe(pending.compilation.clarification_id)
+  expect(resolved.revision).toBe(1)
+  expect(resolved.outcome.status).toBe('succeeded')
+  expect(resolved.outcome.result.rows).toEqual([[4]])
   expect(await (await page.request.post(path, { data: answer, headers })).json()).toEqual(resolved)
   expect((await page.request.post(path, { data: { ...answer, choice_id: 'lab.total_yield' }, headers })).status()).toBe(409)
   const observation = join(root, 'catalog-observations', 'model.json')

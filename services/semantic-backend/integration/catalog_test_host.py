@@ -16,12 +16,14 @@ async def serve(fixtures: Path, backend_port: int, model_port: int, host: str) -
         raise RuntimeError("The catalog socket fixture is development-only")
     candidates = json.loads((fixtures / "catalog-model.json").read_text(encoding="utf-8"))
     active = set()
-    sequence = 0
+    target = fixtures / "catalog-observations" / "model.json"
+    sequence = json.loads(target.read_text(encoding="utf-8"))["sequence"] if target.exists() else 0
+    if type(sequence) is not int or sequence < 0:
+        raise ValueError("Invalid synthetic observation sequence")
 
     def record(state: str) -> None:
         nonlocal sequence
         sequence += 1
-        target = fixtures / "catalog-observations" / "model.json"
         temporary = fixtures / "catalog-observations" / "model.tmp"
         temporary.write_text(json.dumps({"sequence": sequence, "state": state}), encoding="utf-8")
         temporary.replace(target)

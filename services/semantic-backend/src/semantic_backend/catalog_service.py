@@ -36,7 +36,11 @@ from semantic_backend.authorization import PostgresAuthorization
 from semantic_backend.catalog_authorization import CatalogAuthorization
 from semantic_backend.catalog_compilation import execute_catalog
 from semantic_backend.catalog_configuration import CatalogRegistry
-from semantic_backend.catalog_models import CatalogAnswerRequest, CatalogQueryResponse
+from semantic_backend.catalog_models import (
+    CatalogAnswerRequest,
+    CatalogAnswerResponse,
+    CatalogQueryResponse,
+)
 from semantic_backend.models import ColumnFormat, ResultColumn, ResultSet, ScalarType
 from semantic_backend.service import OrchestrationService
 
@@ -205,7 +209,7 @@ class CatalogQueryService:
 
     async def answer(
         self, identifier: str, answer: CatalogAnswerRequest, context: TrustedContext
-    ) -> CatalogQueryResponse:
+    ) -> CatalogAnswerResponse:
         deadline = asyncio.get_running_loop().time() + 20
         owner = owner_for(context, answer.catalog)
         async with self.authorization.guard(
@@ -215,7 +219,16 @@ class CatalogQueryService:
             stored = await self.store.lock(decision.connection, identifier, owner)
             self.compiler._fresh(stored, context, entry.document, self.compiler._access(decision))
             request = stored.record.request
-        return await self._run(request, context, identifier, answer, deadline=deadline)
+            if answer.request_id != request.request_id:
+                raise CompilerFailure("CLARIFICATION_REQUEST_MISMATCH")
+        outcome = await self._run(request, context, identifier, answer, deadline=deadline)
+        return CatalogAnswerResponse(
+            request_id=request.request_id,
+            clarification_id=identifier,
+            revision=answer.revision,
+            choice_id=answer.choice_id,
+            outcome=outcome,
+        )
 
     async def _run(
         self,

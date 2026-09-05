@@ -13,6 +13,7 @@ from pydantic import (
     StrictBool,
     StrictFloat,
     StrictInt,
+    field_validator,
     model_validator,
 )
 
@@ -219,6 +220,13 @@ class CatalogCompileRequest(Frozen):
     request_id: Id
     catalog: ResourceVersion
     question: Annotated[str, Field(min_length=1, max_length=4_000)]
+
+    @field_validator("question")
+    @classmethod
+    def unicode_scalars(cls, value: str) -> str:
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValueError("Question must contain valid Unicode scalars")
+        return value
 
 
 class Choice(Frozen):

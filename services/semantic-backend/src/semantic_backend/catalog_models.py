@@ -9,7 +9,8 @@ from semantic_backend.models import ResultSet
 
 
 class CatalogAnswerRequest(Frozen):
-    contract_version: Literal["catalog-answer/v1"]
+    contract_version: Literal["catalog-answer/v2"]
+    request_id: Id
     catalog: ResourceVersion
     revision: int = Field(strict=True, ge=1)
     choice_id: Id
@@ -23,3 +24,12 @@ class CatalogQueryResponse(Frozen):
     run_id: str | None = None
     result: ResultSet | None = None
     provenance: dict[str, str] = Field(default_factory=dict)
+
+
+class CatalogAnswerResponse(Frozen):
+    contract_version: Literal["catalog-answer-result/v1"] = "catalog-answer-result/v1"
+    request_id: Id
+    clarification_id: Id
+    revision: int = Field(strict=True, ge=1)
+    choice_id: Id
+    outcome: CatalogQueryResponse

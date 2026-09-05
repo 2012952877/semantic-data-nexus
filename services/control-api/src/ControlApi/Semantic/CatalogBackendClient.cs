@@ -28,6 +28,7 @@ public sealed record CatalogQueryRequest(
 
 public sealed record CatalogAnswerRequest(
     [property: JsonRequired, JsonPropertyName("contract_version")] string ContractVersion,
+    [property: JsonRequired, JsonPropertyName("request_id")] string RequestId,
     [property: JsonRequired, JsonPropertyName("catalog")] CatalogPin Catalog,
     [property: JsonRequired, JsonPropertyName("revision")] int Revision,
     [property: JsonRequired, JsonPropertyName("choice_id")] string ChoiceId);
@@ -41,10 +42,18 @@ public sealed record CatalogQueryResponse(
     [property: JsonRequired, JsonPropertyName("result")] SemanticResultSet? Result,
     [property: JsonRequired, JsonPropertyName("provenance")] IReadOnlyDictionary<string, string> Provenance);
 
+public sealed record CatalogAnswerResponse(
+    [property: JsonRequired, JsonPropertyName("contract_version")] string ContractVersion,
+    [property: JsonRequired, JsonPropertyName("request_id")] string RequestId,
+    [property: JsonRequired, JsonPropertyName("clarification_id")] string ClarificationId,
+    [property: JsonRequired, JsonPropertyName("revision")] int Revision,
+    [property: JsonRequired, JsonPropertyName("choice_id")] string ChoiceId,
+    [property: JsonRequired, JsonPropertyName("outcome")] CatalogQueryResponse Outcome);
+
 public interface ICatalogBackendClient
 {
     Task<CatalogQueryResponse> QueryAsync(CatalogQueryRequest request, CancellationToken cancellationToken);
-    Task<CatalogQueryResponse> AnswerAsync(string identifier, CatalogAnswerRequest request, CancellationToken cancellationToken);
+    Task<CatalogAnswerResponse> AnswerAsync(string identifier, CatalogAnswerRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class CatalogBackendException(int status, string code)
@@ -58,7 +67,7 @@ public sealed class DisabledCatalogBackendClient : ICatalogBackendClient
 {
     public Task<CatalogQueryResponse> QueryAsync(CatalogQueryRequest request, CancellationToken cancellationToken) =>
         throw new CatalogBackendException(503, "CATALOG_NOT_CONFIGURED");
-    public Task<CatalogQueryResponse> AnswerAsync(string identifier, CatalogAnswerRequest request, CancellationToken cancellationToken) =>
+    public Task<CatalogAnswerResponse> AnswerAsync(string identifier, CatalogAnswerRequest request, CancellationToken cancellationToken) =>
         throw new CatalogBackendException(503, "CATALOG_NOT_CONFIGURED");
 }
 
@@ -77,16 +86,33 @@ public sealed class HttpCatalogBackendClient(HttpClient client) : ICatalogBacken
         return options;
     }
 
-    public Task<CatalogQueryResponse> QueryAsync(CatalogQueryRequest request, CancellationToken cancellationToken) =>
-        SendAsync("v1/catalog/queries", request, request.Catalog, request.RequestId, cancellationToken);
+    public async Task<CatalogQueryResponse> QueryAsync(CatalogQueryRequest request, CancellationToken cancellationToken)
+    {
+        var result = await SendAsync<CatalogQueryRequest, CatalogQueryResponse>(
+            "v1/catalog/queries", request, cancellationToken);
+        CatalogResponseValidation.Validate(result, request.Catalog, request.RequestId, null);
+        return result;
+    }
 
-    public Task<CatalogQueryResponse> AnswerAsync(
-        string identifier, CatalogAnswerRequest request, CancellationToken cancellationToken) =>
-        SendAsync($"v1/catalog/clarifications/{Uri.EscapeDataString(identifier)}/answers",
-            request, request.Catalog, null, cancellationToken);
+    public async Task<CatalogAnswerResponse> AnswerAsync(
+        string identifier, CatalogAnswerRequest request, CancellationToken cancellationToken)
+    {
+        var result = await SendAsync<CatalogAnswerRequest, CatalogAnswerResponse>(
+            $"v1/catalog/clarifications/{Uri.EscapeDataString(identifier)}/answers",
+            request, cancellationToken);
+        if (result.ContractVersion != "catalog-answer-result/v1" ||
+            result.RequestId != request.RequestId || result.ClarificationId != identifier ||
+            result.Revision != request.Revision || result.ChoiceId != request.ChoiceId)
+        {
+            throw new CatalogBackendException(502, "CATALOG_INVALID_RESPONSE");
+        }
+        CatalogResponseValidation.Validate(result.Outcome, request.Catalog, request.RequestId,
+            (identifier, request.Revision + 1));
+        return result;
+    }
 
-    private async Task<CatalogQueryResponse> SendAsync<T>(
-        string path, T request, CatalogPin expectedPin, string? requestId, CancellationToken cancellationToken)
+    private async Task<TResponse> SendAsync<TRequest, TResponse>(
+        string path, TRequest request, CancellationToken cancellationToken)
     {
         try
         {
@@ -119,35 +145,8 @@ public sealed class HttpCatalogBackendClient(HttpClient client) : ICatalogBacken
                 throw new CatalogBackendException(
                     status is 400 or 401 or 403 or 404 or 409 or 410 or 413 or 422 or 429 or 503 or 504 ? status : 502, code);
             }
-            var result = await response.Content.ReadFromJsonAsync<CatalogQueryResponse>(Json, cancellationToken)
+            var result = await response.Content.ReadFromJsonAsync<TResponse>(Json, cancellationToken)
                 ?? throw new CatalogBackendException(502, "CATALOG_INVALID_RESPONSE");
-            if (result.ContractVersion != "catalog-query-result/v1" ||
-                result.RequestId is null ||
-                !Regex.IsMatch(result.RequestId, "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\\z") ||
-                (requestId is not null && result.RequestId != requestId) ||
-                result.Status is not ("succeeded" or "clarification_required" or "blocked") ||
-                result.Compilation.ValueKind != JsonValueKind.Object ||
-                result.Compilation.GetProperty("contract_version").GetString() != "catalog-compilation/v1" ||
-                result.Compilation.GetProperty("catalog").Deserialize<CatalogPin>(Json) != expectedPin ||
-                result.Provenance is null || result.Provenance.Count > 16 ||
-                result.Provenance.Any(pair => pair.Key.Length > 128 || pair.Value.Length > 2048))
-            {
-                throw new CatalogBackendException(502, "CATALOG_INVALID_RESPONSE");
-            }
-            var compiled = result.Compilation.GetProperty("status").GetString();
-            if (result.Status == "succeeded")
-            {
-                if (compiled != "compiled" || result.Result is null || result.RunId is null)
-                {
-                    throw new CatalogBackendException(502, "CATALOG_INVALID_RESPONSE");
-                }
-                SemanticRunDetailValidator.ValidateResult(result.Result);
-            }
-            else if (result.Result is not null || result.RunId is not null ||
-                compiled != (result.Status == "blocked" ? "blocked" : "clarification"))
-            {
-                throw new CatalogBackendException(502, "CATALOG_INVALID_RESPONSE");
-            }
             return result;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

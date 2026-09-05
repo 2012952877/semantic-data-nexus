@@ -214,6 +214,10 @@ The BFF exposes `POST /api/v1/catalog/queries` and
 `POST /api/v1/catalog/clarifications/{id}/answers`, using the existing verified
 session, workspace selection, anti-forgery validation and request-bound service
 signature. The backend consumes the actual shared PostgreSQL authorization guard.
+Answers use `catalog-answer/v2` (including the original request ID) and return
+the associated `catalog-answer-result/v1` envelope; the initial `catalog-answer/v1`
+request is explicitly unsupported rather than silently upgraded. The nested
+query-result contract and existing cache contents remain v1.
 See `services/control-api/CATALOG.md` and `services/semantic-backend/CATALOG.md`
 for the exact opt-in and synthetic-source boundaries.
 

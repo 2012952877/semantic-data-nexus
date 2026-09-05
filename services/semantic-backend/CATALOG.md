@@ -2,10 +2,16 @@
 
 The opt-in catalog service exposes `POST /v1/catalog/queries` with the existing
 `catalog-compile/v1` request, and
-`POST /v1/catalog/clarifications/{id}/answers` with a `catalog-answer/v1` body
-(`catalog`, `revision`, `choice_id`). Both require the reviewed request-bound
+`POST /v1/catalog/clarifications/{id}/answers` with a `catalog-answer/v2` body
+(`request_id`, `catalog`, `revision`, `choice_id`). Both require the reviewed request-bound
 service assertion and `compiler:query`; anonymous backend calls remain 401.
 Only the verified `TrustedContext` is used for tenant/workspace/principal identity.
+The original request ID must match the owner-scoped persisted clarification
+before resuming. Answers return `catalog-answer-result/v1` with the verified
+request/clarification/step/choice association and unchanged query-result `outcome`.
+Old `catalog-answer/v1` payloads are explicitly rejected with 422, not reinterpreted.
+Stored query-result cache records are unchanged; this wrapper is constructed only
+for an answer whose stored association and step have been validated.
 
 `CatalogAuthorization` performs typed contract conversion into the existing
 `PostgresAuthorization.guard`; it contains no new identity authority. The guarded

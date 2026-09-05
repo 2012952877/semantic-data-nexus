@@ -5,7 +5,7 @@ The BFF adds two opt-in versioned endpoints under the existing authenticated API
 | Endpoint | Body |
 | --- | --- |
 | `POST /api/v1/catalog/queries` | `catalog-compile/v1`: `request_id`, immutable `catalog` pin, `question` |
-| `POST /api/v1/catalog/clarifications/{id}/answers` | `catalog-answer/v1`: same `catalog` pin, answer `revision`, `choice_id` |
+| `POST /api/v1/catalog/clarifications/{id}/answers` | `catalog-answer/v2`: original `request_id`, same `catalog` pin, answer `revision`, `choice_id` |
 
 Both require `compiler:query` from the current server-resolved workspace
 membership. Browser requests use the existing `X-Workspace-Id` selector and
@@ -20,6 +20,29 @@ No caller identity DTO or unsigned backend context is introduced. The response
 pin/request/status and typed public result are checked before returning it.
 Known typed conflicts, authorization failures and terminal scalar failures retain
 their controlled HTTP status. Unknown token usage stays null.
+
+Answer responses use `catalog-answer-result/v1`: `request_id`,
+`clarification_id`, `revision`, `choice_id`, and `outcome` (the unchanged
+`catalog-query-result/v1` response). The backend locks the clarification for the
+verified owner before comparing its stored original request ID; the request ID
+is correlation, never identity or authorization. The BFF checks every association
+field, including the nested outcome request ID and catalog pin. A repeated
+identical answer keeps the same association; a response for another request,
+clarification, choice, or step is invalid even if the catalog is identical.
+`catalog-answer/v1` is explicitly unsupported at these new catalog routes
+(BFF 400, backend 422); it is not silently interpreted as v2. Direct query and M0
+contracts are unchanged, and existing cached query-result records are not rewritten.
+
+For successful queries, the BFF also checks the graph's `sqg/v1` version and
+catalog pin, ordered result-schema names/types against the returned typed columns,
+and absence of contradictory continuation fields. A clarification must contain
+an ID, positive next-step revision, future timezone-aware expiry and a valid
+nonempty choice set; after an answer, it must continue the same ID at the next
+revision. Missing continuation metadata cannot be returned as a usable prompt.
+
+Question length is at most 4,000 Unicode scalar values, not UTF-16 code units.
+Multiline and tab whitespace is preserved, all-whitespace questions and unpaired
+surrogates are rejected, and the existing JSON/body-byte limits remain in effect.
 
 The backend handles compilation/clarification fencing and scoped persisted result
 replay under the actual shared PostgreSQL authorization guard. Runtime version 1
