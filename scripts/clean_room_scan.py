@@ -166,6 +166,24 @@ _IDENTIFIER_ASSIGNMENT = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+_DECLARED_ASSIGNMENT = re.compile(
+    r"""
+    (?<![A-Za-z0-9_$])
+    (?:(?:const|let|var|param)\s+)?
+    (?P<key>[A-Za-z][A-Za-z0-9_-]{1,100})
+    (?:
+        \s*:\s*[A-Za-z_][A-Za-z0-9_<>,.\[\]|? ]*
+        | \s+[A-Za-z_][A-Za-z0-9_<>,.\[\]|?]*
+    )?
+    \s*=\s*
+    (?P<value>
+        "(?:[^"\\]|\\.)*"
+        | '(?:[^'\\]|\\.)*'
+        | [^,\s#;]+
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 _PROSE_IDENTIFIER = re.compile(
     r"""
     (?<![A-Za-z0-9])
@@ -201,6 +219,17 @@ _PRIVATE_IDENTIFIER_KEY_SUFFIXES = (
     "tenantid",
     "warehouseid",
     "workspaceid",
+)
+_CREDENTIAL_KEY_SUFFIXES = (
+    "accountkey",
+    "accesstoken",
+    "apikey",
+    "clientsecret",
+    "connectionstring",
+    "databrickstoken",
+    "password",
+    "privatekey",
+    "sastoken",
 )
 _UUID_LITERAL = re.compile(
     r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -246,7 +275,7 @@ _AZURE_APP_SERVICE_URL = re.compile(
 _ONMICROSOFT_IDENTITY = re.compile(
     r"""
     (?<![A-Za-z0-9._%+-])
-    (?P<local>[A-Za-z0-9._%+-]+)
+    (?P<local>[A-Za-z0-9._%+#-]+)
     @
     (?P<tenant>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)
     [.]onmicrosoft[.]com
@@ -451,6 +480,11 @@ def _is_private_identifier_key(key: str) -> bool:
     return normalized.endswith(_PRIVATE_IDENTIFIER_KEY_SUFFIXES)
 
 
+def _is_credential_key(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+    return normalized.endswith(_CREDENTIAL_KEY_SUFFIXES)
+
+
 def _is_private_identifier_literal(key: str, raw_value: str | None) -> bool:
     value, _quoted = _literal_value(raw_value)
     normalized = value.strip().strip("{}")
@@ -497,6 +531,27 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
         ) and _is_private_identifier_literal(
             match.group("key"),
             match.group("value"),
+        ):
+            yield Finding(
+                path,
+                line_number,
+                "private-account-identifier",
+                "a concrete account, tenant, subscription, workspace, warehouse, client, principal, or object ID is prohibited",
+            )
+
+    for match in _DECLARED_ASSIGNMENT.finditer(line):
+        key = match.group("key")
+        value = match.group("value")
+        if _is_credential_key(key) and not _is_safe_literal(value, path):
+            yield Finding(
+                path,
+                line_number,
+                "credential-assignment",
+                "a non-placeholder credential assignment is prohibited",
+            )
+        if _is_private_identifier_key(key) and _is_private_identifier_literal(
+            key,
+            value,
         ):
             yield Finding(
                 path,

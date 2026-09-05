@@ -78,6 +78,39 @@ class CleanRoomScanTests(unittest.TestCase):
                     ["credential-assignment"],
                 )
 
+    def test_reports_typed_source_and_bicep_assignments(self) -> None:
+        credential_key = "AZURE_OPENAI_" + "API_KEY"
+        password_key = "DATABASE_" + "PASSWORD"
+        object_key = "postgresEntraAdministrator" + "ObjectId"
+        object_value = _dashed_identifier(
+            "12345678", "9abc", "4def", "8123", "456789abcdef"
+        )
+        cases = [
+            (
+                "settings.py",
+                f'{credential_key}: str = "shortKey7"',
+                "credential-assignment",
+            ),
+            (
+                "settings.ts",
+                f'const {password_key}: string = "shortKey7";',
+                "credential-assignment",
+            ),
+            (
+                "main.bicep",
+                f"param {object_key} string = '{object_value}'",
+                "private-account-identifier",
+            ),
+        ]
+
+        for path, content, expected_rule in cases:
+            with self.subTest(path=path):
+                findings = scan_blob(path, content.encode())
+                self.assertEqual(
+                    [finding.rule for finding in findings],
+                    [expected_rule],
+                )
+
     def test_allows_only_explicit_nonliteral_credential_references(self) -> None:
         key = "DATABRICKS_" + "TOKEN"
         safe_values = [
@@ -137,6 +170,7 @@ class CleanRoomScanTests(unittest.TestCase):
         tenant_identities = [
             "operator" + "@" + "private-tenant" + "." + "onmicrosoft" + ".com",
             "user" + "@" + "a" + "." + "onmicrosoft" + ".com",
+            "external_user#EXT#@" + "ab" + "." + "onmicrosoft" + ".com",
         ]
         findings = scan_blob(
             "deployment.txt",
@@ -145,6 +179,7 @@ class CleanRoomScanTests(unittest.TestCase):
                 f"shortEndpoint={app_hosts[1]}\n"
                 f"owner={tenant_identities[0]}\n"
                 f"shortTenantOwner={tenant_identities[1]}\n"
+                f"guestOwner={tenant_identities[2]}\n"
             ).encode(),
         )
 
@@ -153,6 +188,7 @@ class CleanRoomScanTests(unittest.TestCase):
             [
                 "private-app-service-host",
                 "private-app-service-host",
+                "private-tenant-identity",
                 "private-tenant-identity",
                 "private-tenant-identity",
             ],
