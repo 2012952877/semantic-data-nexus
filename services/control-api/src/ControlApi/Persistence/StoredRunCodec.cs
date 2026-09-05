@@ -102,3 +102,5 @@ public sealed class StorageCorruptionException() : Exception("Persisted control-
 public sealed class StorageConfigurationException(string message) : Exception(message);
 public sealed class DispatchRecoveryRequiredException()
     : Exception("A durable dispatch intent already exists. Backend recovery or operator reconciliation is required.");
+public sealed class DurableDispatchUnavailableException()
+    : Exception("The semantic backend is unavailable. Retry the same creation request to reconcile the existing run; do not use a new request ID.");

@@ -96,21 +96,42 @@ internal static class RunTransitions
             StartedAt = current.StartedAt ?? current.CreatedAt,
             CompletedAt = now,
             Version = checked(current.Version + 1),
-            Diagnostics = [.. current.Diagnostics, new DiagnosticSummary(code, message, null, now)]
+            Diagnostics = AppendLocalDiagnostic(current.Diagnostics, new DiagnosticSummary(code, message, null, now))
         };
 
-    public static RunMetadata DispatchUnknown(RunMetadata current, string code, DateTimeOffset now) =>
-        !current.State.RequiresStartReconciliation() ||
-        (current.State == RunState.DispatchUnknown && current.Diagnostics.Count > 0 &&
-            current.Diagnostics[^1].Code == code)
-        ? current : current with
+    public static RunMetadata DispatchUnknown(RunMetadata current, string code, DateTimeOffset now)
+    {
+        if (!current.State.RequiresStartReconciliation())
+        {
+            return current;
+        }
+        var diagnostics = AppendLocalDiagnostic(current.Diagnostics, new DiagnosticSummary(code,
+            "Semantic start dispatch outcome is unknown and requires reconciliation.", null, now));
+        if (current.State == RunState.DispatchUnknown && ReferenceEquals(diagnostics, current.Diagnostics))
+        {
+            return current;
+        }
+        return current with
         {
             State = RunState.DispatchUnknown,
             UpdatedAt = now,
             Version = checked(current.Version + 1),
-            Diagnostics = [.. current.Diagnostics, new DiagnosticSummary(code,
-                "Semantic start dispatch outcome is unknown and requires reconciliation.", null, now)]
+            Diagnostics = diagnostics
         };
+    }
+
+    private static IReadOnlyList<DiagnosticSummary> AppendLocalDiagnostic(
+        IReadOnlyList<DiagnosticSummary> diagnostics, DiagnosticSummary diagnostic)
+    {
+        // This is a bounded summary, not an audit log. Preserve all retained entries at capacity;
+        // current failures remain visible in HTTP problems/logs even when no entry can be appended.
+        if (diagnostics.Count >= SemanticRunStatusValidator.MaximumDiagnostics ||
+            (diagnostics.Count > 0 && diagnostics[^1].Code == diagnostic.Code))
+        {
+            return diagnostics;
+        }
+        return [.. diagnostics, diagnostic];
+    }
 
     public static MutationResult Cancel(RunMetadata current, long? expected, DateTimeOffset now)
     {

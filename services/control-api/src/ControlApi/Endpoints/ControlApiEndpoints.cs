@@ -182,6 +182,11 @@ public static class ControlApiEndpoints
                     CancellationToken.None);
             }
 
+            if (repository is IDurableStartDispatch &&
+                exception.DiagnosticCode == "semantic_backend_unavailable")
+            {
+                throw new DurableDispatchUnavailableException();
+            }
             throw;
         }
         catch (OperationCanceledException)

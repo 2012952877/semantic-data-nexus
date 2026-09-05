@@ -63,6 +63,8 @@ public sealed class ApiExceptionHandler(
                 (500, "control_storage_corrupt", "Control storage corruption", exception.Message),
             DispatchRecoveryRequiredException =>
                 (503, "dispatch_recovery_required", "Dispatch recovery required", exception.Message),
+            DurableDispatchUnavailableException =>
+                (503, "semantic_backend_unavailable", "Dispatch reconciliation unavailable", exception.Message),
             Npgsql.NpgsqlException =>
                 (503, "control_storage_unavailable", "Control storage unavailable", "The control database is unavailable."),
             RunNotFoundException =>

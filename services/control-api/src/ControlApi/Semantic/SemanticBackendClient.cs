@@ -413,7 +413,7 @@ public static class SemanticRunStatusValidator
 {
     private const int MaximumStages = 100;
     private const int MaximumNodesPerStage = 1_000;
-    private const int MaximumDiagnostics = 100;
+    internal const int MaximumDiagnostics = 100;
     private const int MaximumStatusIdentifierLength = 160;
 
     public static void Validate(SemanticRunStatus status, RunId expectedRunId)

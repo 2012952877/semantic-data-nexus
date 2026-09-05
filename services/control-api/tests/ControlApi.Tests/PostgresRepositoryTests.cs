@@ -448,6 +448,76 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(99)]
+    [InlineData(100)]
+    public async Task RepeatedUnavailableDispatchRecoversWithoutGrowingOrReplacingRetainedDiagnostics(int retainedCount)
+    {
+        var run = (await A.CreateAsync(Request(), "synthetic-user", default)).Run;
+        var retained = Enumerable.Range(0, retainedCount)
+            .Select(index => new DiagnosticSummary($"retained_{index}", "Retained diagnostic", null, run.CreatedAt))
+            .ToArray();
+        await using (var seed = first.CreateCommand("UPDATE control_runs SET metadata = $1 WHERE run_id = $2"))
+        {
+            seed.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Jsonb,
+                StoredRunCodec.Encode(run with { Diagnostics = retained }));
+            seed.Parameters.AddWithValue(run.Id.Value);
+            await seed.ExecuteNonQueryAsync();
+        }
+        var unavailable = new SemanticBackendException(
+            "semantic_backend_unavailable", "Synthetic backend failure.");
+        var backend = new StubSemanticBackendClient { StartException = unavailable, StatusException = unavailable };
+        using var factory = new ControlApiFactory(backend, settings: Settings());
+        using var client = factory.CreateAuthenticatedClient("contributor");
+        using (var response = await client.PostAsJsonAsync("/api/v1/runs/", Request()))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        }
+        var afterFirst = (await B.GetAsync(run.Id, default))!;
+        var unsuccessful = await B.ClaimStartAsync(run.Id, default);
+        Assert.False(unsuccessful.Acquired);
+        Assert.Equal(StoredRunCodec.Encode(afterFirst), StoredRunCodec.Encode(unsuccessful.Run));
+
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            using var response = await client.PostAsJsonAsync("/api/v1/runs/", Request());
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Contains("semantic_backend_unavailable", await response.Content.ReadAsStringAsync());
+        }
+        var afterRetries = (await B.GetAsync(run.Id, default))!;
+        Assert.Equal(StoredRunCodec.Encode(afterFirst), StoredRunCodec.Encode(afterRetries));
+        Assert.Equal(Math.Min(retainedCount + 2, 100), afterRetries.Diagnostics.Count);
+        Assert.Equal(retained, afterRetries.Diagnostics.Take(retainedCount));
+        Assert.Equal(RunState.DispatchUnknown, afterRetries.State);
+        Assert.Equal(1, backend.StartCalls);
+        Assert.Equal(60, backend.StatusCalls);
+
+        backend.StatusException = null;
+        backend.Runs[run.Id] = StubSemanticBackendClient.Status(run.Id, RunState.Running);
+        using var reconciled = await client.PostAsJsonAsync("/api/v1/runs/", Request());
+        Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
+        Assert.Equal(RunState.Running, (await B.GetAsync(run.Id, default))!.State);
+        Assert.Equal(1, backend.StartCalls);
+    }
+
+    [Fact]
+    public async Task AlternatingLocalDispatchDiagnosticsSaturateWithoutBlockingRecoveryOrFailure()
+    {
+        var run = await Create();
+        for (var index = 0; index < 120; index++)
+        {
+            await A.MarkStartDispatchUnknownAsync(run.Id, $"dispatch_failure_{index % 2}", default);
+        }
+        var saturated = (await B.GetAsync(run.Id, default))!;
+        Assert.Equal(100, saturated.Diagnostics.Count);
+        var failed = await B.MarkFailedAsync(run.Id, "start_rejected", "Synthetic rejection", default);
+        Assert.Equal(RunState.Failed, failed.State);
+        Assert.Equal(saturated.Diagnostics, failed.Diagnostics);
+        Assert.Equal(saturated.Version + 1, failed.Version);
+        Assert.Equal(RunState.Failed, (await A.GetAsync(run.Id, default))!.State);
+    }
+
+    [Theory]
     [InlineData("Unknown", null)]
     [InlineData("Postgres", null)]
     [InlineData("Postgres", "not-a-connection-string")]

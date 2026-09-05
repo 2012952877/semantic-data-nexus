@@ -217,6 +217,17 @@ event/result durability, or full-run crash recovery in this package. The
 fail-closed case may require manual resolution until backend durable idempotency
 and fencing are delivered in #34. It is not reported as successful recovery.
 
+An unsuccessful repeated start claim does not mutate metadata or its version.
+Locally appended diagnostics stop at the shared 100-entry status-summary limit;
+existing entries (including backend-provided entries) are never evicted or
+truncated to make room. Repeated identical local diagnostics are also coalesced.
+At capacity, state transitions and known-run reconciliation still proceed while
+the current failure remains observable through HTTP Problem Details and logs.
+In PostgreSQL create/reconcile mode, backend unavailability returns
+`503 semantic_backend_unavailable` with instructions to retry the same creation
+identity. Memory-mode HTTP behavior is unchanged. The diagnostics collection is
+a bounded summary, not a complete failure-history audit log.
+
 ### Migrations, compatibility and retained data
 
 Numbered embedded SQL files in `src/ControlApi/Persistence/Migrations` are applied

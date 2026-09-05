@@ -188,6 +188,10 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
                 """, connection, transaction);
             insert.Parameters.AddWithValue(id.Value);
             var acquired = await insert.ExecuteNonQueryAsync(cancellationToken) == 1;
+            if (!acquired)
+            {
+                return (current, new StartDispatchClaim(current, false));
+            }
             var updated = RunTransitions.DispatchUnknown(
                 current, "durable_start_dispatch_claimed", timeProvider.GetUtcNow());
             return (updated, new StartDispatchClaim(updated, acquired));
