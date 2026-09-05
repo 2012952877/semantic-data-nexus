@@ -109,6 +109,11 @@ queue/HTTP, repair, database locks, and runtime; cancellation propagates.
 
 ## 3. Durable clarification
 
+The connection-bound guarded adapter and its fenced prepare/dispatch/commit
+contract are documented in [guarded-clarification.md](guarded-clarification.md).
+The compatibility workflow below remains available for isolated library callers;
+it must not be confused with the opt-in guarded path.
+
 Install the explicit `semantic-api[postgres]` extra and give
 `PostgresClarifications` a server-resolved database connection value. Call
 `initialize()` with DDL authority during setup; normal runtime needs only DML

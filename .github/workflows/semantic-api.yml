@@ -67,6 +67,11 @@ jobs:
           assert len(cases) >= 13, f"Expected PostgreSQL cases, got {len(cases)}"
           assert all(not list(case) for case in cases), "PostgreSQL case failed or skipped"
           print(f"Real PostgreSQL clarification tests passed: {len(cases)}")
+          guarded = [case for case in root.iter("testcase")
+                     if "test_guarded_catalog_postgres" in case.attrib.get("classname", "")]
+          assert len(guarded) >= 23, f"Expected guarded PostgreSQL cases, got {len(guarded)}"
+          assert all(not list(case) for case in guarded), "Guarded PostgreSQL case failed/skipped"
+          print(f"Guarded PostgreSQL adapter tests passed: {len(guarded)}")
       - name: Check generated compiler contracts
         working-directory: .
         run: |

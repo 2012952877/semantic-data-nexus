@@ -54,6 +54,33 @@ class Clarifications(Protocol):
     ) -> AbstractAsyncContextManager[LockedClarification]: ...
 
 
+async def initialize_clarification_schema(
+    connection: AsyncConnection[tuple[object, ...]],
+) -> None:
+    await connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('compiler_clarifications_v1_schema'))"
+    )
+    await connection.execute("""
+        CREATE TABLE IF NOT EXISTS compiler_clarifications_v1 (
+            id text PRIMARY KEY,
+            owner_hash text NOT NULL,
+            request_id text NOT NULL,
+            request_hash text NOT NULL,
+            expires_at timestamptz NOT NULL,
+            payload text NOT NULL CHECK (octet_length(payload) <= 1048576),
+            UNIQUE (owner_hash, request_id)
+        )
+    """)
+    await connection.execute("""
+        ALTER TABLE compiler_clarifications_v1
+        ADD COLUMN IF NOT EXISTS guarded_version integer NOT NULL DEFAULT 0
+    """)
+    await connection.execute("""
+        ALTER TABLE compiler_clarifications_v1
+        ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 0
+    """)
+
+
 class PostgresClarifications:
     """Dedicated transactional store. No control-plane or identity schema is modified."""
 
@@ -76,20 +103,7 @@ class PostgresClarifications:
 
     async def initialize(self) -> None:
         async with self._connection() as connection:
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtext('compiler_clarifications_v1_schema'))"
-            )
-            await connection.execute("""
-                CREATE TABLE IF NOT EXISTS compiler_clarifications_v1 (
-                    id text PRIMARY KEY,
-                    owner_hash text NOT NULL,
-                    request_id text NOT NULL,
-                    request_hash text NOT NULL,
-                    expires_at timestamptz NOT NULL,
-                    payload text NOT NULL CHECK (octet_length(payload) <= 1048576),
-                    UNIQUE (owner_hash, request_id)
-                )
-            """)
+            await initialize_clarification_schema(connection)
 
     async def create(self, record: ClarificationRecord) -> ClarificationRecord:
         from semantic_api.catalog_v1.catalog import fingerprint
@@ -112,7 +126,7 @@ class PostgresClarifications:
                 ),
             )
             cursor = await connection.execute(
-                """SELECT request_hash, payload, expires_at > clock_timestamp()
+                """SELECT request_hash, payload, expires_at > clock_timestamp(), guarded_version
                    FROM compiler_clarifications_v1
                    WHERE owner_hash = %s AND request_id = %s FOR UPDATE""",
                 (owner_hash, record.request.request_id),
@@ -120,6 +134,8 @@ class PostgresClarifications:
             row = await cursor.fetchone()
             if row is None:
                 raise CompilerFailure("CLARIFICATION_NOT_AVAILABLE")
+            if row[3] != 0:
+                raise CompilerFailure("GUARDED_COMPILER_REQUIRED")
             if row[0] != request_hash:
                 raise CompilerFailure("IDEMPOTENCY_CONFLICT")
             if not row[2]:
@@ -140,7 +156,7 @@ class PostgresClarifications:
         async with self._connection() as connection:
             # asyncio's encompassing deadline also bounds lock waits. No detached DB task.
             cursor = await connection.execute(
-                """SELECT payload, expires_at > clock_timestamp()
+                """SELECT payload, expires_at > clock_timestamp(), guarded_version
                    FROM compiler_clarifications_v1 WHERE id = %s AND owner_hash = %s
                    FOR UPDATE""",
                 (clarification_id, owner_hash),
@@ -148,6 +164,8 @@ class PostgresClarifications:
             row = await cursor.fetchone()
             if row is None:
                 raise CompilerFailure("CLARIFICATION_NOT_AVAILABLE")
+            if row[2] != 0:
+                raise CompilerFailure("GUARDED_COMPILER_REQUIRED")
             if not row[1]:
                 raise CompilerFailure("CLARIFICATION_EXPIRED")
             record = ClarificationRecord.model_validate_json(row[0])

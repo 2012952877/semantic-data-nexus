@@ -14,6 +14,7 @@ from semantic_api.catalog_v1.models import (
     CallMetadata,
     Candidate,
     CatalogCompileRequest,
+    CatalogDocument,
     Compilation,
     CompilerContext,
     CompilerFailure,
@@ -22,7 +23,13 @@ from semantic_api.catalog_v1.models import (
     ResourceVersion,
 )
 from semantic_api.catalog_v1.provider import POLICY, CatalogProvider, candidate_schema
-from semantic_api.catalog_v1.trust import Authorization, Owner, TrustedContext, owner_for
+from semantic_api.catalog_v1.trust import (
+    Authorization,
+    CatalogAccess,
+    Owner,
+    TrustedContext,
+    owner_for,
+)
 from semantic_api.catalog_v1.validator import CORE_CAPABILITIES, validate
 from semantic_api.provider import ProviderError
 
@@ -71,10 +78,22 @@ class CatalogCompiler:
         context: TrustedContext | None,
         answers: tuple[Resolution, ...] = (),
     ) -> tuple[Owner, CompilerContext, str]:
-        owner = owner_for(context, request.catalog)
+        owner_for(context, request.catalog)
         assert context is not None
         access = await self.authorization.require(context, request.catalog, "compiler:query")
         document = await self.catalogs.get(request.catalog)
+        return self._context_from_catalog(request, context, document, access, answers)
+
+    def _context_from_catalog(
+        self,
+        request: CatalogCompileRequest,
+        context: TrustedContext | None,
+        document: CatalogDocument,
+        access: CatalogAccess,
+        answers: tuple[Resolution, ...] = (),
+    ) -> tuple[Owner, CompilerContext, str]:
+        """Pure context construction; guarded callers supply current transaction-owned grants."""
+        owner = owner_for(context, request.catalog)
         if pin_for(document) != request.catalog:
             raise CompilerFailure("CATALOG_PIN_MISMATCH")
         selected = authorized_view(document, access)
@@ -238,20 +257,21 @@ class CatalogCompiler:
                 return response
 
     async def _generate(self, context: CompilerContext) -> Compilation:
+        provider, limits = self.provider, self.limits
         calls: list[CallMetadata] = []
         rejected: dict[str, Any] | None = None
         diagnostics: tuple[str, ...] = ()
-        settings = getattr(self.provider, "settings", None)
+        settings = getattr(provider, "settings", None)
         if settings is not None and (
-            settings.max_input_tokens > self.limits.max_total_input_tokens
-            or settings.max_output_tokens > self.limits.max_total_output_tokens
+            settings.max_input_tokens > limits.max_total_input_tokens
+            or settings.max_output_tokens > limits.max_total_output_tokens
         ):
             return Compilation(
                 status="blocked", catalog=context.catalog, diagnostics=("TOKEN_BUDGET",)
             )
         for phase in ("compile", "repair"):
             try:
-                result = await self.provider.invoke(
+                result = await provider.invoke(
                     context, phase=phase, rejected=rejected, diagnostics=diagnostics
                 )
             except ProviderError as error:
@@ -283,18 +303,15 @@ class CatalogCompiler:
             known_input = sum(c.input_tokens or 0 for c in calls)
             known_output = sum(c.output_tokens or 0 for c in calls)
             if (
-                known_input > self.limits.max_total_input_tokens
-                or known_output > self.limits.max_total_output_tokens
+                known_input > limits.max_total_input_tokens
+                or known_output > limits.max_total_output_tokens
             ):
                 return self._response(context, "blocked", calls, ("TOKEN_BUDGET",))
             rejected = result.candidate
             try:
                 import json
 
-                if (
-                    len(json.dumps(rejected, allow_nan=False).encode())
-                    > self.limits.max_candidate_bytes
-                ):
+                if len(json.dumps(rejected, allow_nan=False).encode()) > limits.max_candidate_bytes:
                     return self._response(context, "blocked", calls, ("CANDIDATE_LIMIT",))
                 candidate = Candidate.model_validate(rejected)
                 if candidate.status != "graph":
@@ -318,9 +335,8 @@ class CatalogCompiler:
                 phase == "compile"
                 and settings is not None
                 and (
-                    known_input + settings.max_input_tokens > self.limits.max_total_input_tokens
-                    or known_output + settings.max_output_tokens
-                    > self.limits.max_total_output_tokens
+                    known_input + settings.max_input_tokens > limits.max_total_input_tokens
+                    or known_output + settings.max_output_tokens > limits.max_total_output_tokens
                 )
             ):
                 return self._response(context, "blocked", calls, ("REPAIR_BUDGET",))
