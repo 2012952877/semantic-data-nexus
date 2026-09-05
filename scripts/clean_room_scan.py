@@ -114,6 +114,9 @@ _SECRET_ASSIGNMENT = re.compile(
     (?P<key>
         ["']?
         (?:
+            (?:[A-Za-z][A-Za-z0-9]*(?:__|[_-]))*
+        )
+        (?:
             databricks_token
             | access[_-]?token
             | api[_-]?key
@@ -163,6 +166,33 @@ _IDENTIFIER_ASSIGNMENT = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+_PROSE_IDENTIFIER = re.compile(
+    r"""
+    (?<![A-Za-z0-9])
+    ["']?
+    (?P<key>
+        (?:account|client|object|principal|subscription|tenant|warehouse|workspace)
+        [\s_-]+id
+    )
+    ["']?
+    \s*
+    (?:(?:[:=]|\bis\b)\s*)?
+    (?P<value>
+        "[A-Za-z0-9-]{10,}"
+        | '[A-Za-z0-9-]{10,}'
+        | [A-Za-z0-9-]{10,}
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_AZURE_SUBSCRIPTION_RESOURCE_ID = re.compile(
+    r"""
+    /subscriptions/
+    (?P<value>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})
+    (?=/|$|[^A-Za-z0-9-])
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 _PRIVATE_IDENTIFIER_KEY_SUFFIXES = (
     "accountid",
     "clientid",
@@ -174,7 +204,7 @@ _PRIVATE_IDENTIFIER_KEY_SUFFIXES = (
     "workspaceid",
 )
 _UUID_LITERAL = re.compile(
-    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b"
+    r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
 _LONG_NUMERIC_LITERAL = re.compile(r"\d{10,}")
 _WAREHOUSE_IDENTIFIER_LITERAL = re.compile(r"[A-Za-z0-9]{16,}")
@@ -469,6 +499,27 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
             match.group("key"),
             match.group("value"),
         ):
+            yield Finding(
+                path,
+                line_number,
+                "private-account-identifier",
+                "a concrete account, tenant, subscription, workspace, warehouse, client, principal, or object ID is prohibited",
+            )
+
+    for match in _PROSE_IDENTIFIER.finditer(line):
+        if _is_private_identifier_literal(
+            match.group("key"),
+            match.group("value"),
+        ):
+            yield Finding(
+                path,
+                line_number,
+                "private-account-identifier",
+                "a concrete account, tenant, subscription, workspace, warehouse, client, principal, or object ID is prohibited",
+            )
+
+    for match in _AZURE_SUBSCRIPTION_RESOURCE_ID.finditer(line):
+        if _is_private_identifier_literal("subscriptionId", match.group("value")):
             yield Finding(
                 path,
                 line_number,

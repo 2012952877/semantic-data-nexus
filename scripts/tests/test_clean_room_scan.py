@@ -60,6 +60,24 @@ class CleanRoomScanTests(unittest.TestCase):
             ["credential-assignment"],
         )
 
+    def test_reports_namespaced_credential_keys(self) -> None:
+        namespaced_keys = [
+            "AZURE_OPENAI_" + "API_KEY",
+            "DATABASE_" + "PASSWORD",
+            "ApplicationInsights__" + "ConnectionString",
+        ]
+
+        for key in namespaced_keys:
+            with self.subTest(key=key):
+                findings = scan_blob(
+                    "service.env",
+                    f"{key}=shortKey7\n".encode(),
+                )
+                self.assertEqual(
+                    [finding.rule for finding in findings],
+                    ["credential-assignment"],
+                )
+
     def test_allows_only_explicit_nonliteral_credential_references(self) -> None:
         key = "DATABRICKS_" + "TOKEN"
         safe_values = [
@@ -199,6 +217,65 @@ class CleanRoomScanTests(unittest.TestCase):
         ).encode()
 
         self.assertEqual(scan_blob("deployment.yaml", content), [])
+
+    def test_reports_private_ids_in_prose_and_azure_resource_paths(self) -> None:
+        tenant_label = "Tenant " + "ID"
+        subscription_label = "subscription " + "id"
+        workspace_label = "workspace " + "ID"
+        tenant_value = _dashed_identifier(
+            "12345678", "9abc", "4def", "8123", "456789abcdef"
+        )
+        subscription_value = _dashed_identifier(
+            "87654321", "abcd", "4abc", "8abc", "abcdef123456"
+        )
+        workspace_value = "12345" + "6789012345"
+        resource_id = (
+            "/" + "subscriptions" + "/" + subscription_value + "/resourceGroups/demo"
+        )
+        content = "\n".join(
+            [
+                f"{tenant_label}: {tenant_value}",
+                f"{subscription_label} {subscription_value}",
+                f"{workspace_label}: {workspace_value}",
+                resource_id,
+            ]
+        ).encode()
+
+        findings = scan_blob("notes.md", content)
+
+        self.assertEqual(
+            [finding.rule for finding in findings],
+            [
+                "private-account-identifier",
+                "private-account-identifier",
+                "private-account-identifier",
+                "private-account-identifier",
+            ],
+        )
+        rendered = json.dumps([finding.__dict__ for finding in findings])
+        self.assertNotIn(tenant_value, rendered)
+        self.assertNotIn(subscription_value, rendered)
+        self.assertNotIn(workspace_value, rendered)
+        self.assertNotIn(resource_id, rendered)
+
+    def test_allows_zero_and_placeholder_ids_in_prose_and_resource_paths(
+        self,
+    ) -> None:
+        tenant_label = "Tenant " + "ID"
+        workspace_label = "workspace " + "ID"
+        zero_uuid = _dashed_identifier(
+            "00000000", "0000", "0000", "0000", "000000000000"
+        )
+        resource_id = "/" + "subscriptions" + "/" + zero_uuid + "/resourceGroups/demo"
+        content = "\n".join(
+            [
+                f"{tenant_label}: {zero_uuid}",
+                f"{workspace_label}: demo-placeholder",
+                resource_id,
+            ]
+        ).encode()
+
+        self.assertEqual(scan_blob("notes.md", content), [])
 
     def test_allows_invalid_and_explicit_cloud_placeholders(self) -> None:
         content = "\n".join(
