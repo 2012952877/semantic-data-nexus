@@ -45,12 +45,89 @@ SYSTEM_POLICY = (
     "Return exactly one SQG matching the supplied schema. Nodes form an acyclic graph; "
     "dependencies name earlier nodes. Match operator to parameters.kind. Project "
     "the requested results and declare their types. The supported modes are only "
-    "regional_quarterly_profit and monthly_regional_comparison. For quarterly profit "
-    "aggregate governed revenue and cost by region then subtract cost from revenue. "
-    "For monthly comparison filter the exact combined calendar window, aggregate by "
-    "region and month, bind pivot aliases to the supplied month starts and derive "
-    "the comparison. A repair envelope requests one corrected graph preserving the "
-    "original authorized context and constraints, not a new interpretation."
+    "regional_quarterly_profit and monthly_regional_comparison. Follow the trusted "
+    "mode contract below exactly; it is not a general query planner. Profit is already "
+    "the governed metric.profit: do not invent cost/revenue columns or recompute profit. "
+    "Use a single linear chain: SELECT, resolved FILTERs, AGGREGATE, then the mode's tail. "
+    "SELECT has no dependencies; each later node depends only on its predecessor. "
+    "No other nodes or operators are permitted. In quarterly mode DERIVE is forbidden. "
+    "Insert filters only for resolved constraints: one region IN predicate containing "
+    "exactly the resolved member IDs, and one period BETWEEN predicate per resolved "
+    "quarterly time window with exactly its start/end_exclusive. Omit absent constraints. "
+    "For monthly comparison use one BETWEEN covering previous.start to "
+    "current.end_exclusive, not separate month filters. In the monthly PIVOT replace "
+    "current.start and previous.start with the timezone-aware ISO timestamps from the "
+    "two authorized windows, preserving binding order. The final PROJECT is the output "
+    "node; result_schema must list its aliases in order with region:string, "
+    "period:datetime and all profit columns:number. A repair preserves the original "
+    "authorized context, constraints and this same contract.\nMode contract:\n"
+    + json.dumps(
+        {
+            "select": {
+                "kind": "SELECT",
+                "entity_id": "commerce.sales_record",
+                "columns": [
+                    "commerce.sales_record.region",
+                    "commerce.sales_record.period",
+                    "metric.profit",
+                ],
+            },
+            "aggregate": {
+                "kind": "AGGREGATE",
+                "group_by": ["commerce.sales_record.region", "commerce.sales_record.period"],
+                "measures": [{"source": "metric.profit", "output": "profit", "function": "sum"}],
+            },
+            "regional_quarterly_profit": [
+                {"kind": "SORT", "keys": [{"column": "profit", "direction": "desc"}]},
+                {
+                    "kind": "PROJECT",
+                    "columns": [
+                        {"source": "commerce.sales_record.region", "alias": "region"},
+                        {"source": "commerce.sales_record.period", "alias": "period"},
+                        {"source": "profit", "alias": "profit"},
+                    ],
+                },
+            ],
+            "monthly_regional_comparison": [
+                {
+                    "kind": "PIVOT",
+                    "index": ["commerce.sales_record.region"],
+                    "column": "commerce.sales_record.period",
+                    "value": "profit",
+                    "values": ["profit_current", "profit_previous"],
+                    "value_bindings": [
+                        {"alias": "profit_current", "value": "current.start"},
+                        {"alias": "profit_previous", "value": "previous.start"},
+                    ],
+                },
+                {
+                    "kind": "DERIVE",
+                    "columns": [
+                        {
+                            "output": "profit_change",
+                            "data_type": "number",
+                            "expression": {
+                                "kind": "binary",
+                                "operator": "subtract",
+                                "left": {"kind": "column", "column": "profit_current"},
+                                "right": {"kind": "column", "column": "profit_previous"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "kind": "PROJECT",
+                    "columns": [
+                        {"source": "commerce.sales_record.region", "alias": "region"},
+                        {"source": "profit_current", "alias": "profit_current"},
+                        {"source": "profit_previous", "alias": "profit_previous"},
+                        {"source": "profit_change", "alias": "profit_change"},
+                    ],
+                },
+            ],
+        },
+        separators=(",", ":"),
+    )
 )
 
 

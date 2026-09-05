@@ -151,6 +151,7 @@ class OrchestrationService:
         )
         record, created = await self.repository.create(request, status)
         if created:
+            record.deadline = asyncio.get_running_loop().time() + _RUN_TIMEOUT_SECONDS
             record.task = asyncio.create_task(
                 self._run(record),
                 name=f"semantic-backend-{request.run_id}",
@@ -251,8 +252,9 @@ class OrchestrationService:
 
     async def _run(self, record: RunRecord) -> None:
         request = record.request
+        run_timeout = asyncio.timeout_at(record.deadline)
         try:
-            async with self._semaphore:
+            async with run_timeout, self._semaphore:
                 await self._ensure_active(record)
                 await self._begin_stage(record, "Initialize")
                 initialize_request = InitializeRequest(
@@ -275,7 +277,11 @@ class OrchestrationService:
                 compile_response = await self.compiler.compile(
                     CompileRequest.model_validate(initialize_request.model_dump()),
                     request.trace_id,
+                    deadline=record.deadline,
                 )
+                if run_timeout.expired():
+                    raise TimeoutError("The whole-run deadline has expired.")
+                await self._ensure_active(record)
                 async with record.lock:
                     record.compile_response = compile_response
                 if compile_response.status is not CompileStatus.SUCCEEDED:
@@ -317,7 +323,7 @@ class OrchestrationService:
                         max_bytes=_MAX_RESULT_BYTES,
                         max_in_flight_bytes=_MAX_RESULT_BYTES * 2,
                         memory_limit_bytes=64 * 1024 * 1024,
-                        node_timeout_seconds=_RUN_TIMEOUT_SECONDS,
+                        node_timeout_seconds=self._remaining_budget(record),
                     ),
                     max_concurrency=2,
                 )
@@ -326,8 +332,11 @@ class OrchestrationService:
                 prepare_run = getattr(self.resolver, "prepare_run", None)
                 if prepare_run is not None:
                     await prepare_run(request.run_id)
-                async with asyncio.timeout(_RUN_TIMEOUT_SECONDS):
-                    outcome = await coordinator.run(plan, run_id=request.run_id)
+                await self._ensure_active(record)
+                outcome = await coordinator.run(plan, run_id=request.run_id)
+                if run_timeout.expired():
+                    raise TimeoutError("The whole-run deadline has expired.")
+                await self._ensure_active(record)
                 await self._apply_runtime_events(record, outcome.events)
                 if outcome.summary.state is ExecutionState.CANCELLED and record.cancel_requested:
                     raise asyncio.CancelledError
@@ -350,6 +359,8 @@ class OrchestrationService:
 
                 await self._begin_stage(record, "Generate")
                 await self._complete_stage(record, "Generate")
+                if run_timeout.expired():
+                    raise TimeoutError("The whole-run deadline has expired.")
                 await self._succeed(record)
         except asyncio.CancelledError:
             await self._cancelled(record)
@@ -647,6 +658,7 @@ class OrchestrationService:
                     "DETAIL_SERIALIZATION_LIMIT",
                     "The typed run detail exceeded its serialized response boundary.",
                 )
+            self._remaining_budget(record)
             record.detail = detail
 
     def _connector_provenance(self, run_id: str) -> tuple[dict[str, str], ...]:
@@ -671,8 +683,9 @@ class OrchestrationService:
 
     async def _succeed(self, record: RunRecord) -> None:
         async with record.lock:
-            if record.status.state is RunState.CANCELLED:
+            if record.status.state.terminal:
                 return
+            self._remaining_budget(record)
             record.status = record.status.model_copy(
                 update={"state": RunState.SUCCEEDED, "finalized_at": datetime.now(UTC)}
             )
@@ -741,7 +754,7 @@ class OrchestrationService:
     async def _fail(self, record: RunRecord, code: str, message: str) -> None:
         now = datetime.now(UTC)
         async with record.lock:
-            if record.status.state is RunState.CANCELLED:
+            if record.status.state.terminal:
                 return
             stages = []
             failed_stage: str | None = None
@@ -805,6 +818,18 @@ class OrchestrationService:
                 record.cancel_requested and not record.terminal_observed
             ) or record.status.state is RunState.CANCELLED:
                 raise asyncio.CancelledError
+            self._remaining_budget(record)
+
+    @staticmethod
+    def _remaining_budget(record: RunRecord) -> float:
+        remaining = (
+            _RUN_TIMEOUT_SECONDS
+            if record.deadline is None
+            else record.deadline - asyncio.get_running_loop().time()
+        )
+        if remaining <= 0:
+            raise TimeoutError("The whole-run deadline has expired.")
+        return remaining
 
     async def _apply_runtime_events(
         self,

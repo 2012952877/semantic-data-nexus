@@ -81,6 +81,12 @@ Question/catalog/repair content never becomes a system message. The response sch
 every object, requires every field and narrows datetime ranges to `start`/`end_exclusive`.
 Local validation enforces the same schema before authoritative semantic validation; only a
 schema-valid but semantically invalid candidate gets the existing single repair attempt.
+The trusted prompt explicitly matches the existing validator: select governed region, period
+and `metric.profit`; aggregate `SUM(metric.profit)` as `profit` at region/period grain.
+Quarterly mode permits only SELECT, resolved FILTERs, AGGREGATE, SORT, PROJECT, never
+recomputing profit from revenue/cost. Monthly mode uses the canonical PIVOT bindings,
+current-minus-previous DERIVE and PROJECT. Offline policy-conformance tests interpret the
+actual trusted prompt contract and validate its graph without using fixture-provider output.
 
 Each call admits the complete serialized ASCII-escaped request (including schema) only when
 its byte length plus a conservative 1024-token framing reserve fits the input ceiling. This

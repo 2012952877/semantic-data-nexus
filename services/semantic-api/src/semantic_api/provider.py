@@ -136,12 +136,14 @@ class ProviderInvoker:
         timeout_seconds: float,
         *,
         await_cancellation: bool = False,
+        deadline: float | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         self.provider = provider
         self.timeout_seconds = timeout_seconds
         self.await_cancellation = await_cancellation
+        self.deadline = deadline
 
     async def compile(self, context: StructuredCompileContext) -> ProviderResult:
         return await self._bounded(self.provider.compile(context))
@@ -170,9 +172,15 @@ class ProviderInvoker:
     async def _bounded(self, awaitable: Coroutine[Any, Any, ProviderResult]) -> ProviderResult:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout_seconds
+        if self.deadline is not None:
+            deadline = min(deadline, self.deadline)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            awaitable.close()
+            raise ProviderTimeoutError()
         task = asyncio.create_task(awaitable)
         try:
-            done, _ = await asyncio.wait({task}, timeout=self.timeout_seconds)
+            done, _ = await asyncio.wait({task}, timeout=remaining)
         except asyncio.CancelledError:
             await self._cancel_task(task)
             raise

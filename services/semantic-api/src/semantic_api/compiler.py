@@ -100,7 +100,13 @@ class SemanticCompiler:
     def initialize(self, request: InitializeRequest, correlation_id: str) -> InitializeResponse:
         return self.initializer.initialize(request, correlation_id)
 
-    async def compile(self, request: CompileRequest, correlation_id: str) -> CompileResponse:
+    async def compile(
+        self,
+        request: CompileRequest,
+        correlation_id: str,
+        *,
+        deadline: float | None = None,
+    ) -> CompileResponse:
         total_start = perf_counter()
         initialization_start = perf_counter()
         initialize_request = InitializeRequest.model_validate(request.model_dump())
@@ -144,6 +150,7 @@ class SemanticCompiler:
                 provider,
                 self.provider_timeout_seconds,
                 await_cancellation=isinstance(provider, StructuredHTTPProvider),
+                deadline=deadline,
             )
             provider_result = await invoker.compile(context)
         except ProviderError as error:

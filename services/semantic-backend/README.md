@@ -21,8 +21,14 @@ independent; selecting a model does not enable Databricks.
 Readiness includes local provider configuration validity without a model call. Invalid settings
 leave the service not ready and runs fail closed; there is no static fallback. Run cancellation
 and application lifespan shutdown close in-flight provider HTTP requests. The backend's
-existing 30-second whole-run deadline also applies, even when per-call provider timeouts are
-configured higher. Model output reaches the runtime only after authoritative SQG validation.
+30-second monotonic whole-run deadline starts when a new run is accepted. Queue wait,
+initialization, compilation, repair, planning, execution and result generation share that
+deadline, even when per-call provider timeouts are configured higher. Runtime nodes receive
+only the remaining budget. Expiry cancels in-flight provider work, waits for cooperative HTTP
+cleanup and releases the backend slot; it reports `RUN_TIMEOUT`, not user cancellation.
+No next operation or late result is admitted once the deadline is exhausted. Resolver cleanup
+still completes before terminal reporting and may take additional time to confirm cancellation.
+Model output reaches the runtime only after authoritative SQG validation.
 
 Detailed model/phase/usage metadata is on the compiler response and internal integrated
 artifact. The existing public BFF run contract still exposes only aggregate integer token usage;

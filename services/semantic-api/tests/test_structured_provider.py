@@ -15,7 +15,13 @@ from pydantic import ValidationError
 
 from semantic_api.api import create_app
 from semantic_api.compiler import SemanticCompiler
-from semantic_api.models import SQG, CompileStatus, InitializeRequest, ProviderSelection
+from semantic_api.models import (
+    SQG,
+    CompilationMode,
+    CompileStatus,
+    InitializeRequest,
+    ProviderSelection,
+)
 from semantic_api.provider import (
     ProviderError,
     StaticFixtureProvider,
@@ -751,3 +757,141 @@ async def test_invalid_configuration_readiness_is_503():
     ) as client:
         assert (await client.get("/health/ready")).status_code == 503
         assert (await client.get("/health/live")).status_code == 200
+
+
+@pytest.mark.parametrize("mode", list(CompilationMode))
+async def test_trusted_prompt_contract_matches_authorized_validator(
+    registry, compile_request, mode, monkeypatch
+):
+    def no_fixture(*args, **kwargs):
+        raise AssertionError("Policy conformance must not use a static candidate")
+
+    monkeypatch.setattr(StaticFixtureProvider, "_candidate_for", no_fixture)
+    compiler = SemanticCompiler(registry)
+    request = compile_request.model_copy(
+        update={
+            "compilation_mode": mode,
+            "question": (
+                "East regional profit for 上季度"
+                if mode is CompilationMode.REGIONAL_QUARTERLY_PROFIT
+                else "East monthly regional profit comparison"
+            ),
+        }
+    )
+    context = initialized_context(compiler, request)
+    # Interpret the contract actually sent as trusted prompt content, independently
+    # of StaticFixtureProvider. This catches policy/schema/validator drift.
+    contract = json.loads(SYSTEM_POLICY.split("\nMode contract:\n")[1])
+    assert "aggregate governed revenue and cost" not in SYSTEM_POLICY
+    assert "quarterly mode DERIVE is forbidden" in SYSTEM_POLICY
+    authorized = context.semantic_context
+    assert contract["select"]["entity_id"] in {item.id for item in authorized.entities}
+    assert set(contract["select"]["columns"]) <= {
+        item.id for item in [*authorized.fields, *authorized.metrics]
+    }
+    parameters = [contract["select"]]
+    members = [term.machine_id for term in context.resolved_terms if term.kind == "member"]
+    assert members
+    parameters.append(
+        {
+            "kind": "FILTER",
+            "predicate": {
+                "column": "commerce.sales_record.region",
+                "operator": "in",
+                "value": members,
+            },
+        }
+    )
+    windows = sorted(context.time_windows, key=lambda window: window.start)
+    assert windows
+    ranges = (
+        [(window.start, window.end_exclusive) for window in windows]
+        if mode is CompilationMode.REGIONAL_QUARTERLY_PROFIT
+        else [(windows[0].start, windows[-1].end_exclusive)]
+    )
+    for start, end in ranges:
+        parameters.append(
+            {
+                "kind": "FILTER",
+                "predicate": {
+                    "column": "commerce.sales_record.period",
+                    "operator": "between",
+                    "value": {"start": start.isoformat(), "end_exclusive": end.isoformat()},
+                },
+            }
+        )
+    parameters.extend([contract["aggregate"], *contract[mode.value]])
+    for item in parameters:
+        if item["kind"] == "PIVOT":
+            for binding in item["value_bindings"]:
+                binding["value"] = {
+                    "current.start": windows[-1].start.isoformat(),
+                    "previous.start": windows[0].start.isoformat(),
+                }[binding["value"]]
+    nodes = [
+        {
+            "id": f"policy_{index}",
+            "name": f"Policy operation {index}",
+            "operator": item["kind"],
+            "parameters": item,
+            "dependencies": [f"policy_{index - 1}"] if index else [],
+        }
+        for index, item in enumerate(parameters)
+    ]
+    candidate = {
+        "schema_version": "sqg.v0",
+        "nodes": nodes,
+        "output_node_id": nodes[-1]["id"],
+        "result_schema": [
+            {
+                "name": column["alias"],
+                "data_type": {"region": "string", "period": "datetime"}.get(
+                    column["alias"], "number"
+                ),
+            }
+            for column in parameters[-1]["columns"]
+        ],
+    }
+    assert Draft202012Validator(response_schema()).is_valid(candidate)
+    validation = compiler.validator.validate(
+        candidate, authorized, context.resolved_terms, context.time_windows, mode
+    )
+    assert validation.valid, validation.diagnostics
+    async with mock_server(reply(completion(candidate))) as mock:
+        compiler = SemanticCompiler(
+            registry, runtime=ProviderRuntime(settings(mock.endpoint), {"TEST_MODEL_KEY": SECRET})
+        )
+        result = await compiler.compile(request, "policy-conformance")
+        assert result.status is CompileStatus.SUCCEEDED
+        assert not result.repair_attempted
+        assert mock.requests[0][2]["messages"][0]["content"] == SYSTEM_POLICY
+
+
+async def test_exhausted_deadline_does_not_start_repair(registry, compile_request, monkeypatch):
+    compiler = SemanticCompiler(registry)
+    context = initialized_context(compiler, compile_request)
+    candidate = SQG.model_validate(
+        (await StaticFixtureProvider().compile(context)).candidate
+    ).model_dump(mode="json")
+    candidate["output_node_id"] = "absent"
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 3
+    original_validate = compiler.validator.validate
+
+    def expire_during_validation(*args, **kwargs):
+        result = original_validate(*args, **kwargs)
+        # Deterministic monotonic-clock advance simulates synchronous validation
+        # exhausting the budget before asyncio's timeout callback gets a turn.
+        now = loop.time()
+        monkeypatch.setattr(loop, "time", lambda: now + 4)
+        return result
+
+    async with mock_server(reply(completion(candidate))) as mock:
+        compiler = SemanticCompiler(
+            registry, runtime=ProviderRuntime(settings(mock.endpoint), {"TEST_MODEL_KEY": SECRET})
+        )
+        monkeypatch.setattr(compiler.validator, "validate", expire_during_validation)
+        result = await compiler.compile(compile_request, "deadline", deadline=deadline)
+        assert result.status is CompileStatus.FAILED
+        assert result.diagnostics[-1].code == "REPAIR_TIMEOUT"
+        assert len(mock.requests) == 1
