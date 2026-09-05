@@ -40,12 +40,30 @@ services:
       context: .
       dockerfile: services/semantic-backend/Dockerfile
     env_file: ./ops/identity/.generated/backend.env
+    command:
+      - python
+      - /catalog-test/catalog_test_host.py
+      - --fixtures
+      - /fixtures
+      - --host
+      - 0.0.0.0
     environment:
       SEMANTIC_NEXUS_AUTH_MODE: service
       SEMANTIC_NEXUS_ENVIRONMENT: Development
       SEMANTIC_NEXUS_RESOLVER: fake
       SEMANTIC_NEXUS_DATA_DIR: /app/data/synthetic/generated
       SEMANTIC_NEXUS_FAKE_DELAY_MS: "50"
+      SEMANTIC_NEXUS_CATALOG_CONFIG: /fixtures/catalog-server.json
+      SEMANTIC_CATALOG_PROVIDER_MODE: openai_compatible
+      SEMANTIC_CATALOG_PROVIDER_MODEL: synthetic-public-model
+      SEMANTIC_CATALOG_PROVIDER_ENDPOINT: http://127.0.0.1:8099/v1/chat/completions
+      SEMANTIC_CATALOG_PROVIDER_CREDENTIAL_ENV: SYNTHETIC_CATALOG_MODEL_KEY
+      SEMANTIC_CATALOG_PROVIDER_ALLOW_LOCAL_MOCK: "true"
+      SYNTHETIC_CATALOG_MODEL_KEY: synthetic-local-model-only
+    volumes:
+      - ./services/semantic-backend/integration:/catalog-test:ro
+      - ./ops/identity/.generated:/fixtures:ro
+      - ./ops/identity/.generated/catalog-observations:/fixtures/catalog-observations
     depends_on:
       postgres: { condition: service_healthy }
     networks: [identity]

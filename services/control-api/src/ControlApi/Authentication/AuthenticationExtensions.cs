@@ -13,6 +13,7 @@ public static class Policies
     public const string Reader = "run.reader";
     public const string Contributor = "run.contributor";
     public const string Admin = "run.admin";
+    public const string Compiler = "compiler:query";
 }
 
 public sealed class LocalDevelopmentAuthOptions
@@ -58,6 +59,8 @@ public static class AuthenticationExtensions
 
         services.AddAuthorization(options =>
         {
+            options.AddPolicy(Policies.Compiler, policy =>
+                policy.RequireAuthenticatedUser().RequireAssertion(_ => false));
             options.AddPolicy(Policies.Reader, policy =>
                 policy.RequireAuthenticatedUser().RequireAssertion(context =>
                     HasAnyPermission(context.User, "reader", "contributor", "admin")));

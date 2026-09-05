@@ -159,6 +159,7 @@ if (semanticOptions.TimeoutSeconds is < 1 or > 30)
 if (semanticOptions.UseFake)
 {
     builder.Services.AddSingleton<ISemanticBackendClient, FakeSemanticBackendClient>();
+    builder.Services.AddSingleton<ICatalogBackendClient, DisabledCatalogBackendClient>();
 }
 else
 {
@@ -186,6 +187,16 @@ else
     if (!localAuthOptions.Enabled)
     {
         backendClient.AddHttpMessageHandler<ServiceContextHandler>();
+    }
+    var catalogClient = builder.Services.AddHttpClient<ICatalogBackendClient, HttpCatalogBackendClient>(client =>
+    {
+        client.BaseAddress = semanticBaseUri;
+        client.Timeout = TimeSpan.FromSeconds(30);
+        client.MaxResponseContentBufferSize = 8 * 1024 * 1024;
+    });
+    if (!localAuthOptions.Enabled)
+    {
+        catalogClient.AddHttpMessageHandler<ServiceContextHandler>();
     }
 }
 
@@ -305,6 +316,7 @@ app.MapHealthChecks("/health/ready", new()
     Predicate = check => check.Tags.Contains("ready")
 });
 app.MapControlApi();
+app.MapCatalogApi();
 app.MapIdentityEndpoints();
 
 app.Run();

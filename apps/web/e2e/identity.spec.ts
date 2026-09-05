@@ -1,8 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const credential: { password: string } = JSON.parse(
-  readFileSync('../../ops/identity/.generated/browser.json', 'utf8'))
+  readFileSync(join(process.env.NEXUS_IDENTITY_FIXTURE_DIR ?? '../../ops/identity/.generated',
+    'browser.json'), 'utf8'))
 
 async function login(page: Page, user: string) {
   await page.goto('/')

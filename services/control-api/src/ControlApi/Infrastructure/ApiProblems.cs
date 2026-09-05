@@ -77,6 +77,8 @@ public sealed class ApiExceptionHandler(
                 (409, "idempotency_conflict", "Idempotency conflict", exception.Message),
             InvalidRunTransitionException =>
                 (409, "invalid_run_transition", "Invalid run transition", exception.Message),
+            CatalogBackendException catalogException =>
+                (catalogException.Status, catalogException.Code, "Catalog request failed", catalogException.Message),
             SemanticBackendException { DiagnosticCode: "semantic_backend_timeout" } =>
                 (504, "semantic_backend_timeout", "Semantic backend timeout", exception.Message),
             SemanticBackendException semanticException =>

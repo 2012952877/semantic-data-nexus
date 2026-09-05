@@ -10,7 +10,7 @@ the model cannot supply a physical table, SQL, resolver, credential, or permissi
 | Catalog/compiler schemas and library | Implemented; synthetic catalog and real loopback HTTP tests |
 | Generic typed runtime integration | Implemented in `semantic_backend.catalog_compilation`; real DuckDB execution over synthetic Arrow sources |
 | PostgreSQL clarification repository | Implemented; dedicated PostgreSQL integration tests, not a SQLite substitute |
-| Public authenticated compiler/clarification routes | Not connected by this change; requires the #32 identity composition root |
+| Public authenticated compiler/clarification routes | Opt-in BFF/backend composition uses the reviewed identity authority; local real PG and Keycloak acceptance tests |
 | Ask UI, catalog publishing UI, customer connectors | Not implemented here; #35/#36 and connector-specific conformance |
 | Live model accuracy or enterprise gateway support | Not evaluated; all model responses in acceptance tests are socket mocks |
 
@@ -208,7 +208,24 @@ provider calls, and catalog/binding fingerprints. Its result store is ephemeral
 and private to that invocation; durable product run/history/result integration
 is not added here.
 
-## 5. Evidence and regeneration
+## 5. Public vertical-slice evidence
+
+The BFF exposes `POST /api/v1/catalog/queries` and
+`POST /api/v1/catalog/clarifications/{id}/answers`, using the existing verified
+session, workspace selection, anti-forgery validation and request-bound service
+signature. The backend consumes the actual shared PostgreSQL authorization guard.
+See `services/control-api/CATALOG.md` and `services/semantic-backend/CATALOG.md`
+for the exact opt-in and synthetic-source boundaries.
+
+`apps/web/e2e/catalog-identity.spec.ts` covers real Keycloak code/PKCE login,
+workspace selection, resource grants, query/result, clarification/resume,
+idempotent replay, cross-scope/CSRF denial, browser abort propagation and grant
+revocation. It runs alongside the existing identity browser suite. The model
+is a real loopback HTTP socket fixture, not a live paid inference endpoint.
+These tests establish one authorized vertical slice, not a full authoring/admin
+console or commercial operational readiness.
+
+## 6. Evidence and regeneration
 
 | Claim | Focused test reference |
 | --- | --- |

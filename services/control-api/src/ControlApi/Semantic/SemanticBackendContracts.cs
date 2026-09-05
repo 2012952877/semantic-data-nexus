@@ -498,7 +498,7 @@ public static class SemanticRunDetailValidator
         return ids;
     }
 
-    private static void ValidateResult(SemanticResultSet result)
+    internal static void ValidateResult(SemanticResultSet result)
     {
         if (result.Columns is null ||
             result.Columns.Count > MaximumColumns ||

@@ -186,7 +186,7 @@ public static class EnterpriseAuthentication
         }
         services.AddAuthorization(options =>
         {
-            foreach (var policy in new[] { Policies.Reader, Policies.Contributor, Policies.Admin, "workspace:admin" })
+            foreach (var policy in new[] { Policies.Reader, Policies.Contributor, Policies.Admin, Policies.Compiler, "workspace:admin" })
             {
                 options.AddPolicy(policy, rule => rule.RequireAuthenticatedUser().RequireAssertion(context =>
                     context.Resource is HttpContext http &&

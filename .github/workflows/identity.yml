@@ -39,7 +39,9 @@ jobs:
       - name: Prepare disposable identity material
         run: |
           python -m pip install 'cryptography>=44,<47'
+          python -m pip install -e connectors/databricks -e connectors/plugins -e services/query-runtime -e services/semantic-api -e services/semantic-backend
           python ops/identity/prepare.py
+          python services/semantic-backend/integration/prepare_catalog_fixture.py
           echo '127.0.0.1 identity.localhost' | sudo tee -a /etc/hosts >/dev/null
       - name: Build and start isolated TLS identity stack
         run: |
