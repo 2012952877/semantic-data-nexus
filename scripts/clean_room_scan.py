@@ -86,7 +86,10 @@ _SUSPICIOUS_PATH_PARTS = {
 _SAFE_RAW_DATA_PREFIXES = ("data/synthetic/generated/",)
 # Reviewed DDL, not a general migration-directory exemption. Content rules still apply.
 _REVIEWED_DDL_PATHS = frozenset(
-    {"services/control-api/src/ControlApi/Persistence/Migrations/001_control_plane.sql"}
+    {
+        "services/control-api/src/ControlApi/Persistence/Migrations/001_control_plane.sql",
+        "services/control-api/src/ControlApi/Persistence/Migrations/002_identity_workspace.sql",
+    }
 )
 _SAFE_VALUE_MARKERS = (
     "dummy",

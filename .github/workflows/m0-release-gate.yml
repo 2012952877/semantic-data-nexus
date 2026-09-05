@@ -38,6 +38,10 @@ jobs:
     name: Query runtime
     uses: ./.github/workflows/query-runtime.yml
 
+  plugin_conformance:
+    name: Plugin and PostgreSQL conformance
+    uses: ./.github/workflows/plugin-conformance.yml
+
   semantic_backend:
     name: Integrated backend and artifact evaluation
     uses: ./.github/workflows/semantic-backend.yml
@@ -57,6 +61,10 @@ jobs:
   full_stack:
     name: Compose real API and browser smoke
     uses: ./.github/workflows/full-stack.yml
+
+  enterprise_identity:
+    name: Enterprise identity and workspace isolation
+    uses: ./.github/workflows/identity.yml
 
   clean_room:
     name: Clean-room and private-demo scan
@@ -94,11 +102,13 @@ jobs:
       - databricks_resolver
       - semantic_api
       - query_runtime
+      - plugin_conformance
       - semantic_backend
       - control_api
       - web
       - infrastructure
       - full_stack
+      - enterprise_identity
       - clean_room
     runs-on: ubuntu-latest
     steps:
@@ -109,11 +119,13 @@ jobs:
           DATABRICKS_RESOLVER: ${{ needs.databricks_resolver.result }}
           SEMANTIC_API: ${{ needs.semantic_api.result }}
           QUERY_RUNTIME: ${{ needs.query_runtime.result }}
+          PLUGIN_CONFORMANCE: ${{ needs.plugin_conformance.result }}
           SEMANTIC_BACKEND: ${{ needs.semantic_backend.result }}
           CONTROL_API: ${{ needs.control_api.result }}
           WEB: ${{ needs.web.result }}
           INFRASTRUCTURE: ${{ needs.infrastructure.result }}
           FULL_STACK: ${{ needs.full_stack.result }}
+          ENTERPRISE_IDENTITY: ${{ needs.enterprise_identity.result }}
           CLEAN_ROOM: ${{ needs.clean_room.result }}
         run: |
           status=0
@@ -123,11 +135,13 @@ jobs:
             "databricks_resolver=$DATABRICKS_RESOLVER" \
             "semantic_api=$SEMANTIC_API" \
             "query_runtime=$QUERY_RUNTIME" \
+            "plugin_conformance=$PLUGIN_CONFORMANCE" \
             "semantic_backend=$SEMANTIC_BACKEND" \
             "control_api=$CONTROL_API" \
             "web=$WEB" \
             "infrastructure=$INFRASTRUCTURE" \
             "full_stack=$FULL_STACK" \
+            "enterprise_identity=$ENTERPRISE_IDENTITY" \
             "clean_room=$CLEAN_ROOM"
           do
             name="${gate%%=*}"

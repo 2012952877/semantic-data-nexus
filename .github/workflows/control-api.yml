@@ -59,6 +59,19 @@ jobs:
           assert len(results) >= 20, f"Expected PostgreSQL tests, got {len(results)}"
           assert all(r.attrib["outcome"] == "Passed" for r in results), "PostgreSQL test failed/skipped"
           print(f"Real PostgreSQL tests passed: {len(results)}")
+          identity = [r for r in root.findall(".//t:UnitTestResult", ns)
+                      if "PostgresIdentityTests" in r.attrib["testName"]]
+          assert len(identity) >= 12, "Expected real PostgreSQL identity tests"
+          assert all(r.attrib["outcome"] == "Passed" for r in identity), "Identity test failed/skipped"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify backend against the same PostgreSQL identity schema
+        working-directory: .
+        run: |
+          python -m pip install -e connectors/databricks -e evals -e services/semantic-api -e services/query-runtime -e "services/semantic-backend[dev]"
+          python -m pytest services/semantic-backend/integration/postgres_authorization.py --junitxml=identity-postgres.xml
+          python -c "import xml.etree.ElementTree as E; r=E.parse('identity-postgres.xml'); cases=r.findall('.//testcase'); assert len(cases)>=6; assert not r.findall('.//skipped')"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

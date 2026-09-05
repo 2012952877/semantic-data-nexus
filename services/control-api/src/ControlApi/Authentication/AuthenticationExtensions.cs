@@ -1,12 +1,10 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
-using Microsoft.Identity.Web;
 
 namespace ControlApi.Authentication;
 
@@ -21,13 +19,6 @@ public sealed class LocalDevelopmentAuthOptions
 {
     public const string SectionName = "LocalDevelopmentAuth";
     public bool Enabled { get; init; }
-}
-
-public sealed class EntraBoundaryOptions
-{
-    public string? Instance { get; init; }
-    public string? TenantId { get; init; }
-    public string? ClientId { get; init; }
 }
 
 public static class AuthenticationExtensions
@@ -49,38 +40,21 @@ public static class AuthenticationExtensions
                 "Local development authentication can only be enabled in Development.");
         }
 
-        if (localOptions.Enabled)
+        services.AddHttpContextAccessor();
+        services.AddSingleton(provider => new RunAccess(
+            provider.GetRequiredService<IHttpContextAccessor>(), localOptions.Enabled));
+        if (!localOptions.Enabled)
         {
-            services
-                .AddAuthentication(DevelopmentScheme)
-                .AddScheme<AuthenticationSchemeOptions, LocalDevelopmentAuthenticationHandler>(
-                    DevelopmentScheme,
-                    _ => { });
+            services.AddEnterpriseIdentity(configuration, environment);
+            services.AddSingleton<IAuthorizationMiddlewareResultHandler, ProblemAuthorizationResultHandler>();
+            return services;
         }
-        else
-        {
-            if (environment.IsProduction())
-            {
-                var entra = configuration.GetSection("AzureAd").Get<EntraBoundaryOptions>();
-                if (entra is null ||
-                    string.IsNullOrWhiteSpace(entra.Instance) ||
-                    string.IsNullOrWhiteSpace(entra.TenantId) ||
-                    string.IsNullOrWhiteSpace(entra.ClientId))
-                {
-                    throw new InvalidOperationException(
-                        "Production requires AzureAd:Instance, AzureAd:TenantId, and AzureAd:ClientId.");
-                }
-            }
 
-            services
-                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-                .AddMicrosoftIdentityWebApi(
-                    configuration.GetSection("AzureAd"),
-                    jwtBearerScheme: JwtBearerDefaults.AuthenticationScheme);
-            services.PostConfigure<JwtBearerOptions>(
-                JwtBearerDefaults.AuthenticationScheme,
-                options => options.MapInboundClaims = false);
-        }
+        services
+            .AddAuthentication(DevelopmentScheme)
+            .AddScheme<AuthenticationSchemeOptions, LocalDevelopmentAuthenticationHandler>(
+                DevelopmentScheme,
+                _ => { });
 
         services.AddAuthorization(options =>
         {

@@ -1,0 +1,933 @@
+{
+  "$defs": {
+    "AggregateFunction": {
+      "enum": [
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "count"
+      ],
+      "title": "AggregateFunction",
+      "type": "string"
+    },
+    "AggregateSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "function": {
+          "$ref": "#/$defs/AggregateFunction"
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedExpression"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name",
+        "function"
+      ],
+      "title": "AggregateSpec",
+      "type": "object"
+    },
+    "BoundPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "$ref": "#/$defs/TypedExpression"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "title": "BoundPredicate",
+      "type": "object"
+    },
+    "DateSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Column",
+          "type": "string"
+        },
+        "output": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Output",
+          "type": "string"
+        },
+        "grain": {
+          "$ref": "#/$defs/TimeGrain"
+        }
+      },
+      "required": [
+        "column",
+        "output",
+        "grain"
+      ],
+      "title": "DateSpec",
+      "type": "object"
+    },
+    "ExplodeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Column",
+          "type": "string"
+        },
+        "output": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "output"
+      ],
+      "title": "ExplodeSpec",
+      "type": "object"
+    },
+    "ExpressionKind": {
+      "enum": [
+        "column",
+        "literal",
+        "add",
+        "subtract",
+        "multiply",
+        "divide",
+        "equal",
+        "not_equal",
+        "less_than",
+        "less_equal",
+        "greater_than",
+        "greater_equal",
+        "and",
+        "or",
+        "not",
+        "is_null",
+        "coalesce"
+      ],
+      "title": "ExpressionKind",
+      "type": "string"
+    },
+    "ImputeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Column",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/TypedExpression"
+        }
+      },
+      "required": [
+        "column",
+        "value"
+      ],
+      "title": "ImputeSpec",
+      "type": "object"
+    },
+    "JoinKey": {
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "title": "Left",
+          "type": "string"
+        },
+        "right": {
+          "title": "Right",
+          "type": "string"
+        }
+      },
+      "required": [
+        "left",
+        "right"
+      ],
+      "title": "JoinKey",
+      "type": "object"
+    },
+    "JoinType": {
+      "enum": [
+        "inner",
+        "left",
+        "right",
+        "full"
+      ],
+      "title": "JoinType",
+      "type": "string"
+    },
+    "LogicalNode": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperatorSpecV1"
+            },
+            {
+              "$ref": "#/$defs/OperatorSpec"
+            }
+          ],
+          "title": "Operation"
+        },
+        "dependencies": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "source_alias": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Alias"
+        },
+        "concepts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Concepts",
+          "type": "array"
+        },
+        "estimated_rows": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Rows"
+        },
+        "estimated_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Bytes"
+        },
+        "requires_spill": {
+          "default": false,
+          "title": "Requires Spill",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "operation"
+      ],
+      "title": "LogicalNode",
+      "type": "object"
+    },
+    "NamedExpression": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "expression": {
+          "$ref": "#/$defs/TypedExpression"
+        }
+      },
+      "required": [
+        "name",
+        "expression"
+      ],
+      "title": "NamedExpression",
+      "type": "object"
+    },
+    "OperatorKind": {
+      "enum": [
+        "SOURCE",
+        "SELECT",
+        "FILTER",
+        "AGGREGATE",
+        "PIVOT",
+        "DERIVE",
+        "PROJECT",
+        "SORT",
+        "LIMIT",
+        "JOIN",
+        "ACT",
+        "ASK",
+        "DATE",
+        "DEDUPLICATE",
+        "DISTINCT",
+        "EXCEPT",
+        "EXPLODE",
+        "IMPUTE",
+        "INTERSECT",
+        "PICK",
+        "RESAMPLE",
+        "SAMPLE",
+        "SEARCH",
+        "SUMMARIZE",
+        "UNION_ALL",
+        "UNION_DISTINCT",
+        "UNPIVOT",
+        "WINDOW"
+      ],
+      "title": "OperatorKind",
+      "type": "string"
+    },
+    "OperatorSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "AGGREGATE",
+            "DERIVE",
+            "FILTER",
+            "JOIN",
+            "LIMIT",
+            "PIVOT",
+            "PROJECT",
+            "SELECT",
+            "SORT",
+            "SOURCE"
+          ]
+        },
+        "columns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundPredicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "group_by": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Group By",
+          "type": "array"
+        },
+        "aggregates": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AggregateSpec"
+          },
+          "title": "Aggregates",
+          "type": "array"
+        },
+        "expressions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NamedExpression"
+          },
+          "title": "Expressions",
+          "type": "array"
+        },
+        "sort": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SortSpec"
+          },
+          "title": "Sort",
+          "type": "array"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "join_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JoinType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "join_keys": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/JoinKey"
+          },
+          "title": "Join Keys",
+          "type": "array"
+        },
+        "pivot_index": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pivot Index",
+          "type": "array"
+        },
+        "pivot_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pivot Column"
+        },
+        "pivot_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pivot Value"
+        },
+        "pivot_values": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pivot Values",
+          "type": "array"
+        },
+        "time_grain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeGrain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "OperatorSpec",
+      "type": "object"
+    },
+    "OperatorSpecV1": {
+      "additionalProperties": false,
+      "description": "Opt-in extension; a version is mandatory, never inferred from extra fields.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/OperatorKind"
+        },
+        "columns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundPredicate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "group_by": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Group By",
+          "type": "array"
+        },
+        "aggregates": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AggregateSpec"
+          },
+          "title": "Aggregates",
+          "type": "array"
+        },
+        "expressions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NamedExpression"
+          },
+          "title": "Expressions",
+          "type": "array"
+        },
+        "sort": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SortSpec"
+          },
+          "title": "Sort",
+          "type": "array"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "maximum": 1000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "join_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JoinType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "join_keys": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/JoinKey"
+          },
+          "title": "Join Keys",
+          "type": "array"
+        },
+        "pivot_index": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pivot Index",
+          "type": "array"
+        },
+        "pivot_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pivot Column"
+        },
+        "pivot_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pivot Value"
+        },
+        "pivot_values": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pivot Values",
+          "type": "array"
+        },
+        "time_grain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeGrain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "version": {
+          "const": "query-runtime/v1",
+          "title": "Version",
+          "type": "string"
+        },
+        "partition_by": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Partition By",
+          "type": "array"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WindowSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "date": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "unpivot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnpivotSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "explode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplodeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "impute": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImputeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sample_seed": {
+          "anyOf": [
+            {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Seed"
+        }
+      },
+      "required": [
+        "kind",
+        "version"
+      ],
+      "title": "OperatorSpecV1",
+      "type": "object"
+    },
+    "ScalarType": {
+      "enum": [
+        "string",
+        "integer",
+        "float",
+        "decimal",
+        "boolean",
+        "date",
+        "timestamp"
+      ],
+      "title": "ScalarType",
+      "type": "string"
+    },
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "title": "SortDirection",
+      "type": "string"
+    },
+    "SortSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/SortDirection",
+          "default": "asc"
+        },
+        "nulls_first": {
+          "default": false,
+          "title": "Nulls First",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "column"
+      ],
+      "title": "SortSpec",
+      "type": "object"
+    },
+    "TimeGrain": {
+      "enum": [
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year"
+      ],
+      "title": "TimeGrain",
+      "type": "string"
+    },
+    "TypedExpression": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ExpressionKind"
+        },
+        "data_type": {
+          "$ref": "#/$defs/ScalarType"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "args": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TypedExpression"
+          },
+          "title": "Args",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "data_type"
+      ],
+      "title": "TypedExpression",
+      "type": "object"
+    },
+    "UnpivotSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "name_column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name Column",
+          "type": "string"
+        },
+        "value_column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Value Column",
+          "type": "string"
+        }
+      },
+      "required": [
+        "columns",
+        "name_column",
+        "value_column"
+      ],
+      "title": "UnpivotSpec",
+      "type": "object"
+    },
+    "WindowSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "function": {
+          "enum": [
+            "row_number",
+            "rank",
+            "dense_rank",
+            "sum",
+            "min",
+            "max",
+            "count"
+          ],
+          "title": "Function",
+          "type": "string"
+        },
+        "output": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Output",
+          "type": "string"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "preceding": {
+          "default": 0,
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Preceding",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "function",
+        "output"
+      ],
+      "title": "WindowSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "query-runtime/v1",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/LogicalNode"
+      },
+      "title": "Nodes",
+      "type": "array"
+    },
+    "output_node_id": {
+      "title": "Output Node Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "nodes",
+    "output_node_id",
+    "version"
+  ],
+  "title": "ValidatedLogicalGraph",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-data-nexus.example.invalid/contracts/plugins/v1/logical-graph.schema.json"
+}

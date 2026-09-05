@@ -14,16 +14,18 @@ import pyarrow as pa
 
 from query_runtime.arrow_memory import BufferIdentity, retained_buffer_sizes
 from query_runtime.domain import (
+    BLOCKED_OPERATOR_KINDS,
     TERMINAL_STATES,
     CommittedManifest,
     DiagnosticEvent,
     ExecutionState,
     LineageGraph,
-    OperatorKind,
+    OperatorSpecV1,
     PhysicalNode,
     PhysicalNodeKind,
     PhysicalPlan,
     ResultSummary,
+    validate_operator_v1,
 )
 from query_runtime.errors import (
     DeferredCleanupCancellation,
@@ -34,7 +36,7 @@ from query_runtime.errors import (
 )
 from query_runtime.events import EventStore, InMemoryEventStore, StateMachine
 from query_runtime.lineage import LineageRecorder
-from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits
+from query_runtime.operators import DuckDBOperatorExecutor, ResourceLimits, operator_input_count
 from query_runtime.resolver import ExecutionContext, SourceResolver
 from query_runtime.result_store import ResultStore
 
@@ -1278,6 +1280,22 @@ def validate_physical_plan(plan: PhysicalPlan) -> None:
     if plan.output_node_id not in by_id:
         raise PlanFailure("PLAN_OUTPUT_MISSING", "Physical plan output node does not exist")
     for node in plan.nodes:
+        if plan.version == "query-runtime/v1" or isinstance(node.operator, OperatorSpecV1):
+            operations = (
+                node.source_fragment.operations if node.source_fragment is not None
+                else (node.operator,) if node.operator is not None else ()
+            )
+            for operation in operations:
+                try:
+                    validate_operator_v1(operation)
+                except ValueError as exc:
+                    raise PlanFailure(
+                        "PLAN_OPERATOR_INVALID", "Invalid v1 operator form or value"
+                    ) from exc
+        if node.operation in BLOCKED_OPERATOR_KINDS:
+            raise PlanFailure(
+                "OPERATOR_UNSUPPORTED", f"{node.operation} requires a governed backend"
+            )
         if node.kind is PhysicalNodeKind.SOURCE_FRAGMENT and node.dependencies:
             raise PlanFailure(
                 "PLAN_SOURCE_FRAGMENT_INPUT",
@@ -1285,7 +1303,7 @@ def validate_physical_plan(plan: PhysicalPlan) -> None:
                 details={"node_id": node.id, "actual_inputs": len(node.dependencies)},
             )
         if node.kind is PhysicalNodeKind.OPERATOR:
-            required_inputs = 2 if node.operation is OperatorKind.JOIN else 1
+            required_inputs = operator_input_count(node.operation)
             if len(node.dependencies) != required_inputs:
                 raise PlanFailure(
                     "PLAN_OPERATOR_INPUT_COUNT",

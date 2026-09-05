@@ -3,6 +3,7 @@ import { computed, inject } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { nexusClientKey } from '@/api/clientContext'
+import IdentityBoundary from './IdentityBoundary.vue'
 
 const client = inject(nexusClientKey)
 if (!client) throw new Error('SemanticNexusClient is not provided')
@@ -74,7 +75,7 @@ const navItems = [
         </div>
       </header>
       <main id="main-content" tabindex="-1">
-        <RouterView />
+        <IdentityBoundary><RouterView /></IdentityBoundary>
       </main>
     </div>
   </div>

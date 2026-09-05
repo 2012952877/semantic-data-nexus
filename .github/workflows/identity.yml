@@ -1,0 +1,79 @@
+name: Enterprise identity
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "services/control-api/**"
+      - "services/semantic-backend/**"
+      - "apps/web/**"
+      - "ops/identity/**"
+      - "compose.identity.yaml"
+      - ".github/workflows/identity.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/control-api/**"
+      - "services/semantic-backend/**"
+      - "apps/web/**"
+      - "ops/identity/**"
+      - "compose.identity.yaml"
+      - ".github/workflows/identity.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  keycloak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.33.2 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Prepare disposable identity material
+        run: |
+          python -m pip install 'cryptography>=44,<47'
+          python ops/identity/prepare.py
+          echo '127.0.0.1 identity.localhost' | sudo tee -a /etc/hosts >/dev/null
+      - name: Build and start isolated TLS identity stack
+        run: |
+          docker compose --env-file ops/identity/.generated/compose.env -f compose.identity.yaml up --build -d
+          for i in $(seq 1 90); do
+            if curl --fail --silent --cacert ops/identity/.generated/ca.crt \
+              https://identity.localhost:8443/realms/nexus/.well-known/openid-configuration >/dev/null &&
+              curl --fail --silent --cacert ops/identity/.generated/ca.crt https://localhost:8444/auth/session >/dev/null; then
+              exit 0
+            fi
+            sleep 3
+          done
+          exit 1
+      - name: Explicitly bootstrap synthetic memberships
+        run: |
+          for workspace in workspace-a workspace-b; do
+            docker compose --env-file ops/identity/.generated/compose.env -f compose.identity.yaml exec -T \
+              control-api dotnet ControlApi.dll --identity-maintenance < "ops/identity/.generated/bootstrap-$workspace.json"
+          done
+      - name: Require unauthenticated direct backend denial
+        run: |
+          docker compose --env-file ops/identity/.generated/compose.env -f compose.identity.yaml exec -T semantic-backend \
+            python -c "import urllib.request, urllib.error; r=urllib.request.Request('http://localhost:8080/v1/runs/run_'+'a'*32); exec('try:\n urllib.request.urlopen(r); raise AssertionError(\"backend accepted direct request\")\nexcept urllib.error.HTTPError as e:\n assert e.code == 401')"
+      - name: Run actual browser OIDC flow and scoped HTTP regressions
+        working-directory: apps/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+          pnpm exec playwright test --config playwright.identity.config.ts
+      - name: Show redacted service state on failure
+        if: failure()
+        run: docker compose --env-file ops/identity/.generated/compose.env -f compose.identity.yaml ps --all
+      - name: Remove disposable stack and identity material
+        if: always()
+        run: |
+          docker compose --env-file ops/identity/.generated/compose.env -f compose.identity.yaml down --volumes --remove-orphans
+          sudo rm -rf ops/identity/.generated

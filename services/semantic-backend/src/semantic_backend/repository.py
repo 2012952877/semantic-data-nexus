@@ -9,6 +9,7 @@ from query_runtime.coordinator import QueryCoordinator
 from query_runtime.domain import PhysicalPlan
 from semantic_api.models import CompileResponse
 
+from semantic_backend.auth_context import AccessDenied, TrustedContext, legacy_development
 from semantic_backend.models import (
     LineageDetail,
     RunDetail,
@@ -35,6 +36,7 @@ class RunRecord:
     request: StartRunRequest
     status: RunStatus
     detail: RunDetail
+    trusted_context: TrustedContext | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task[None] | None = None
     coordinator: QueryCoordinator | None = None
@@ -44,16 +46,24 @@ class RunRecord:
     compile_response: CompileResponse | None = None
     physical_plan: PhysicalPlan | None = None
     deadline: float | None = None
+    authorization_error: str | None = None
+    revocation_task: asyncio.Task[None] | None = None
+    pending_detail: RunDetail | None = None
+    terminal_cleanup_started: bool = False
 
 
 class RunRepository(Protocol):
     async def create(
-        self, request: StartRunRequest, status: RunStatus
+        self, request: StartRunRequest, status: RunStatus, *, context: TrustedContext | None = None
     ) -> tuple[RunRecord, bool]: ...
 
-    async def get(self, run_id: str) -> RunRecord: ...
+    async def get(self, run_id: str, *, context: TrustedContext | None = None) -> RunRecord: ...
 
-    async def list_records(self) -> tuple[RunRecord, ...]: ...
+    async def list_records(
+        self, *, context: TrustedContext | None = None
+    ) -> tuple[RunRecord, ...]: ...
+
+    async def _shutdown_records(self) -> tuple[RunRecord, ...]: ...
 
 
 class InMemoryRunRepository:
@@ -72,11 +82,18 @@ class InMemoryRunRepository:
         self,
         request: StartRunRequest,
         status: RunStatus,
+        *,
+        context: TrustedContext | None = None,
     ) -> tuple[RunRecord, bool]:
         async with self._lock:
+            self._require_context(context)
             self._prune_locked()
             existing = self._records.get(request.run_id)
             if existing is not None:
+                if (existing.trusted_context.scope if existing.trusted_context else None) != (
+                    context.scope if context else None
+                ):
+                    raise RunNotFoundError(request.run_id)
                 if existing.request != request:
                     raise RunConflictError("run_id is already bound to a different request")
                 return existing, False
@@ -93,21 +110,44 @@ class InMemoryRunRepository:
                 ),
                 lineage=LineageDetail(run_id=request.run_id),
             )
-            record = RunRecord(request=request, status=status, detail=detail)
+            record = RunRecord(
+                request=request, status=status, detail=detail, trusted_context=context
+            )
             self._records[request.run_id] = record
             return record, True
 
-    async def get(self, run_id: str) -> RunRecord:
+    async def get(self, run_id: str, *, context: TrustedContext | None = None) -> RunRecord:
         async with self._lock:
+            self._require_context(context)
             self._prune_locked()
             try:
-                return self._records[run_id]
+                record = self._records[run_id]
             except KeyError as exc:
                 raise RunNotFoundError(run_id) from exc
+            if (record.trusted_context.scope if record.trusted_context else None) != (
+                context.scope if context else None
+            ):
+                raise RunNotFoundError(run_id)
+            return record
 
-    async def list_records(self) -> tuple[RunRecord, ...]:
+    async def list_records(self, *, context: TrustedContext | None = None) -> tuple[RunRecord, ...]:
         async with self._lock:
             self._prune_locked()
+            self._require_context(context)
+            return tuple(
+                record
+                for record in self._records.values()
+                if (record.trusted_context.scope if record.trusted_context else None)
+                == (context.scope if context else None)
+            )
+
+    @staticmethod
+    def _require_context(context: TrustedContext | None) -> None:
+        if not legacy_development() and context is None:
+            raise AccessDenied("An explicitly verified context is required.")
+
+    async def _shutdown_records(self) -> tuple[RunRecord, ...]:
+        async with self._lock:
             return tuple(self._records.values())
 
     def _prune_locked(self) -> None:
