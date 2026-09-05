@@ -1,0 +1,49 @@
+{
+  "syft": {
+    "version": "1.51.1",
+    "revision": "91a0032987d91b7411b52f6f5c185c5e7f775495",
+    "license": "Apache-2.0",
+    "license_url": "https://raw.githubusercontent.com/anchore/syft/v1.51.1/LICENSE",
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "linux_amd64": {
+      "url": "https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz",
+      "sha256": "8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3"
+    },
+    "windows_amd64": {
+      "url": "https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_windows_amd64.zip",
+      "sha256": "5e4bc3e6b6344b4625de0f7aa5351aaa72856d11d78462972de0a101ee2c1c8f"
+    }
+  },
+  "actions": {
+    "checkout": {
+      "revision": "11d5960a326750d5838078e36cf38b85af677262",
+      "license": "MIT",
+      "license_url": "https://raw.githubusercontent.com/actions/checkout/11d5960a326750d5838078e36cf38b85af677262/LICENSE",
+      "license_sha256": "3e855ffa704114a51628ef8f0bf3aeb41728adf9d9070e263bf58aa5640b0eb5"
+    },
+    "setup-python": {
+      "revision": "a26af69be951a213d495a4c3e4e4022e16d87065",
+      "license": "MIT",
+      "license_url": "https://raw.githubusercontent.com/actions/setup-python/a26af69be951a213d495a4c3e4e4022e16d87065/LICENSE",
+      "license_sha256": "7d070f6b64d9bcc530fe99cc21eaaa4b3c364e0b2d367d7735671fa202a03b32"
+    },
+    "upload-artifact": {
+      "revision": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "license": "MIT",
+      "license_url": "https://raw.githubusercontent.com/actions/upload-artifact/ea165f8d65b6e75b540449e92b4886f43607fa02/LICENSE",
+      "license_sha256": "3e855ffa704114a51628ef8f0bf3aeb41728adf9d9070e263bf58aa5640b0eb5"
+    }
+  },
+  "schema": {
+    "revision": "b29bae660048e0ad2fbc5f2972927b442ce951c4",
+    "license": "Apache-2.0",
+    "license_url": "https://raw.githubusercontent.com/CycloneDX/specification/b29bae660048e0ad2fbc5f2972927b442ce951c4/LICENSE",
+    "license_sha256": "6c29f22a4a7385285c6f579ec9f33c5e989f00739d6b257243a0b082ec9447ae",
+    "base_url": "https://raw.githubusercontent.com/CycloneDX/specification/b29bae660048e0ad2fbc5f2972927b442ce951c4/schema/",
+    "files": {
+      "bom-1.6.schema.json": "18f57f7482593bad9f21b4feed09084640cbeff419d62ad5090c5ceccca5b37d",
+      "spdx.schema.json": "ea6e844ee6fba1e93473d94834d0ee0996970533497935f932f73d488ffdf4a3",
+      "jsf-0.82.schema.json": "8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae"
+    }
+  }
+}

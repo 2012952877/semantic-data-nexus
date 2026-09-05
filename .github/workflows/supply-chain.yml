@@ -1,0 +1,141 @@
+name: Supply-chain inventory
+
+on:
+  workflow_call:
+    inputs:
+      require_acceptance:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      require_acceptance:
+        description: Fail when dependency/NOTICE review is not accepted
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "scripts/supply_chain/**"
+      - "docs/supply-chain/**"
+      - ".github/workflows/supply-chain.yml"
+      - "apps/web/**"
+      - "services/**"
+      - "connectors/**"
+      - "data/synthetic/**"
+      - ".dockerignore"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/supply_chain/**"
+      - "docs/supply-chain/**"
+      - ".github/workflows/supply-chain.yml"
+      - "apps/web/**"
+      - "services/**"
+      - "connectors/**"
+      - "data/synthetic/**"
+      - ".dockerignore"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    name: Inventory / ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [semantic-api, semantic-backend, control-api, web]
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      TARGET: ${{ matrix.target }}
+      REQUIRE_ACCEPTANCE: ${{ inputs.require_acceptance || false }}
+    steps:
+      - name: Require private repository
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          test "$REPOSITORY_PRIVATE" = true
+          echo "SUPPLY_CHAIN_TOOLS=$RUNNER_TEMP/supply-chain-tools" >> "$GITHUB_ENV"
+          echo "EVIDENCE_DIR=$RUNNER_TEMP/supply-chain-evidence" >> "$GITHUB_ENV"
+
+      - name: Check out exact source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Install isolated inventory tools
+        run: |
+          python -m venv "$RUNNER_TEMP/supply-chain-venv"
+          echo "$RUNNER_TEMP/supply-chain-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/supply-chain-venv/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r scripts/supply_chain/requirements.lock
+          python -m scripts.supply_chain.bootstrap --tools "$SUPPLY_CHAIN_TOOLS"
+
+      - name: Exercise standard, determinism and fail-closed regressions
+        run: python -m pytest scripts/supply_chain/tests
+
+      - name: Build and inventory actual resolved artifacts
+        run: |
+          python -m scripts.supply_chain.pipeline collect \
+            --target "$TARGET" --output "$EVIDENCE_DIR" \
+            --tools "$SUPPLY_CHAIN_TOOLS" --revision "$SOURCE_SHA"
+
+      - name: Evaluate release acceptance separately from inventory
+        id: acceptance
+        shell: bash
+        run: |
+          set +e
+          python -m scripts.supply_chain.pipeline accept \
+            --output "$EVIDENCE_DIR" --tools "$SUPPLY_CHAIN_TOOLS" --revision "$SOURCE_SHA"
+          result=$?
+          set -e
+          if [ "$result" -eq 2 ]; then
+            echo "status=BLOCKED" >> "$GITHUB_OUTPUT"
+            echo "::warning::Inventory succeeded; release acceptance is BLOCKED pending exact component/license/NOTICE review."
+          elif [ "$result" -eq 0 ]; then
+            echo "status=ACCEPTED" >> "$GITHUB_OUTPUT"
+          else
+            exit "$result"
+          fi
+
+      - name: Upload private source-bound evidence
+        id: artifact
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-${{ matrix.target }}-${{ env.SOURCE_SHA }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+      - name: Record acceptance and artifact identity
+        env:
+          ACCEPTANCE: ${{ steps.acceptance.outputs.status }}
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.artifact.outputs.artifact-digest }}
+        run: |
+          printf '### %s\nSource: `%s`\n\nInventory: **COMPLETE**; release acceptance: **%s**\n\nPrivate artifact ID: `%s`; SHA-256: `%s`\n' \
+            "$TARGET" "$SOURCE_SHA" "$ACCEPTANCE" "$ARTIFACT_ID" "$ARTIFACT_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REQUIRE_ACCEPTANCE" = true ]; then
+            test "$ACCEPTANCE" = ACCEPTED
+          fi
+
+      - name: Preserve clearly incomplete diagnostic evidence
+        if: failure() && github.event.repository.private && steps.artifact.outcome != 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-INCOMPLETE-${{ matrix.target }}-${{ env.SOURCE_SHA }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: warn
+          retention-days: 3
