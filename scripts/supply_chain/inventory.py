@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import posixpath
 
 from packaging.utils import canonicalize_name
 
@@ -51,14 +50,22 @@ def compile_inventory(syft: dict, files: ImageFiles, blobs: Blobs, records: list
     for package in syft["artifacts"]:
         related = by_key.get(syft_identity(package), [])
         facts = {}
+        unverified = set()
         for raw in package_files.get(package["id"], []):
             path = raw["location"]["path"]
             if files.has(path) and files.members[files.resolve(path)].isfile():
                 facts[path] = file_fact(files, path, blobs, retain=license_path(path))
+                for expected in raw.get("digests", []):
+                    if expected["algorithm"] == "sha256":
+                        require(facts[path]["sha256"] == expected["value"], "image-filesystem-hash-drift")
+            else:
+                unverified.add(path)
         for location in package["locations"]:
             path = location["path"]
             if files.has(path) and files.members[files.resolve(path)].isfile():
                 facts[path] = file_fact(files, path, blobs, retain=license_path(path))
+            else:
+                unverified.add(path)
         for record in related:
             for fact in record.get("files", []) + [record["metadata"]]:
                 facts[fact["path"]] = fact
@@ -100,6 +107,7 @@ def compile_inventory(syft: dict, files: ImageFiles, blobs: Blobs, records: list
             "files": sorted(facts.values(), key=lambda r: r["path"]),
             "license_files": sorted({digest(canonical(f)): f for f in license_files}.values(), key=lambda r: canonical(r)),
             "archives": archives, "upstream": upstream,
+            "unverified_locations": sorted(unverified),
         }
         component["evidence_sha256"] = evidence_digest(component)
         components.append(component)

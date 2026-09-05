@@ -23,6 +23,8 @@ input attribution, **not** proof that every symbol of every production package
 survives tree shaking. Development packages remain build-scoped.
 Platform alternatives seen only in the pnpm lock are `build-lock-candidate`, not
 asserted to be installed in the builder or shipped in nginx.
+Multiple installed peer contexts for the same npm name/version currently fail
+closed rather than silently merging potentially different dependency edges.
 
 The product Dockerfiles are used unchanged, using their existing installation and
 build-script policy. No additional package lifecycle scripts run during scanning.
@@ -105,6 +107,8 @@ UUID from the resulting content. Versions, licenses, hashes, relationships and
 artifact identity are retained. Identical captured evidence and provenance yield
 identical normalized documents. Observation dates remain in review evidence for
 freshness enforcement; a new observation is not silently backdated.
+Offline `accept` also regenerates the normalized document from its retained
+generator output and bound inventory and requires exact byte equality.
 
 This is **not** a promise of bit-identical independent product rebuilds. Existing
 Python ranges and floating base-image tags are not rewritten by this workstream.

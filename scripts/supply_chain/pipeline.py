@@ -155,6 +155,9 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                 records, runtime_edges = dotnet_inventory(runtime_files, blobs)
                 require(records, "empty-dotnet-publish")
                 enrich_nuget(records, snapshots["build"][2], blobs)
+                for record in records:
+                    if record["package_type"] == "project":
+                        record["upstream"] = [{"source_revision": revision, "source_tree": source["tree"]}]
                 runtime_records += records
                 resolution_context = {
                     "sdk": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "dotnet", snapshots["build"][4], "--list-sdks"]).strip(),
@@ -171,7 +174,11 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                     "node": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "node", build_tag, "--version"]).strip(),
                     "pnpm": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "pnpm", build_tag, "--version"]).strip(),
                 }
-                upstream_npm(build_extra, build_files, build_raw, "@semantic-data-nexus/web")
+                project_name = json.loads(build_files.read("/app/package.json"))["name"]
+                upstream_npm(build_extra, build_files, build_raw, project_name)
+                for record in build_extra:
+                    if record["name"] == project_name:
+                        record["upstream"] = [{"source_revision": revision, "source_tree": source["tree"]}]
                 bundle_files = []
                 for path in build_files.paths():
                     if path.startswith("/app/dist/"):
@@ -222,6 +229,10 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
 
 
 def accept(output: Path, tools: Path, revision: str, policy_path: Path) -> bool:
+    require(re.fullmatch("[0-9a-f]{40}", revision), "invalid-source-revision")
+    write(output / "acceptance.json", {
+        "status": "INVALID", "source_revision": revision, "reason": "evaluation-not-complete",
+    })
     bundle = load(output / "bundle.json")
     require(bundle["source_revision"] == revision and bundle["subjects"], "stale-bundle")
     require(len(bundle["subjects"]) == len(set(bundle["subjects"])), "duplicate-subject")
@@ -232,7 +243,7 @@ def accept(output: Path, tools: Path, revision: str, policy_path: Path) -> bool:
     required = {"source.json", "toolchain.json"}
     for subject in bundle["subjects"]:
         require(re.fullmatch("[a-z-]+", subject), "invalid-subject-name")
-        required.update(subject + suffix for suffix in (".inventory.json", ".cdx.json", ".syft.json"))
+        required.update(subject + suffix for suffix in (".inventory.json", ".cdx.json", ".generator.cdx.json", ".syft.json"))
     require(required <= set(bundle["files"]), "missing-bundle-file")
     source = load(output / "source.json")
     require(source["revision"] == revision and source["inputs"], "missing-source-provenance")
@@ -247,8 +258,11 @@ def accept(output: Path, tools: Path, revision: str, policy_path: Path) -> bool:
         require(inventory["inputs"] == source["inputs"] and inventory["source_tree"] == source["tree"], "source-input-drift")
         require(inventory["coverage"] == reconcile(raw, inventory["resolved"]), "resolved-coverage-drift")
         require({c["id"] for c in inventory["components"]} == {p["id"] for p in raw["artifacts"]}, "scanner-component-drift")
+        document = load(output / (subject + ".cdx.json"))
+        replay = bind_evidence(load(output / (subject + ".generator.cdx.json")), inventory)
+        require(canonical(document) == canonical(replay), "nonreproducible-document")
         reports.append(review_inventory(
-            inventory, load(output / (subject + ".cdx.json")),
+            inventory, document,
             policy, output, tools, revision, dt.datetime.now(dt.timezone.utc).date(),
         ))
     status = "ACCEPTED" if all(r["status"] == "ACCEPTED" for r in reports) else "BLOCKED"

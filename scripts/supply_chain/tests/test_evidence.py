@@ -18,9 +18,9 @@ from scripts.supply_chain.adapters import (
     Blobs, ImageFiles, dotnet_inventory, enrich_nuget, pnpm_inventory,
     python_edges, python_inventory,
 )
-from scripts.supply_chain.common import EvidenceError, canonical, digest, load, run, write
+from scripts.supply_chain.common import HERE, EvidenceError, canonical, digest, load, run, sha_file, write
 from scripts.supply_chain.inventory import reconcile
-from scripts.supply_chain.pipeline import accept
+from scripts.supply_chain.pipeline import accept, main
 from scripts.supply_chain.review import evidence_digest, review_inventory, validate_policy
 from scripts.supply_chain.standards import bind_evidence, normalize, package_ref, validate_cyclonedx
 
@@ -185,6 +185,14 @@ def test_duplicate_reviews_fail(evidence):
         validate_policy(policy, TODAY)
 
 
+@pytest.mark.parametrize("text", ['{"reviews": [], "reviews": [{}]}', '{"version": NaN}'])
+def test_ambiguous_or_nonstandard_json_rejected(tmp_path, text):
+    path = tmp_path / "invalid.json"
+    path.write_text(text)
+    with pytest.raises(EvidenceError):
+        load(path)
+
+
 def test_named_transitive_coverage_not_count_proxy():
     raw = {"artifacts": [
         {"id": "1", "type": "python", "name": "direct", "version": "1"},
@@ -294,6 +302,39 @@ def test_missing_bundle_manifest_files_rejected(tmp_path, tools):
     })
     with pytest.raises(EvidenceError, match="missing-bundle-file"):
         accept(tmp_path, tools, REVISION, tmp_path / "unused-policy.json")
+
+
+def test_cli_blocked_then_invalid_cannot_leave_success(evidence, tmp_path, tools, monkeypatch):
+    inventory, document, policy = evidence
+    component = inventory["components"][0]
+    raw = {"artifacts": [{"id": component["id"], "type": "python", "name": component["name"],
+                          "version": component["version"]}]}
+    inventory["resolved"] = [{"ecosystem": "pypi", "name": component["name"], "version": component["version"]}]
+    inventory["coverage"] = reconcile(raw, inventory["resolved"])
+    inventory["source_tree"] = "e" * 40
+    inventory["subject"]["syft_sha256"] = digest(canonical(raw))
+    name = "synthetic-runtime"
+    write(tmp_path / "source.json", {"revision": REVISION, "tree": inventory["source_tree"], "inputs": inventory["inputs"]})
+    write(tmp_path / "toolchain.json", {"syft": load(HERE / "tools.json")["syft"]})
+    write(tmp_path / (name + ".syft.json"), raw)
+    write(tmp_path / (name + ".inventory.json"), inventory)
+    write(tmp_path / (name + ".generator.cdx.json"), document)
+    write(tmp_path / (name + ".cdx.json"), bind_evidence(document, inventory))
+    write(tmp_path / "bundle.json", {
+        "source_revision": REVISION, "subjects": [name],
+        "files": {p.relative_to(tmp_path).as_posix(): sha_file(p) for p in tmp_path.rglob("*") if p.is_file()},
+    })
+    policy["reviews"] = []
+    write(tmp_path / "policy.json", policy)
+    monkeypatch.setattr("sys.argv", ["pipeline", "accept", "--output", str(tmp_path),
+                                   "--tools", str(tools), "--revision", REVISION,
+                                   "--policy", str(tmp_path / "policy.json")])
+    assert main() == 2
+    assert load(tmp_path / "acceptance.json")["status"] == "BLOCKED"
+    write(tmp_path / "acceptance.json", {"status": "ACCEPTED"})
+    (tmp_path / (name + ".cdx.json")).unlink()
+    assert main() == 1
+    assert load(tmp_path / "acceptance.json")["status"] == "INVALID"
 
 
 def test_cyclonedx_evidence_binding_cannot_be_removed(evidence, tmp_path, tools):

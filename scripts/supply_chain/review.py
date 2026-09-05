@@ -104,6 +104,8 @@ def review_inventory(inventory: dict, document: dict, policy: dict, directory: P
         issues = []
         if not component["files"]:
             issues.append("missing-component-artifact-hashes")
+        if component.get("unverified_locations"):
+            issues.append("unverified-artifact-locations")
         if not component["purl"] or not component["version"]:
             issues.append("missing-package-identity")
         if not component["license_files"]:

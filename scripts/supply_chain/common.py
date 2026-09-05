@@ -23,11 +23,23 @@ def digest(data: bytes) -> str:
 
 
 def canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2) + "\n").encode()
+    return (json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, indent=2) + "\n").encode()
+
+
+def unique_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "duplicate-json-key")
+        result[key] = value
+    return result
+
+
+def reject_constant(value: str) -> None:
+    raise EvidenceError("invalid-json-constant")
 
 
 def load(path: Path) -> dict:
-    value = json.loads(path.read_bytes())
+    value = json.loads(path.read_bytes(), object_pairs_hook=unique_object, parse_constant=reject_constant)
     require(isinstance(value, dict), "invalid-json-object")
     return value
 

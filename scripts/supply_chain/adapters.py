@@ -18,7 +18,7 @@ from xml.etree import ElementTree
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
-from scripts.supply_chain.common import canonical, digest, require
+from scripts.supply_chain.common import digest, require
 
 
 def image_path(path: str) -> str:
@@ -184,6 +184,8 @@ def pnpm_inventory(tree: list[dict], files: ImageFiles, blobs: Blobs) -> tuple[l
         identity = name + "@" + version
         if parent:
             edges.add((parent, identity))
+        if identity in records:
+            require(records[identity]["location"] == files.resolve(manifest_path), "ambiguous-pnpm-peer-context")
         if identity not in records:
             folder = files.resolve(location)
             owned = [p for p in files.paths() if p.startswith(folder + "/") and "/node_modules/" not in p[len(folder) + 1:]]
