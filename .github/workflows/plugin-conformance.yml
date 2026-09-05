@@ -1,0 +1,68 @@
+name: Plugin conformance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "connectors/**"
+      - "services/query-runtime/**"
+      - "contracts/plugins/**"
+      - ".github/workflows/plugin-conformance.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: nexus_conformance
+          POSTGRES_USER: conformance_admin
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U conformance_admin -d nexus_conformance"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NEXUS_TEST_PG_HOST: localhost
+      NEXUS_TEST_PG_PORT: "5432"
+      NEXUS_TEST_PG_DB: nexus_conformance
+      NEXUS_TEST_PG_ADMIN: conformance_admin
+      NEXUS_TEST_PG_PASSWORD: synthetic-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: connectors/plugins/requirements-conformance.txt
+      - name: Install workspace adapters and existing tooling
+        run: >-
+          python -m pip install
+          -c connectors/plugins/requirements-conformance.txt
+          -e "services/query-runtime[dev]"
+          -e "connectors/databricks[dev]"
+          -e "connectors/plugins[dev]"
+      - name: Lint and typecheck extensions
+        run: |
+          ruff check connectors/plugins services/query-runtime
+          mypy --config-file connectors/plugins/pyproject.toml connectors/plugins/src
+          mypy --config-file services/query-runtime/pyproject.toml services/query-runtime/src
+      - name: Real PostgreSQL and local-engine conformance (no skipped database tests)
+        run: python -m pytest connectors/plugins/tests --junitxml=plugin-conformance.xml
+      - name: Runtime M0 compatibility
+        run: python -m pytest services/query-runtime/tests
+      - name: Package build
+        run: python -m build connectors/plugins
+      - name: Conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-conformance
+          path: plugin-conformance.xml
+          if-no-files-found: error

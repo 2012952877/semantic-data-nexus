@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from query_runtime.domain import (
+    BLOCKED_OPERATOR_KINDS,
     DOMAIN_VERSION,
     BoundColumn,
     BoundSource,
@@ -16,9 +18,11 @@ from query_runtime.domain import (
     LogicalOperationRef,
     OperatorKind,
     OperatorSpec,
+    OperatorSpecV1,
     PhysicalNode,
     PhysicalNodeKind,
     PhysicalPlan,
+    PlanVersion,
     SourceFragment,
     TypedExpression,
 )
@@ -29,7 +33,7 @@ class LogicalNode(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
-    operation: OperatorSpec
+    operation: OperatorSpecV1 | OperatorSpec
     dependencies: tuple[str, ...] = ()
     source_alias: str | None = None
     concepts: tuple[str, ...] = ()
@@ -41,10 +45,18 @@ class LogicalNode(BaseModel):
 class ValidatedLogicalGraph(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    version: str = DOMAIN_VERSION
+    version: PlanVersion = DOMAIN_VERSION
     id: str
     nodes: tuple[LogicalNode, ...]
     output_node_id: str
+
+    @model_validator(mode="after")
+    def version_boundary(self) -> ValidatedLogicalGraph:
+        if self.version == DOMAIN_VERSION and any(
+            isinstance(node.operation, OperatorSpecV1) for node in self.nodes
+        ):
+            raise ValueError("v1 operators require a query-runtime/v1 graph")
+        return self
 
 
 class ConceptBinder(Protocol):
@@ -81,9 +93,7 @@ def topological_order(nodes: tuple[LogicalNode, ...]) -> tuple[LogicalNode, ...]
     by_id = {node.id: node for node in nodes}
     if len(by_id) != len(nodes):
         raise PlanFailure("PLAN_DUPLICATE_NODE", "Logical graph contains duplicate node IDs")
-    unknown = sorted(
-        {dep for node in nodes for dep in node.dependencies if dep not in by_id}
-    )
+    unknown = sorted({dep for node in nodes for dep in node.dependencies if dep not in by_id})
     if unknown:
         raise PlanFailure(
             "PLAN_MISSING_DEPENDENCY",
@@ -119,13 +129,21 @@ class CapabilityPlanner:
         binder: ConceptBinder,
         sources: dict[str, BoundSource],
         capabilities: dict[str, CapabilityCatalog],
+        fragment_supported: Callable[[SourceFragment], bool] | None = None,
     ) -> None:
         self._binder = binder
         self._sources = sources
         self._capabilities = capabilities
+        self._fragment_supported = fragment_supported
 
     def plan(self, graph: ValidatedLogicalGraph) -> PhysicalPlan:
         ordered = topological_order(graph.nodes)
+        for node in ordered:
+            if node.operation.kind in BLOCKED_OPERATOR_KINDS:
+                raise PlanFailure(
+                    "OPERATOR_UNSUPPORTED",
+                    f"{node.operation.kind} requires a governed backend and is not executable",
+                )
         bindings: dict[str, tuple[BoundColumn, ...]] = {}
         for node in ordered:
             bound = tuple(self._binder.bind(concept) for concept in node.concepts)
@@ -157,6 +175,7 @@ class CapabilityPlanner:
             candidate_pushdown = (
                 logical.source_alias is not None
                 and operation.kind not in LOCAL_ONLY
+                and not isinstance(operation, OperatorSpecV1)
                 and capability is not None
                 and self._supports(logical, capability)
             )
@@ -166,8 +185,7 @@ class CapabilityPlanner:
                 physical[dependency_ids[0]]
                 if len(dependency_ids) == 1
                 and dependency_ids[0] in physical
-                and physical[dependency_ids[0]].kind
-                is PhysicalNodeKind.SOURCE_FRAGMENT
+                and physical[dependency_ids[0]].kind is PhysicalNodeKind.SOURCE_FRAGMENT
                 else None
             )
             can_fuse = (
@@ -177,6 +195,20 @@ class CapabilityPlanner:
                 and predecessor.source_fragment.source.alias == source.alias
             )
             pushdown = candidate_pushdown and (not dependency_ids or can_fuse)
+            if pushdown and source is not None and self._fragment_supported is not None:
+                previous = (
+                    predecessor.source_fragment.operations
+                    if can_fuse
+                    and predecessor is not None
+                    and predecessor.source_fragment is not None
+                    else ()
+                )
+                pushdown = self._fragment_supported(
+                    SourceFragment(
+                        source=source,
+                        operations=(*previous, operation),
+                    )
+                )
             if pushdown:
                 if source is None:
                     raise PlanFailure(
@@ -259,6 +291,7 @@ class CapabilityPlanner:
             tuple(node for node_id, node in physical.items() if node_id in reachable)
         )
         return PhysicalPlan(
+            version=graph.version,
             id=f"physical-{graph.id}",
             nodes=planned,
             output_node_id=output_id,
@@ -303,9 +336,7 @@ def _deduplicate_columns(columns: tuple[BoundColumn, ...]) -> tuple[BoundColumn,
     return tuple(unique[key] for key in sorted(unique))
 
 
-def _apply_bindings(
-    operation: OperatorSpec, columns: tuple[BoundColumn, ...]
-) -> OperatorSpec:
+def _apply_bindings(operation: OperatorSpec, columns: tuple[BoundColumn, ...]) -> OperatorSpec:
     bindings = {column.concept: column for column in columns}
 
     def name(value: str) -> str:
@@ -332,7 +363,7 @@ def _apply_bindings(
             update={"args": tuple(expression(argument) for argument in value.args)}
         )
 
-    return operation.model_copy(
+    bound_operation = operation.model_copy(
         update={
             "columns": tuple(name(column) for column in operation.columns),
             "predicate": (
@@ -360,28 +391,42 @@ def _apply_bindings(
                 for item in operation.expressions
             ),
             "sort": tuple(
-                item.model_copy(update={"column": name(item.column)})
-                for item in operation.sort
+                item.model_copy(update={"column": name(item.column)}) for item in operation.sort
             ),
             "join_keys": tuple(
-                item.model_copy(
-                    update={"left": name(item.left), "right": name(item.right)}
-                )
+                item.model_copy(update={"left": name(item.left), "right": name(item.right)})
                 for item in operation.join_keys
             ),
             "pivot_index": tuple(name(column) for column in operation.pivot_index),
             "pivot_column": (
-                name(operation.pivot_column)
-                if operation.pivot_column is not None
-                else None
+                name(operation.pivot_column) if operation.pivot_column is not None else None
             ),
             "pivot_value": (
-                name(operation.pivot_value)
-                if operation.pivot_value is not None
-                else None
+                name(operation.pivot_value) if operation.pivot_value is not None else None
             ),
         }
     )
+    if isinstance(bound_operation, OperatorSpecV1):
+        changes: dict[str, object] = {
+            "partition_by": tuple(name(column) for column in bound_operation.partition_by),
+        }
+        for field in ("window", "date", "explode", "impute"):
+            payload = getattr(bound_operation, field)
+            if payload is not None:
+                update: dict[str, object] = {}
+                if payload.column is not None:
+                    update["column"] = name(payload.column)
+                if field == "impute":
+                    update["value"] = expression(payload.value)
+                changes[field] = payload.model_copy(update=update)
+        if bound_operation.unpivot is not None:
+            changes["unpivot"] = bound_operation.unpivot.model_copy(
+                update={
+                    "columns": tuple(name(column) for column in bound_operation.unpivot.columns),
+                }
+            )
+        return bound_operation.model_copy(update=changes)
+    return bound_operation
 
 
 def _reachable(output_id: str, nodes: dict[str, PhysicalNode]) -> set[str]:

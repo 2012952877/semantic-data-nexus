@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from query_runtime.domain import ExpressionKind, ScalarType, TypedExpression
@@ -53,19 +54,36 @@ def quote_identifier(identifier: str, available: set[str] | None = None) -> str:
 
 
 def render_expression(
-    expression: TypedExpression, available_columns: set[str]
+    expression: TypedExpression, available_columns: set[str], *, exact_literals: bool = False
 ) -> RenderedExpression:
     if expression.kind is ExpressionKind.COLUMN:
         assert expression.column is not None
-        return RenderedExpression(
-            quote_identifier(expression.column, available_columns), ()
-        )
+        return RenderedExpression(quote_identifier(expression.column, available_columns), ())
     if expression.kind is ExpressionKind.LITERAL:
+        if exact_literals and expression.data_type is ScalarType.DECIMAL:
+            if expression.value is None:
+                return RenderedExpression("CAST(? AS DECIMAL(38, 0))", (None,))
+            if not isinstance(expression.value, str):
+                raise OperatorFailure("EXPRESSION_TYPE", "Exact decimal literals require strings")
+            try:
+                value = Decimal(expression.value)
+            except InvalidOperation as exc:
+                raise OperatorFailure("EXPRESSION_TYPE", "Invalid decimal literal") from exc
+            if not value.is_finite():
+                raise OperatorFailure("EXPRESSION_TYPE", "Decimal must be finite")
+            scale = max(0, -int(value.as_tuple().exponent))
+            precision = max(1, len(value.as_tuple().digits), value.adjusted() + scale + 1)
+            if precision > 38 or scale > 38:
+                raise OperatorFailure("EXPRESSION_TYPE", "Decimal exceeds precision 38")
+            return RenderedExpression(f"CAST(? AS DECIMAL(38, {scale}))", (str(value),))
         return RenderedExpression(
             f"CAST(? AS {_SQL_TYPES[expression.data_type]})",
             (expression.value,),
         )
-    rendered = tuple(render_expression(arg, available_columns) for arg in expression.args)
+    rendered = tuple(
+        render_expression(arg, available_columns, exact_literals=exact_literals)
+        for arg in expression.args
+    )
     parameters = tuple(param for item in rendered for param in item.parameters)
     if expression.kind in _BINARY:
         _require_arity(expression, 2)
@@ -87,9 +105,7 @@ def render_expression(
         return RenderedExpression(f"({rendered[0].sql} IS NULL)", parameters)
     if expression.kind is ExpressionKind.COALESCE:
         if not rendered:
-            raise OperatorFailure(
-                "EXPRESSION_ARITY", "coalesce requires at least one argument"
-            )
+            raise OperatorFailure("EXPRESSION_ARITY", "coalesce requires at least one argument")
         return RenderedExpression(
             f"COALESCE({', '.join(item.sql for item in rendered)})", parameters
         )
