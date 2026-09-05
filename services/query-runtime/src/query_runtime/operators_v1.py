@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -9,7 +11,7 @@ import pyarrow as pa
 from query_runtime.domain import OperatorKind, OperatorSpecV1, ScalarType
 from query_runtime.errors import OperatorFailure
 from query_runtime.expressions import quote_identifier
-from query_runtime.scalar_values import scalar_value
+from query_runtime.scalar_values import NativeScalar, decimal_shape, scalar_value
 
 if TYPE_CHECKING:
     from query_runtime.operators import DuckDBOperatorExecutor
@@ -32,6 +34,31 @@ def _new_name(name: str, columns: set[str]) -> str:
     if name.lower() in {column.lower() for column in columns}:
         raise OperatorFailure("COLUMN_COLLISION", "Extension output collides with input")
     return quote_identifier(name)
+
+
+def _validate_imputation_value(value: NativeScalar, target: pa.DataType) -> None:
+    if pa.types.is_integer(target):
+        assert type(value) is int
+        bits = target.bit_width
+        minimum = 0 if pa.types.is_unsigned_integer(target) else -(2 ** (bits - 1))
+        if not minimum <= value < minimum + 2**bits:
+            raise _invalid("IMPUTE replacement cannot be represented without loss")
+    elif pa.types.is_decimal(target):
+        assert isinstance(value, Decimal)
+        integer_digits, scale = decimal_shape(value)
+        discarded = max(0, scale - target.scale)
+        if integer_digits > target.precision - target.scale or (
+            discarded and any(value.as_tuple().digits[-discarded:])
+        ):
+            raise _invalid("IMPUTE replacement cannot be represented without loss")
+    elif pa.types.is_timestamp(target):
+        assert isinstance(value, datetime)
+        elapsed = value - datetime(1970, 1, 1)
+        microseconds = (elapsed.days * 86400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+        divisor = {"s": 1_000_000, "ms": 1000, "us": 1, "ns": 1}[target.unit]
+        units = microseconds // divisor if target.unit != "ns" else microseconds * 1000
+        if microseconds % divisor or not -(2**63) <= units < 2**63:
+            raise _invalid("IMPUTE replacement cannot be represented without loss")
 
 
 def _row_json(columns: list[str]) -> str:
@@ -197,6 +224,7 @@ def build_extension_query(
             raise _invalid("IMPUTE literal must match the target type")
         executor.render(literal, columns, exact=True)
         replacement = scalar_value(literal.data_type.value, literal.value)
+        _validate_imputation_value(replacement, target_type)
         try:
             replacement = pa.scalar(replacement, type=target_type).as_py()
         except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:

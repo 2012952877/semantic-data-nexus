@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -54,6 +55,9 @@ def scalar_value(kind: str, value: ScalarValue) -> NativeScalar:
         except ValueError as exc:
             raise ValueError("Invalid date literal") from exc
     if kind == "timestamp" and isinstance(value, str):
+        fraction = re.search(r"[.,](\d+)", value)
+        if fraction is not None and any(digit != "0" for digit in fraction[1][6:]):
+            raise ValueError("Timestamp literal exceeds microsecond precision")
         try:
             timestamp = datetime.fromisoformat(value)
         except ValueError as exc:

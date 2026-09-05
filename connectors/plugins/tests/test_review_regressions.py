@@ -348,6 +348,7 @@ async def test_v1_required_forms_are_rejected_before_source_io(
         (ScalarType.DATE, 20240229),
         (ScalarType.TIMESTAMP, "not-a-timestamp"),
         (ScalarType.TIMESTAMP, "2024-02-29T01:02:03+01:00"),
+        (ScalarType.TIMESTAMP, "2024-02-29T01:02:03.1234567"),
     ],
 )
 async def test_invalid_imputation_literals_rejected_before_source_io(
@@ -466,3 +467,34 @@ def test_plugin_conformance_is_mandatory_in_the_unfiltered_m0_gate() -> None:
     assert "PLUGIN_CONFORMANCE: ${{ needs.plugin_conformance.result }}" in release_gate
     assert '"plugin_conformance=$PLUGIN_CONFORMANCE"' in release_gate
     assert '[ "$result" != "success" ]' in release_gate
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "target"),
+    [
+        (ScalarType.INTEGER, 32768, pa.int16()),
+        (ScalarType.DECIMAL, "1.234", pa.decimal128(12, 2)),
+        (ScalarType.DECIMAL, "1234", pa.decimal128(4, 2)),
+        (ScalarType.TIMESTAMP, "2024-02-29T01:02:03.000001", pa.timestamp("ms")),
+        (ScalarType.TIMESTAMP, "9999-01-01T00:00:00", pa.timestamp("ns")),
+    ],
+)
+def test_lossy_target_conversion_is_rejected_before_arrow_scalar(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: ScalarType,
+    value: str | int,
+    target: pa.DataType,
+) -> None:
+    table = pa.table({"x": pa.array([None], target)})
+    operation = OperatorSpecV1(
+        version="query-runtime/v1",
+        kind=OperatorKind.IMPUTE,
+        impute=ImputeSpec(column="x", value=TypedExpression.literal(value, kind)),
+    )
+
+    def forbidden_conversion(*args: object, **kwargs: object) -> None:
+        pytest.fail("Lossy imputation must be denied before calling Arrow scalar conversion")
+
+    monkeypatch.setattr(pa, "scalar", forbidden_conversion)
+    with pytest.raises(OperatorFailure, match="without loss"):
+        DuckDBComputePlugin()._build_query(operation, (table,))
