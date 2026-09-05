@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:semantic-data-nexus:product:common:v1",
+  "$defs": {
+    "timestamp": {
+      "description": "RFC 3339 profile: timezone required, microsecond precision, no leap seconds.",
+      "type": "string", "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,6})?([Zz]|[+-][0-9]{2}:[0-5][0-9])(?![\\s\\S])"
+    },
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]*(?![\\s\\S])"},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant_id", "workspace_id"],
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/id"},
+        "workspace_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_id", "issuer", "subject"],
+      "properties": {
+        "principal_id": {"$ref": "#/$defs/id"},
+        "issuer": {"type": "string", "format": "uri", "maxLength": 2048, "pattern": "^https://[^\\s?#@]+(?![\\s\\S])"},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^\\s]+(?![\\s\\S])"}
+      }
+    },
+    "secretReference": {
+      "description": "Opaque resolver-owned reference, never a secret value or signed URL.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["store", "name", "version"],
+      "properties": {
+        "store": {"$ref": "#/$defs/id"},
+        "name": {"$ref": "#/$defs/id"},
+        "version": {"$ref": "#/$defs/id"}
+      }
+    }
+  }
+}
