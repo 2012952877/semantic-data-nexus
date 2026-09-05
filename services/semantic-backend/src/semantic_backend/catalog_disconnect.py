@@ -88,11 +88,17 @@ async def run_connected[T](
             work.add_done_callback(_observe)
         return Response(status_code=499)
     finally:
-        CATALOG_ABORT.reset(token)
-        lost.cancel()
-        await asyncio.gather(lost, return_exceptions=True)
+        # Establish cancellation and ownership before any cancellation checkpoint.
+        # Starlette's outer AnyIO cancel scope may cancel every subsequent await.
         if not work.done() and work not in _LATE_OPERATIONS:
             disconnected.set()
             work.cancel()
             _LATE_OPERATIONS.add(work)
             work.add_done_callback(_observe)
+        CATALOG_ABORT.reset(token)
+        if not lost.done():
+            lost.cancel()
+            _LATE_OPERATIONS.add(lost)
+            lost.add_done_callback(_observe)
+        else:
+            _observe(lost)

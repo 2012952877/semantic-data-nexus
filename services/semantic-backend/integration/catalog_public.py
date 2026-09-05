@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
+import anyio
 import httpx
 import jwt
 import psycopg
@@ -761,3 +762,101 @@ async def test_disconnect_after_committed_result_does_not_overwrite_terminal_sta
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("route", ["query", "resume"])
+@pytest.mark.parametrize("cancel_mode", ["outer_task", "anyio_scope"])
+async def test_outer_asgi_cancellation_owns_operation_before_cancel_checkpoints(
+    public_case, monkeypatch, route, cancel_mode
+):
+    from semantic_backend.catalog_disconnect import _LATE_OPERATIONS, CATALOG_ABORT
+
+    case = public_case
+    payload = query_payload(case["cases"][1])
+    path = "/v1/catalog/queries"
+    if route == "resume":
+        payload["question"] = "yield for alpha above score 1"
+        first = (await signed(case, path, payload)).json()
+        path = f"/v1/catalog/clarifications/{first['compilation']['clarification_id']}/answers"
+        payload = {
+            "contract_version": "catalog-answer/v1",
+            "catalog": payload["catalog"],
+            "revision": 1,
+            "choice_id": "lab.mean_yield",
+        }
+    entered, release = asyncio.Event(), asyncio.Event()
+    operation_tasks, aborts = [], []
+    original = CatalogHTTPProvider.invoke
+
+    async def resistant(self, context, **kwargs):
+        result = await original(self, context, **kwargs)
+        operation_tasks.append(asyncio.current_task())
+        aborts.append(CATALOG_ABORT.get())
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass
+        return result
+
+    monkeypatch.setattr(CatalogHTTPProvider, "invoke", resistant)
+    body, headers = signed_parts(case, path, payload)
+    incoming = asyncio.Queue()
+    await incoming.put({"type": "http.request", "body": body, "more_body": False})
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "scheme": "http",
+        "method": "POST",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "server": ("backend", 80),
+        "client": ("127.0.0.1", 40000),
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+    }
+    baseline = set(_LATE_OPERATIONS)
+    try:
+        if cancel_mode == "outer_task":
+            task = asyncio.create_task(case["app"](scope, incoming.get, send))
+            await asyncio.wait_for(entered.wait(), 3)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        else:
+            async with anyio.create_task_group() as group:
+                group.start_soon(case["app"], scope, incoming.get, send)
+                await asyncio.wait_for(entered.wait(), 3)
+                group.cancel_scope.cancel()
+        assert aborts[0].is_set()
+        assert operation_tasks[0] in _LATE_OPERATIONS
+        assert not operation_tasks[0].done()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*operation_tasks, return_exceptions=True), 2)
+        assert operation_tasks[0].cancelled()
+        assert operation_tasks[0] not in _LATE_OPERATIONS
+        assert not any(message.get("status") == 200 for message in sent)
+        async with await psycopg.AsyncConnection.connect(case["database"]) as connection:
+            row = await (
+                await connection.execute("SELECT payload FROM compiler_clarifications_v1")
+            ).fetchone()
+            current = json.loads(row[0])["current"]
+            assert current is None or current["status"] == "clarification"
+            assert (
+                await (
+                    await connection.execute(
+                        "SELECT count(*) FROM compiler_catalog_results_v1 WHERE state='completed'"
+                    )
+                ).fetchone()
+            )[0] == 0
+    finally:
+        release.set()
+        await asyncio.gather(*(_LATE_OPERATIONS - baseline), return_exceptions=True)
