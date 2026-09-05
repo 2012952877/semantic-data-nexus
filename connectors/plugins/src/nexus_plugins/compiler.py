@@ -12,7 +12,7 @@ from query_runtime.domain import OperatorKind, OperatorSpec, SourceFragment
 from query_runtime.errors import ResolverFailure
 from query_runtime.expressions import quote_identifier, render_expression
 from query_runtime.operators import ResourceLimits
-from sqlglot import Dialect, TokenType, parse_one
+from sqlglot import Dialect, TokenType, exp, parse_one
 
 from nexus_plugins.contracts import Asset
 from nexus_plugins.types import predicate_supported, validate_predicate
@@ -127,6 +127,10 @@ def compile_read(
         start = marker.end + 1
     pieces.append(sql[start:])
     tree = parse_one("".join(pieces), read="duckdb")
+    if dialect == "postgres":
+        # Psycopg's parameter protocol requires literal percent signs to be doubled.
+        for identifier in tree.find_all(exp.Identifier):
+            identifier.set("this", identifier.name.replace("%", "%%"))
     generated = tree.sql(dialect=dialect)
     return CompiledRead(generated, tuple(parameters), schema)
 

@@ -15,19 +15,30 @@ import pyarrow as pa
 import pytest
 from conftest import SyntheticCredentials, asset, context, fragment
 from query_runtime.domain import (
+    AggregateSpec,
     BoundPredicate,
+    ExecutionState,
     ExpressionKind,
     OperatorKind,
     OperatorSpec,
+    OperatorSpecV1,
     ScalarType,
     SortSpec,
     TypedExpression,
 )
 from query_runtime.errors import ResolverFailure, ResourceLimitFailure
 from query_runtime.operators import ResourceLimits
+from query_runtime.planner import ExactConceptBinder, LogicalNode, ValidatedLogicalGraph
+from query_runtime.result_store import InlineResultStore
 
 from nexus_plugins.contracts import CredentialReference
 from nexus_plugins.postgres import PostgreSQLResolver
+from nexus_plugins.runtime import (
+    DuckDBComputePlugin,
+    PluginRuntime,
+    ResolverRegistry,
+    ResultStorePlugin,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -226,3 +237,81 @@ def test_postgres_server_itself_rejects_mutation(
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             connection.execute("DELETE FROM nexus_synthetic.orders")
         connection.rollback()
+
+
+async def test_real_postgres_dispatch_into_shared_compute(
+    database: tuple[dict[str, str], psycopg.Connection[tuple[Any, ...]]],
+) -> None:
+    settings, _ = database
+    registry = ResolverRegistry([plugin(settings)])
+    graph = ValidatedLogicalGraph(
+        version="query-runtime/v1",
+        id="pg-dispatch",
+        output_node_id="sum",
+        nodes=(
+            LogicalNode(
+                id="source", source_alias="orders", operation=OperatorSpec(kind=OperatorKind.SOURCE)
+            ),
+            LogicalNode(
+                id="sum",
+                dependencies=("source",),
+                operation=OperatorSpecV1(
+                    version="query-runtime/v1",
+                    kind=OperatorKind.SUMMARIZE,
+                    aggregates=(
+                        AggregateSpec(
+                            name="amount_sum",
+                            function="sum",
+                            expression=TypedExpression.col("amount", ScalarType.DECIMAL),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    results = ResultStorePlugin(InlineResultStore())
+    outcome = await PluginRuntime(registry, DuckDBComputePlugin(), results).run(
+        await registry.plan(graph, ExactConceptBinder({})),
+    )
+    assert outcome.summary.state is ExecutionState.SUCCEEDED
+    assert outcome.manifest is not None
+    table = await results.read_page(outcome.manifest.result, 0, 10)
+    assert table["amount_sum"][0].as_py() == Decimal("1.123456789012")
+
+
+async def test_real_postgres_quoted_percent_identifier_and_parameter_order(
+    database: tuple[dict[str, str], psycopg.Connection[tuple[Any, ...]]],
+) -> None:
+    settings, admin = database
+    column = "name%with?marker"
+    admin.execute('ALTER TABLE nexus_synthetic.orders RENAME name TO "name%with?marker"')
+    schema = pa.schema(
+        [pa.field(column if field.name == "name" else field.name, field.type) for field in SCHEMA]
+    )
+    item = asset("postgresql", schema=schema, table=("nexus_synthetic", "orders"))
+    resolver = PostgreSQLResolver(
+        [item],
+        CredentialReference(id="credential:synthetic-postgres"),
+        SyntheticCredentials(settings),
+    )
+    predicate = BoundPredicate(
+        expression=TypedExpression(
+            kind=ExpressionKind.EQUAL,
+            data_type=ScalarType.BOOLEAN,
+            args=(
+                TypedExpression.col(column, ScalarType.STRING),
+                TypedExpression.literal("quoted ' ; synthetic", ScalarType.STRING),
+            ),
+        )
+    )
+    result = await resolver.execute_validated_fragment(
+        context(),
+        fragment(
+            item,
+            OperatorSpec(kind=OperatorKind.FILTER, predicate=predicate),
+            OperatorSpec(kind=OperatorKind.SELECT, columns=("id", column)),
+            OperatorSpec(kind=OperatorKind.LIMIT, limit=1),
+        ),
+        asyncio.Event(),
+    )
+    assert result.to_pylist() == [{"id": 1, column: "quoted ' ; synthetic"}]
