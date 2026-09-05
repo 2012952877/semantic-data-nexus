@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse, Response
 from psycopg import Error as PostgresError
 from query_runtime.errors import RuntimeFailure
 from semantic_api.catalog_v1.models import CatalogCompileRequest, CompilerFailure
@@ -12,6 +12,7 @@ from semantic_api.catalog_v1.models import CatalogCompileRequest, CompilerFailur
 from semantic_backend.auth_context import AccessDenied, get_trusted_context, legacy_development
 from semantic_backend.auth_middleware import ServiceAuthentication
 from semantic_backend.authorization import PostgresAuthorization
+from semantic_backend.catalog_disconnect import DISCONNECT_KEY, CatalogDisconnect, run_connected
 from semantic_backend.catalog_models import CatalogAnswerRequest, CatalogQueryResponse
 from semantic_backend.catalog_service import CatalogQueryService
 from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
@@ -57,6 +58,7 @@ def create_app(
         # Validate key/configuration at construction, not on the first user's request.
         ServiceAuthentication(app, authority=authority)
         app.add_middleware(ServiceAuthentication, authority=authority)
+    app.add_middleware(CatalogDisconnect)
 
     @app.exception_handler(AccessDenied)
     async def denied(_request: object, _exception: AccessDenied) -> JSONResponse:
@@ -181,17 +183,24 @@ def create_app(
         return catalog_service
 
     @app.post("/v1/catalog/queries", response_model=CatalogQueryResponse)
-    async def catalog_query(request: CatalogCompileRequest) -> CatalogQueryResponse:
+    async def catalog_query(
+        request: CatalogCompileRequest, http: Request
+    ) -> CatalogQueryResponse | Response:
         catalog = enabled_catalog()
-        return await catalog_call(catalog.query(request, get_trusted_context()))
+        return await run_connected(
+            catalog_call(catalog.query(request, get_trusted_context())), http.scope[DISCONNECT_KEY]
+        )
 
     @app.post(
         "/v1/catalog/clarifications/{identifier}/answers", response_model=CatalogQueryResponse
     )
     async def catalog_answer(
-        identifier: str, request: CatalogAnswerRequest
-    ) -> CatalogQueryResponse:
+        identifier: str, request: CatalogAnswerRequest, http: Request
+    ) -> CatalogQueryResponse | Response:
         catalog = enabled_catalog()
-        return await catalog_call(catalog.answer(identifier, request, get_trusted_context()))
+        return await run_connected(
+            catalog_call(catalog.answer(identifier, request, get_trusted_context())),
+            http.scope[DISCONNECT_KEY],
+        )
 
     return app

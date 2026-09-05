@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from semantic_api.catalog_v1.guard import AuthorizationDecision
 from semantic_api.catalog_v1.models import ResourceVersion
@@ -12,20 +13,23 @@ from semantic_backend.auth_context import AccessDenied, WorkspaceScope
 from semantic_backend.auth_context import ResourceVersion as BackendResourceVersion
 from semantic_backend.auth_context import TrustedContext as BackendTrustedContext
 from semantic_backend.authorization import PostgresAuthorization
+from semantic_backend.catalog_disconnect import require_connected
 
 
 class CatalogAuthorization:
     def __init__(self, authority: PostgresAuthorization) -> None:
         self.authority = authority
 
-    def guard(
+    @asynccontextmanager
+    async def guard(
         self,
         context: TrustedContext,
         pin: ResourceVersion | None = None,
         permission: str = "run.reader",
         *,
         deadline: float | None = None,
-    ) -> AbstractAsyncContextManager[AuthorizationDecision]:
+    ) -> AsyncIterator[AuthorizationDecision]:
+        require_connected()
         if not isinstance(context, BackendTrustedContext):
             raise AccessDenied("A verified backend context is required.")
         converted = (
@@ -42,7 +46,12 @@ class CatalogAuthorization:
                 content_sha256=pin.content_sha256,
             )
         )
-        return self.authority.guard(context, converted, permission, deadline=deadline)
+        async with self.authority.guard(
+            context, converted, permission, deadline=deadline
+        ) as decision:
+            require_connected()
+            yield decision
+            require_connected()
 
     async def require(
         self, context: TrustedContext, pin: ResourceVersion, permission: str = "compiler:query"

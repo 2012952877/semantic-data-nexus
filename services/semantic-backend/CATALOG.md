@@ -24,6 +24,20 @@ Expired uncertain executions remain `RUNTIME_OUTCOME_UNKNOWN`; they are not
 automatically retried. This small result reservation is not the #34 durable
 worker/event/history system.
 
+A single catalog-only ASGI receiver preserves the request body used by service
+signature verification and observes disconnect messages. Disconnect races cancel
+the owned operation with bounded settlement; retained late work cannot enter or
+commit an authorization guard. A result committed before disconnect remains a
+valid terminal result. The BFF forwards request cancellation rather than treating
+an aborted browser request as a successful operation.
+
+Timestamp source strings reject nonzero sub-microsecond fractions before Python
+datetime parsing, while redundant zeroes and valid offsets remain lossless.
+Public integer results use the shared JSON safe-integer range. Values outside
+that range are not rounded or cast to float: `RESULT_INTEGER_OUT_OF_RANGE` is
+recorded as an authorized terminal failed result. Repeating the same request
+replays that typed failure rather than leaving an indefinite in-flight reservation.
+
 The public composition uses the merged `query-runtime/v1` and `PluginRuntime`.
 Source fragments retain the reviewed v0 SOURCE/SELECT grammar; local operations
 are explicitly typed `OperatorSpecV1`. The compiler still advertises only its

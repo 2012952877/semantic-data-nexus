@@ -71,7 +71,7 @@ jobs:
         run: |
           python -m pip install -e connectors/databricks -e connectors/plugins -e evals -e services/semantic-api -e services/query-runtime -e "services/semantic-backend[dev]"
           python -m pytest services/semantic-backend/integration/postgres_authorization.py services/semantic-backend/integration/catalog_public.py --junitxml=identity-postgres.xml
-          python -c "import xml.etree.ElementTree as E; r=E.parse('identity-postgres.xml'); cases=r.findall('.//testcase'); assert len(cases)>=16; assert not r.findall('.//skipped')"
+          python -c "import xml.etree.ElementTree as E; r=E.parse('identity-postgres.xml'); cases=r.findall('.//testcase'); assert len(cases)>=29; assert not r.findall('.//skipped')"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

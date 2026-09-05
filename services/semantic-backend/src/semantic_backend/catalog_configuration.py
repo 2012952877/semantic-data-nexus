@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -38,6 +39,28 @@ class CatalogEntry(Frozen):
 class CatalogConfiguration(Frozen):
     contract_version: Literal["catalog-server/v1"]
     entries: tuple[CatalogEntry, ...] = Field(min_length=1, max_length=32)
+
+
+def source_timestamp(value: str, *, naive_utc: bool) -> datetime:
+    match = re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}"
+        r"(?:[.,](?P<fraction>\d+))?(?:[Zz]|[+-]\d{2}:\d{2})?",
+        value,
+    )
+    if match is None:
+        raise CompilerFailure("SOURCE_TYPE_MISMATCH")
+    fraction = match.group("fraction") or ""
+    if any(digit != "0" for digit in fraction[6:]):
+        raise CompilerFailure("SOURCE_TIME_PRECISION")
+    try:
+        instant = datetime.fromisoformat(value[:-1] + "Z" if value.endswith("z") else value)
+    except ValueError:
+        raise CompilerFailure("SOURCE_TYPE_MISMATCH") from None
+    if instant.tzinfo is None:
+        if not naive_utc:
+            raise CompilerFailure("SOURCE_TIMEZONE_REQUIRED")
+        instant = instant.replace(tzinfo=UTC)
+    return instant
 
 
 class SyntheticCatalogResolver(GovernedResolver):
@@ -125,11 +148,9 @@ class CatalogRegistry:
                                 continue
                             if not isinstance(value, str):
                                 raise CompilerFailure("SOURCE_TYPE_MISMATCH")
-                            instant = datetime.fromisoformat(value)
-                            if instant.tzinfo is None:
-                                if column.naive_timestamp_timezone != "UTC":
-                                    raise CompilerFailure("SOURCE_TIMEZONE_REQUIRED")
-                                instant = instant.replace(tzinfo=UTC)
+                            instant = source_timestamp(
+                                value, naive_utc=column.naive_timestamp_timezone == "UTC"
+                            )
                             parsed.append(instant)
                         arrays.append(pa.array(parsed, type=arrow_type, safe=True))
                     else:

@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
 import psycopg
+import pyarrow as pa
+from pydantic import ValidationError
 from query_runtime.operators import ResourceLimits
 from semantic_api.catalog_v1.catalog import fingerprint
 from semantic_api.catalog_v1.clarification import PostgresClarifications
@@ -39,6 +42,61 @@ from semantic_backend.service import OrchestrationService
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 RUNTIME_VERSION: Literal["query-runtime/v1"] = "query-runtime/v1"
+
+
+class PublicResultFailure(CompilerFailure):
+    pass
+
+
+def public_result(table: pa.Table, compilation: Compilation) -> ResultSet:
+    assert compilation.graph is not None
+    columns = []
+    for index, field in enumerate(table.schema):
+        kind = (
+            ScalarType.INTEGER
+            if compilation.graph.result_schema[index].data_type == "integer"
+            else OrchestrationService._scalar_type(str(field.type))
+        )
+        display = (
+            ColumnFormat.TIMESTAMP
+            if kind is ScalarType.TIMESTAMP
+            else ColumnFormat.DATE
+            if kind is ScalarType.DATE
+            else ColumnFormat.NUMBER
+            if kind in {ScalarType.INTEGER, ScalarType.FLOAT, ScalarType.DECIMAL}
+            else ColumnFormat.TEXT
+        )
+        columns.append(
+            ResultColumn(
+                key=field.name,
+                label=field.name,
+                data_type=kind,
+                format=display,
+                nullable=field.nullable,
+            )
+        )
+    rows = []
+    for raw in table.to_pylist():
+        row = []
+        for column in columns:
+            value = raw[column.key]
+            if column.data_type is ScalarType.INTEGER and value is not None:
+                if (
+                    isinstance(value, Decimal)
+                    and value.is_finite()
+                    and value == value.to_integral_value()
+                ):
+                    value = int(value)
+                if type(value) is not int:
+                    raise PublicResultFailure("RESULT_INTEGER_TYPE")
+                if abs(value) > 9_007_199_254_740_991:
+                    raise PublicResultFailure("RESULT_INTEGER_OUT_OF_RANGE")
+            row.append(OrchestrationService._json_scalar(value, column.data_type))
+        rows.append(row)
+    try:
+        return ResultSet(columns=columns, rows=rows, row_count=table.num_rows, truncated=False)
+    except ValidationError:
+        raise PublicResultFailure("RESULT_SCALAR_UNREPRESENTABLE") from None
 
 
 class CatalogQueryService:
@@ -112,12 +170,25 @@ class CatalogQueryService:
                     compilation_sha text NOT NULL,
                     run_id text NOT NULL UNIQUE,
                     policy_sha text NOT NULL,
-                    state text NOT NULL
-                        CHECK (state IN ('in_flight','completed','outcome_unknown')),
+                    state text NOT NULL,
                     deadline_at timestamptz NOT NULL,
                     response text CHECK (octet_length(response) <= 8388608),
+                    failure_code text,
                     PRIMARY KEY(record_id,compilation_sha)
                 )
+                """)
+                await connection.execute("""
+                    ALTER TABLE compiler_catalog_results_v1
+                    ADD COLUMN IF NOT EXISTS failure_code text
+                """)
+                await connection.execute("""
+                    ALTER TABLE compiler_catalog_results_v1
+                    DROP CONSTRAINT IF EXISTS compiler_catalog_results_v1_state_check
+                """)
+                await connection.execute("""
+                    ALTER TABLE compiler_catalog_results_v1
+                    ADD CONSTRAINT compiler_catalog_results_v1_state_check
+                    CHECK (state IN ('in_flight','completed','outcome_unknown','failed'))
                 """)
 
     async def shutdown(self) -> None:
@@ -294,7 +365,8 @@ class CatalogQueryService:
             record_id = stored.record.id
             row = await (
                 await decision.connection.execute(
-                    """SELECT run_id,policy_sha,state,response,deadline_at>clock_timestamp()
+                    """SELECT run_id,policy_sha,state,response,
+                              deadline_at>clock_timestamp(),failure_code
                        FROM compiler_catalog_results_v1
                        WHERE record_id=%s AND compilation_sha=%s FOR UPDATE""",
                     (record_id, compilation_sha),
@@ -313,6 +385,15 @@ class CatalogQueryService:
                         or outcome.run_id != row[0]
                     ):
                         raise CompilerFailure("RUNTIME_RESULT_INVALID")
+                elif row[2] == "failed":
+                    if row[5] not in {
+                        "RESULT_INTEGER_TYPE",
+                        "RESULT_INTEGER_OUT_OF_RANGE",
+                        "RESULT_SCALAR_UNREPRESENTABLE",
+                    }:
+                        raise CompilerFailure("RUNTIME_RESULT_INVALID")
+                    assert isinstance(row[5], str)
+                    rejection = row[5]
                 else:
                     unknown = row[2] == "outcome_unknown" or not row[4]
                     if unknown:
@@ -362,36 +443,25 @@ class CatalogQueryService:
             limits=self.limits,
             runtime_version=RUNTIME_VERSION,
         )
-        columns = []
-        for field in execution.table.schema:
-            kind = OrchestrationService._scalar_type(str(field.type))
-            display = (
-                ColumnFormat.TIMESTAMP
-                if kind is ScalarType.TIMESTAMP
-                else ColumnFormat.DATE
-                if kind is ScalarType.DATE
-                else ColumnFormat.NUMBER
-                if kind in {ScalarType.INTEGER, ScalarType.FLOAT, ScalarType.DECIMAL}
-                else ColumnFormat.TEXT
-            )
-            columns.append(
-                ResultColumn(
-                    key=field.name,
-                    label=field.name,
-                    data_type=kind,
-                    format=display,
-                    nullable=field.nullable,
+        try:
+            result = public_result(execution.table, compilation)
+        except PublicResultFailure as error:
+            async with self.authorization.guard(
+                context, request.catalog, "compiler:query", deadline=deadline
+            ) as decision:
+                stored = await self.store.lock(decision.connection, record_id, owner)
+                self.compiler._fresh(
+                    stored, context, entry.document, self.compiler._access(decision)
                 )
-            )
-        result = ResultSet(
-            columns=columns,
-            row_count=execution.table.num_rows,
-            truncated=False,
-            rows=[
-                [OrchestrationService._json_scalar(row[c.key], c.data_type) for c in columns]
-                for row in execution.table.to_pylist()
-            ],
-        )
+                cursor = await decision.connection.execute(
+                    """UPDATE compiler_catalog_results_v1 SET state='failed',failure_code=%s
+                       WHERE record_id=%s AND compilation_sha=%s AND policy_sha=%s
+                         AND state='in_flight' AND deadline_at>clock_timestamp()""",
+                    (error.code, record_id, compilation_sha, policy_sha),
+                )
+                if cursor.rowcount != 1:
+                    raise CompilerFailure("RUNTIME_FENCED") from None
+            raise
         response = CatalogQueryResponse(
             request_id=request.request_id,
             status="succeeded",

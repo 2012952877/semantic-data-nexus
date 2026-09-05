@@ -23,7 +23,7 @@ from postgres_authorization import context_for
 from postgres_authorization import database as database
 from query_runtime.domain import BoundSource, CapabilityCatalog, OperatorKind
 from query_runtime.resolver import FakeResolver
-from semantic_api.catalog_v1.catalog import pin_for
+from semantic_api.catalog_v1.catalog import fingerprint, pin_for
 from semantic_api.catalog_v1.models import CatalogDocument
 from semantic_api.catalog_v1.provider import CatalogHTTPProvider
 from semantic_api.compiler import SemanticCompiler
@@ -38,6 +38,7 @@ from semantic_backend.catalog_configuration import (
     CatalogConfiguration,
     CatalogEntry,
     CatalogRegistry,
+    SyntheticCatalogResolver,
 )
 from semantic_backend.catalog_service import CatalogQueryService
 from semantic_backend.service import OrchestrationService
@@ -167,7 +168,7 @@ async def model_server(candidates):
 
 
 @pytest_asyncio.fixture
-async def public_case(database, monkeypatch):
+async def public_case(database, monkeypatch, request):
     monkeypatch.setenv("SEMANTIC_NEXUS_AUTH_MODE", "service")
     monkeypatch.setenv("SEMANTIC_NEXUS_ENVIRONMENT", "Development")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -178,7 +179,12 @@ async def public_case(database, monkeypatch):
         .decode(),
     )
     context = context_for()
-    cases, entries = zip(*(prepared_case(index, context) for index in range(2)), strict=True)
+    if hasattr(request, "param"):
+        integer = request.param
+        case, entry = integer_case(integer, context)
+        cases, entries = (case,), (entry,)
+    else:
+        cases, entries = zip(*(prepared_case(index, context) for index in range(2)), strict=True)
     registry = CatalogRegistry(
         CatalogConfiguration(contract_version="catalog-server/v1", entries=entries)
     )
@@ -251,6 +257,9 @@ async def public_case(database, monkeypatch):
                     "entered": entered,
                     "release": release,
                     "authority": authority,
+                    "app": app,
+                    "service": service,
+                    "provider": provider,
                 }
 
 
@@ -263,7 +272,7 @@ def query_payload(case):
     }
 
 
-async def signed(case, path, payload, context=None, token=None):
+def signed_parts(case, path, payload, context=None, token=None):
     context = context or case["context"]
     body = json.dumps(payload, separators=(",", ":")).encode()
     now = int(time.time())
@@ -284,13 +293,128 @@ async def signed(case, path, payload, context=None, token=None):
         algorithm="RS256",
         headers={"typ": "nexus-service+jwt"},
     )
-    return await case["client"].post(
-        path,
-        content=body,
-        headers={
-            "Authorization": "Bearer " + assertion,
-            "Content-Type": "application/json",
+    return body, {
+        "Authorization": "Bearer " + assertion,
+        "Content-Type": "application/json",
+    }
+
+
+async def signed(case, path, payload, context=None, token=None):
+    body, headers = signed_parts(case, path, payload, context, token)
+    return await case["client"].post(path, content=body, headers=headers)
+
+
+async def start_signed_asgi(case, path, payload):
+    body, headers = signed_parts(case, path, payload)
+    incoming = asyncio.Queue()
+    midpoint = len(body) // 2
+    await incoming.put({"type": "http.request", "body": body[:midpoint], "more_body": True})
+    await incoming.put({"type": "http.request", "body": body[midpoint:], "more_body": False})
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "scheme": "http",
+        "method": "POST",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "server": ("backend", 80),
+        "client": ("127.0.0.1", 40000),
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+    }
+    return asyncio.create_task(case["app"](scope, incoming.get, send)), incoming, sent
+
+
+def integer_case(value, context):
+    binding = {
+        "entity_id": "integer.sample",
+        "alias": "integers",
+        "source_type": "synthetic",
+        "object_name": "synthetic_integers",
+        "columns": {"integer.sample.value": "value"},
+        "utc_naive_fields": [],
+    }
+    document = CatalogDocument.model_validate(
+        {
+            "contract_version": "compiler-catalog/v1",
+            "scope": context.scope.model_dump(mode="json"),
+            "resource_id": "integer-catalog",
+            "revision": 1,
+            "bindings_sha256": fingerprint(
+                {"contract_version": "catalog-binding-content/v1", "entities": [binding]}
+            ),
+            "entities": [{"id": "integer.sample", "label": "Samples"}],
+            "fields": [
+                {
+                    "id": "integer.sample.value",
+                    "label": "Value",
+                    "entity_id": "integer.sample",
+                    "data_type": "integer",
+                }
+            ],
+        }
+    )
+    pin = pin_for(document)
+    candidate = {
+        "contract_version": "compiler-candidate/v1",
+        "status": "graph",
+        "ambiguity_id": None,
+        "graph": {
+            "contract_version": "sqg/v1",
+            "catalog": pin.model_dump(mode="json"),
+            "nodes": [
+                {
+                    "id": "select",
+                    "dependencies": [],
+                    "operation": {
+                        "kind": "SELECT",
+                        "entity_id": "integer.sample",
+                        "columns": ["integer.sample.value"],
+                    },
+                },
+                {
+                    "id": "project",
+                    "dependencies": ["select"],
+                    "operation": {
+                        "kind": "PROJECT",
+                        "columns": [{"source": "integer.sample.value", "alias": "value"}],
+                    },
+                },
+            ],
+            "output_node_id": "project",
+            "result_schema": [{"name": "value", "data_type": "integer"}],
         },
+    }
+    bindings = CatalogBindings(
+        contract_version="catalog-bindings/v1",
+        catalog=pin,
+        entities=(
+            EntityBinding(
+                entity_id="integer.sample",
+                source=BoundSource(
+                    alias="integers", source_type="synthetic", object_name="synthetic_integers"
+                ),
+                fields=(
+                    FieldBinding(
+                        field_id="integer.sample.value",
+                        column_name="value",
+                        data_type=TYPES["integer"],
+                    ),
+                ),
+            ),
+        ),
+    )
+    return {"candidate": candidate, "question": "Value"}, CatalogEntry(
+        document=document,
+        bindings=bindings,
+        rows={"integers": [{"value": value}]},
     )
 
 
@@ -436,3 +560,204 @@ async def test_public_commit_blocks_revoker_until_publication(public_case):
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "succeeded"
     assert (await signed(case, "/v1/catalog/queries", payload)).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "public_case",
+    [
+        9_007_199_254_740_990,
+        9_007_199_254_740_991,
+        9_007_199_254_740_992,
+        -9_007_199_254_740_991,
+        -9_007_199_254_740_992,
+        -(2**63),
+        2**63 - 1,
+    ],
+    indirect=True,
+)
+async def test_public_integer_boundaries_are_exact_or_durable_typed_failures(public_case):
+    case = public_case
+    payload = query_payload(case["cases"][0])
+    value = case["entries"][0].rows["integers"][0]["value"]
+    first = await signed(case, "/v1/catalog/queries", payload)
+    second = await signed(case, "/v1/catalog/queries", payload)
+    if abs(value) <= 9_007_199_254_740_991:
+        assert first.status_code == 200, first.text
+        assert first.json()["result"]["columns"][0]["dataType"] == "integer"
+        assert first.json()["result"]["rows"] == [[value]]
+        assert second.json() == first.json()
+        state = "completed"
+    else:
+        assert first.status_code == 422, first.text
+        assert first.json()["detail"]["code"] == "RESULT_INTEGER_OUT_OF_RANGE"
+        assert second.status_code == 422
+        assert second.json() == first.json()
+        state = "failed"
+    assert len(case["calls"]) == 1
+    async with await psycopg.AsyncConnection.connect(case["database"]) as connection:
+        rows = await (
+            await connection.execute("SELECT state,failure_code FROM compiler_catalog_results_v1")
+        ).fetchall()
+        assert rows == [(state, None if state == "completed" else "RESULT_INTEGER_OUT_OF_RANGE")]
+
+
+@pytest.mark.parametrize("route", ["query", "resume"])
+@pytest.mark.parametrize("phase", ["compile", "execute"])
+async def test_signed_body_disconnect_cancels_catalog_work_before_publication(
+    public_case, monkeypatch, route, phase
+):
+    case = public_case
+    payload = query_payload(case["cases"][1])
+    path = "/v1/catalog/queries"
+    if route == "resume":
+        payload["question"] = "yield for alpha above score 1"
+        initial = (await signed(case, path, payload)).json()
+        path = f"/v1/catalog/clarifications/{initial['compilation']['clarification_id']}/answers"
+        payload = {
+            "contract_version": "catalog-answer/v1",
+            "catalog": payload["catalog"],
+            "revision": 1,
+            "choice_id": "lab.mean_yield",
+        }
+    runtime_entered, runtime_release, runtime_cancelled = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    original_execute = SyntheticCatalogResolver._execute
+
+    async def paused_execute(self, context, fragment, asset):
+        runtime_entered.set()
+        try:
+            await runtime_release.wait()
+        except asyncio.CancelledError:
+            runtime_cancelled.set()
+            raise
+        return await original_execute(self, context, fragment, asset)
+
+    if phase == "compile":
+        case["state"]["pause"] = True
+    else:
+        monkeypatch.setattr(SyntheticCatalogResolver, "_execute", paused_execute)
+    task, incoming, sent = await start_signed_asgi(case, path, payload)
+    try:
+        await asyncio.wait_for(
+            case["entered"].wait() if phase == "compile" else runtime_entered.wait(), 3
+        )
+        await incoming.put({"type": "http.disconnect"})
+        await asyncio.wait_for(task, 2)
+        assert not case["service"]._tasks
+        if phase == "compile":
+            assert not case["provider"]._transport._active
+            assert not runtime_entered.is_set()
+        else:
+            assert runtime_cancelled.is_set()
+        case["release"].set()
+        runtime_release.set()
+        async with await psycopg.AsyncConnection.connect(case["database"]) as connection:
+            assert (
+                await (
+                    await connection.execute(
+                        "SELECT count(*) FROM compiler_catalog_results_v1 WHERE state='completed'"
+                    )
+                ).fetchone()
+            )[0] == 0
+            row = await (
+                await connection.execute("SELECT payload FROM compiler_clarifications_v1")
+            ).fetchone()
+            saved = json.loads(row[0])
+            if phase == "compile":
+                assert saved["current"] is None or saved["current"]["status"] == "clarification"
+        assert not any(m.get("status") == 200 for m in sent)
+    finally:
+        case["release"].set()
+        runtime_release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_disconnect_resistant_model_is_retained_but_cannot_late_commit(
+    public_case, monkeypatch
+):
+    from semantic_backend.catalog_disconnect import _LATE_OPERATIONS
+
+    case = public_case
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = CatalogHTTPProvider.invoke
+
+    async def resistant(self, context, **kwargs):
+        result = await original(self, context, **kwargs)
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+        return result
+
+    monkeypatch.setattr(CatalogHTTPProvider, "invoke", resistant)
+    baseline = set(_LATE_OPERATIONS)
+    task, incoming, sent = await start_signed_asgi(
+        case, "/v1/catalog/queries", query_payload(case["cases"][1])
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        await incoming.put({"type": "http.disconnect"})
+        await asyncio.wait_for(task, 0.35)
+        assert cancelled.is_set()
+        retained = _LATE_OPERATIONS - baseline
+        assert retained
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*retained, return_exceptions=True), 2)
+        assert not retained & _LATE_OPERATIONS
+        async with await psycopg.AsyncConnection.connect(case["database"]) as connection:
+            row = await (
+                await connection.execute("SELECT payload FROM compiler_clarifications_v1")
+            ).fetchone()
+            assert json.loads(row[0])["current"] is None
+            assert (
+                await (
+                    await connection.execute("SELECT count(*) FROM compiler_catalog_results_v1")
+                ).fetchone()
+            )[0] == 0
+        assert not any(m.get("status") == 200 for m in sent)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*(_LATE_OPERATIONS - baseline), return_exceptions=True)
+
+
+async def test_disconnect_after_committed_result_does_not_overwrite_terminal_state(
+    public_case, monkeypatch
+):
+    case = public_case
+    committed, release = asyncio.Event(), asyncio.Event()
+    original = case["service"]._execute
+
+    async def paused(*args, **kwargs):
+        response = await original(*args, **kwargs)
+        committed.set()
+        await release.wait()
+        return response
+
+    monkeypatch.setattr(case["service"], "_execute", paused)
+    payload = query_payload(case["cases"][1])
+    task, incoming, _ = await start_signed_asgi(case, "/v1/catalog/queries", payload)
+    try:
+        await asyncio.wait_for(committed.wait(), 3)
+        await incoming.put({"type": "http.disconnect"})
+        await asyncio.wait_for(task, 2)
+        async with await psycopg.AsyncConnection.connect(case["database"]) as connection:
+            assert (
+                await (
+                    await connection.execute("SELECT state FROM compiler_catalog_results_v1")
+                ).fetchone()
+            )[0] == "completed"
+        monkeypatch.setattr(case["service"], "_execute", original)
+        replay = await signed(case, "/v1/catalog/queries", payload)
+        assert replay.status_code == 200 and replay.json()["status"] == "succeeded"
+        assert len(case["calls"]) == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
