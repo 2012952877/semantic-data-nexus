@@ -461,8 +461,24 @@ def _has_placeholder_marker(value: str) -> bool:
     return bool(tokens.intersection(_SAFE_VALUE_MARKERS))
 
 
+def _is_safe_shell_expansion(value: str) -> bool:
+    match = re.fullmatch(
+        r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<operator>:[-+=?]|[-+=?])(?P<operand>[^{}]*))?\}",
+        value,
+    )
+    if match is None:
+        return False
+    operator = match.group("operator")
+    if operator is None or operator in {"?", ":?"}:
+        return True
+    operand = match.group("operand").strip()
+    return not operand or _has_placeholder_marker(operand) or operand.startswith("$")
+
+
 def _is_explicit_nonliteral_reference(value: str, path: str) -> bool:
-    if re.fullmatch(r"\$\{[^{}\r\n]+\}", value):
+    if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", value):
+        return True
+    if _is_safe_shell_expansion(value):
         return True
     suffix = PurePosixPath(path).suffix.lower()
     if suffix in _SOURCE_CODE_SUFFIXES | {".md", ".yaml", ".yml"} and re.fullmatch(
@@ -514,7 +530,6 @@ def _is_safe_literal(raw_value: str | None, path: str) -> bool:
     if lowered.startswith(
         (
             "<",
-            "$",
             "{{",
             "%",
             "@microsoft.keyvault",
@@ -608,15 +623,23 @@ def _strip_trailing_comment(value: str) -> str:
         if character in {"'", '"'}:
             quote = character
             continue
-        if character == "#" and (index == 0 or value[index - 1].isspace()):
-            return value[:index].rstrip()
+        prefix = value[:index].rstrip()
+        comment_boundary = (
+            index == 0
+            or value[index - 1].isspace()
+            or value[index - 1] in {"'", '"', ")", "]", "}", ">", ";", ","}
+            or bool(_UUID_LITERAL.fullmatch(prefix))
+            or bool(_LONG_NUMERIC_LITERAL.fullmatch(prefix))
+        )
+        if character == "#" and comment_boundary:
+            return prefix
         if (
             character == "/"
             and index + 1 < len(value)
             and value[index + 1] == "/"
-            and (index == 0 or value[index - 1].isspace())
+            and comment_boundary
         ):
-            return value[:index].rstrip()
+            return prefix
     return value.rstrip()
 
 

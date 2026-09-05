@@ -198,19 +198,19 @@ class CleanRoomScanTests(unittest.TestCase):
         cases = [
             (
                 "main.bicep",
-                f"param {object_name} string = '{identifier}' // deployment principal",
+                f"param {object_name} string = '{identifier}'// deployment principal",
             ),
             (
                 "settings.ps1",
-                f"${object_name} = '{identifier}' # deployment principal",
+                f"${object_name} = '{identifier}'# deployment principal",
             ),
             (
                 "settings.ps1",
-                f"${{{principal_name}}} = '{identifier}' # deployment principal",
+                f"${{{principal_name}}} = '{identifier}'# deployment principal",
             ),
             (
                 "settings.ts",
-                f'const {object_name}: string = "{identifier}"; // deployment principal',
+                f'const {object_name}: string = "{identifier}";// deployment principal',
             ),
         ]
 
@@ -250,6 +250,9 @@ class CleanRoomScanTests(unittest.TestCase):
         key = "DATABRICKS_" + "TOKEN"
         unsafe_cases = [
             ("settings.py", 'get_token("shortKey7")'),
+            ("settings.env", "${DATABRICKS_TOKEN:-shortKey7}"),
+            ("settings.env", "${DATABRICKS_TOKEN:=shortKey7}"),
+            ("settings.env", "${DATABRICKS_TOKEN:+shortKey7}"),
             (
                 "runbook.md",
                 '[System.Net.NetworkCredential]::new("", "shortKey7").Password',
