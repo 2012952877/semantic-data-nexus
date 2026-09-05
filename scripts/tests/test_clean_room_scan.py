@@ -134,15 +134,17 @@ class CleanRoomScanTests(unittest.TestCase):
             "https://m0-" + "customer" + "." + "azurewebsites" + ".net/path",
             "https://" + "ab" + "." + "azurewebsites" + ".net",
         ]
-        tenant_identity = (
-            "operator" + "@" + "private-tenant" + "." + "onmicrosoft" + ".com"
-        )
+        tenant_identities = [
+            "operator" + "@" + "private-tenant" + "." + "onmicrosoft" + ".com",
+            "user" + "@" + "a" + "." + "onmicrosoft" + ".com",
+        ]
         findings = scan_blob(
             "deployment.txt",
             (
                 f"endpoint={app_hosts[0]}\n"
                 f"shortEndpoint={app_hosts[1]}\n"
-                f"owner={tenant_identity}\n"
+                f"owner={tenant_identities[0]}\n"
+                f"shortTenantOwner={tenant_identities[1]}\n"
             ).encode(),
         )
 
@@ -151,6 +153,7 @@ class CleanRoomScanTests(unittest.TestCase):
             [
                 "private-app-service-host",
                 "private-app-service-host",
+                "private-tenant-identity",
                 "private-tenant-identity",
             ],
         )
@@ -167,7 +170,8 @@ class CleanRoomScanTests(unittest.TestCase):
         )
         for app_host in app_hosts:
             self.assertNotIn(app_host, rendered)
-        self.assertNotIn(tenant_identity, rendered)
+        for tenant_identity in tenant_identities:
+            self.assertNotIn(tenant_identity, rendered)
 
     def test_reports_keyed_private_identity_and_warehouse_ids(self) -> None:
         object_key = "postgresEntraAdministrator" + "ObjectId"

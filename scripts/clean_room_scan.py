@@ -249,7 +249,7 @@ _ONMICROSOFT_IDENTITY = re.compile(
     (?<![A-Za-z0-9._%+-])
     (?P<local>[A-Za-z0-9._%+-]+)
     @
-    (?P<tenant>[A-Za-z0-9][A-Za-z0-9-]{1,61}[A-Za-z0-9])
+    (?P<tenant>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)
     [.]onmicrosoft[.]com
     (?![A-Za-z0-9.-])
     """,
