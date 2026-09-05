@@ -111,5 +111,7 @@ def compile_inventory(syft: dict, files: ImageFiles, blobs: Blobs, records: list
         "resolved": records,
         "components": sorted(components, key=lambda c: c["id"]),
         "relationships": syft["artifactRelationships"],
+        "file_components": syft.get("files", []),
+        "distro": syft.get("distro", {}),
         "gaps": sorted(set(gaps)),
     }

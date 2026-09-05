@@ -11,7 +11,7 @@ and an accepted release are deliberately different results.
 | --- | --- | --- |
 | semantic-api runtime | Built image, installed Python METADATA/WHEEL/RECORD, verified public wheel bytes, Debian database | Actual installed environment, including tooling left in that image |
 | semantic-backend runtime | The same, including local connector/compiler/runtime wheels and resolved transitives | Installed backend plus its enabled Databricks extra |
-| control-api runtime | Published `.deps.json`, runtime/resource/native files, restore-cache `.nupkg` hashes and nuspec/license files | Published NuGet closure and image OS/framework components |
+| control-api runtime | Published `.deps.json`, runtime/resource/native files, public/restore-cache `.nupkg` byte equality and nuspec/license files | Published NuGet closure and image OS/framework components |
 | web build | Installed pnpm production tree, installed package files, exact lock integrity, public tarballs and generated `dist` hashes | Conservative bundled-production input closure; not all development dependencies |
 | web runtime | nginx image packages and byte-for-byte copies of build-stage `dist` files | OS/nginx plus the separately linked production JavaScript inputs |
 | each named build stage | Actual cached Docker build-stage image and package/file catalog | Build-only unless explicitly linked as a bundled-production input |
@@ -111,8 +111,10 @@ at build time. Local first-party compressed wheels and transient PEP 517 build
 environments are not retained by the existing Dockerfiles. Those limitations are
 explicit release-acceptance gaps, not fabricated hashes.
 
-NuGet evidence checks restore-cache archives against the published dependency
-SHA-512 and compares claimed runtime assets to the published bytes. pnpm evidence
+NuGet evidence compares restore-cache archives byte-for-byte with the exact
+version's public NuGet archive and compares claimed runtime assets to the
+published bytes. NuGet restore `contentHash` is retained separately: for signed
+packages it is not the raw ZIP SHA-512. pnpm evidence
 checks registry tarballs against the lock integrity and installed package bytes.
 The original lock algorithm is retained (including legacy SHA-1); additional
 SHA-256 records do not imply that a weak upstream lock digest became strong.
@@ -183,7 +185,7 @@ replace pins with `latest` or pipe remote installer scripts into a shell.
 3. Syft configuration and offline cataloging options:
    `https://oss.anchore.com/docs/reference/syft/configuration/`
 4. Official schema revision:
-   `https://github.com/CycloneDX/specification/tree/55343ba19dee1785acf1ce9191540d5fd7b590db/schema`
+   `https://github.com/CycloneDX/specification/tree/b29bae660048e0ad2fbc5f2972927b442ce951c4/schema`
 5. Exact Python tool upstream metadata URLs and wheel digests:
    `scripts/supply_chain/python-tools.json`
 

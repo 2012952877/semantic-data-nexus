@@ -236,9 +236,12 @@ def enrich_nuget(records: list[dict], build_files: ImageFiles, blobs: Blobs) -> 
         matches = [p for p in paths if p.endswith(suffix)]
         require(len(matches) == 1, "missing-nuget-archive")
         data = build_files.read(matches[0])
-        sha512 = base64.b64encode(hashlib.sha512(data).digest()).decode()
-        expected = record["package_sha512"].removeprefix("sha512-")
-        require(expected and sha512 == expected, "nuget-archive-hash-drift")
+        url = f"https://api.nuget.org/v3-flatcontainer/{name}/{version}/{name}.{version}.nupkg"
+        # NuGet restore contentHash is NOT the raw ZIP hash for signed packages.
+        # Compare exact public archive bytes instead of inventing that algorithm.
+        with urllib.request.urlopen(url, timeout=120) as response:
+            upstream_data = response.read()
+        require(digest(data) == digest(upstream_data), "nuget-archive-hash-drift")
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             for fact in record["files"]:
                 require(digest(archive.read(fact["package_path"])) == fact["sha256"], "nuget-publish-hash-drift")
@@ -254,9 +257,10 @@ def enrich_nuget(records: list[dict], build_files: ImageFiles, blobs: Blobs) -> 
                     text = archive.read(path)
                     record["license_files"].append({"path": path, "sha256": digest(text), "blob": blobs.add(text)})
         record["archive"] = {
-            "url": f"https://api.nuget.org/v3-flatcontainer/{name}/{version}/{name}.{version}.nupkg",
+            "url": url,
             "sha256": digest(data), "sha512": hashlib.sha512(data).hexdigest(),
-            "verification": "restore-cache-sha512-and-published-files",
+            "restore_content_hash": record["package_sha512"],
+            "verification": "public-archive-bytes-and-published-files",
         }
 
 

@@ -6,7 +6,7 @@ from urllib.parse import unquote
 from pathlib import Path
 
 from scripts.supply_chain.common import canonical, digest, require, sha_file
-from scripts.supply_chain.standards import package_ref, validate_cyclonedx
+from scripts.supply_chain.standards import package_ref, validate_cyclonedx, validate_non_package
 
 
 def validate_policy(policy: dict, today: dt.date) -> dict:
@@ -71,7 +71,14 @@ def review_inventory(inventory: dict, document: dict, policy: dict, directory: P
     require(properties.get("nexus:inventory-sha256") == digest(canonical(inventory)), "inventory-document-drift")
     require(properties.get("nexus:source-revision") == expected_revision, "document-source-drift")
     require(properties.get("nexus:subject-sha256") == subject["image_id"][7:], "document-subject-drift")
-    components = {package_ref(c): c for c in document["components"]}
+    ids = {c["id"] for c in inventory["components"]}
+    components = {}
+    for component in document["components"]:
+        key = package_ref(component)
+        if key in ids:
+            components[key] = component
+        else:
+            validate_non_package(component, inventory)
     require(len(components) == len(inventory["components"]), "component-coverage-drift")
     rows = []
     for component in inventory["components"]:

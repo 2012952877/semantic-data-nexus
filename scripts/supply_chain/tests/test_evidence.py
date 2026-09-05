@@ -22,7 +22,7 @@ from scripts.supply_chain.common import EvidenceError, canonical, digest, load, 
 from scripts.supply_chain.inventory import reconcile
 from scripts.supply_chain.pipeline import accept
 from scripts.supply_chain.review import evidence_digest, review_inventory, validate_policy
-from scripts.supply_chain.standards import bind_evidence, normalize, validate_cyclonedx
+from scripts.supply_chain.standards import bind_evidence, normalize, package_ref, validate_cyclonedx
 
 REVISION = "a" * 40
 TODAY = dt.datetime.now(dt.timezone.utc).date()
@@ -225,7 +225,7 @@ def test_python_record_hashes_and_extra_transitives(tmp_path):
     files.close()
 
 
-def test_dotnet_publish_and_restore_archive_relationship(tmp_path):
+def test_dotnet_publish_and_restore_archive_relationship(tmp_path, monkeypatch):
     dll = b"Synthetic DLL fixture, not executable"
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as package:
@@ -233,6 +233,7 @@ def test_dotnet_publish_and_restore_archive_relationship(tmp_path):
         package.writestr("Synthetic.nuspec", '<package><metadata><license type="expression">MIT</license></metadata></package>')
         package.writestr("LICENSE", "Synthetic fixture evidence")
     nupkg = archive.getvalue()
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: io.BytesIO(nupkg))
     deps = {
         "runtimeTarget": {"name": "net8.0"},
         "targets": {"net8.0": {"Synthetic/1.0": {"runtime": {"lib/net8.0/Synthetic.dll": {}}}}},
@@ -246,6 +247,9 @@ def test_dotnet_publish_and_restore_archive_relationship(tmp_path):
     assert records[0]["archive"]["sha256"] == digest(nupkg)
     records[0]["files"][0]["sha256"] = "f" * 64
     with pytest.raises(EvidenceError, match="nuget-publish-hash-drift"):
+        enrich_nuget(records, files, Blobs(tmp_path / "blobs"))
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: io.BytesIO(b"drift"))
+    with pytest.raises(EvidenceError, match="nuget-archive-hash-drift"):
         enrich_nuget(records, files, Blobs(tmp_path / "blobs"))
     files.close()
 
@@ -296,6 +300,34 @@ def test_stale_source_revision_rejected(evidence, tmp_path, tools):
     inventory, document, policy = evidence
     with pytest.raises(EvidenceError, match="stale-source-revision"):
         review_inventory(inventory, bind_evidence(document, inventory), policy, tmp_path, tools, "d" * 40, TODAY)
+
+
+def test_file_and_os_components_are_retained_and_bound(evidence, tools):
+    inventory, document, _ = evidence
+    inventory["file_components"] = [{"id": "file-id", "location": {"path": "/lib/synthetic.so"},
+                                      "digests": [{"algorithm": "sha256", "value": "e" * 64}]}]
+    inventory["distro"] = {"id": "synthetic", "versionID": "1"}
+    document["components"].extend([
+        {"type": "file", "bom-ref": "file-id", "name": "/lib/synthetic.so",
+         "hashes": [{"alg": "SHA-256", "content": "e" * 64}]},
+        {"type": "operating-system", "bom-ref": "os:synthetic@1", "name": "synthetic", "version": "1"},
+    ])
+    bound = bind_evidence(document, inventory)
+    validate_cyclonedx(bound, tools)
+    assert len(bound["components"]) == 3
+    document["components"][1]["hashes"][0]["content"] = "f" * 64
+    with pytest.raises(EvidenceError, match="file-component-hash-drift"):
+        bind_evidence(document, inventory)
+
+
+def test_package_reference_preserves_purl_subpath():
+    assert package_ref({"bom-ref": "pkg:golang/example@v1?package-id=synthetic#sub/path"}) == "synthetic"
+
+
+def test_current_spdx_ids_validate_without_relabeling(evidence, tools):
+    doc = evidence[1]
+    doc["components"][0]["licenses"] = [{"license": {"id": "SMAIL-GPL"}}, {"license": {"id": "Artistic-dist"}}]
+    validate_cyclonedx(doc, tools)
 
 
 def test_version_prefix_is_not_exact_review(evidence):

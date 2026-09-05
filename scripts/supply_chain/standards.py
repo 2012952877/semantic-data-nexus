@@ -4,6 +4,7 @@ import copy
 import json
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from jsonschema import Draft7Validator
 from referencing import Registry, Resource
@@ -59,7 +60,29 @@ def normalize(document: dict) -> dict:
 
 
 def package_ref(component: dict) -> str:
-    return component["bom-ref"].rsplit("package-id=", 1)[-1].split("&", 1)[0]
+    reference = component["bom-ref"]
+    ids = parse_qs(urlsplit(reference).query).get("package-id")
+    return ids[0] if ids and len(ids) == 1 else reference
+
+
+def validate_non_package(component: dict, inventory: dict) -> None:
+    reference = component["bom-ref"]
+    if component["type"] == "file":
+        files = {f["id"]: f for f in inventory.get("file_components", [])}
+        require(reference in files, "unmapped-file-component")
+        fact = files[reference]
+        require(component["name"] == fact["location"]["path"], "file-component-path-drift")
+        expected = [{"alg": "SHA-256", "content": d["value"]}
+                    for d in fact.get("digests", []) if d["algorithm"] == "sha256"]
+        require(component.get("hashes", []) == expected, "file-component-hash-drift")
+    elif component["type"] == "operating-system":
+        distro = inventory.get("distro", {})
+        require(component["name"] == distro.get("id")
+                and component["version"] == distro.get("versionID")
+                and reference == "os:" + distro["id"] + "@" + distro["versionID"],
+                "operating-system-identity-drift")
+    else:
+        require(False, "unmapped-cyclonedx-component")
 
 
 def bind_evidence(document: dict, inventory: dict) -> dict:
@@ -69,7 +92,9 @@ def bind_evidence(document: dict, inventory: dict) -> dict:
     seen = set()
     for component in result.get("components", []):
         identity = package_ref(component)
-        require(identity in facts, "unmapped-cyclonedx-component")
+        if identity not in facts:
+            validate_non_package(component, inventory)
+            continue
         fact = facts[identity]
         require(component.get("purl", "") == fact["purl"] and component.get("version", "") == fact["version"], "component-identity-conflict")
         seen.add(identity)
