@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:semantic-data-nexus:product:usage-envelope:v1",
+  "description": "Observed usage, not a price or invoice. Corrections are appended as signed deltas referencing an earlier measurement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "operation", "event_id", "stream_id", "sequence", "previous_event_id", "recorded_at", "scope", "producer", "run_id", "meter", "unit", "quantity", "kind", "corrects_event_id"],
+  "properties": {
+    "contract_version": {"const": "usage-envelope/v1"},
+    "operation": {"const": "append"},
+    "event_id": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"},
+    "stream_id": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "previous_event_id": {"anyOf": [{"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"}, {"type": "null"}]},
+    "recorded_at": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/timestamp"},
+    "scope": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/scope"},
+    "producer": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"},
+    "run_id": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"},
+    "meter": {"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"},
+    "unit": {"enum": ["tokens", "rows", "bytes", "requests", "compute-ms"]},
+    "quantity": {"type": "string", "maxLength": 64, "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?(?![\\s\\S])"},
+    "kind": {"enum": ["measurement", "adjustment"]},
+    "corrects_event_id": {"anyOf": [{"$ref": "urn:semantic-data-nexus:product:common:v1#/$defs/id"}, {"type": "null"}]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"sequence": {"const": 1}}},
+      "then": {"properties": {"previous_event_id": {"type": "null"}}},
+      "else": {"properties": {"previous_event_id": {"type": "string"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "measurement"}}},
+      "then": {"properties": {"corrects_event_id": {"type": "null"}, "quantity": {"pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(?![\\s\\S])"}}},
+      "else": {"properties": {"corrects_event_id": {"type": "string"}}}
+    }
+  ]
+}
