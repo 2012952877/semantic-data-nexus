@@ -121,6 +121,7 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
             runtime_raw, runtime_cdx, runtime_files, runtime_subject, runtime_tag = snapshots["runtime"]
             runtime_records = os_inventory(runtime_files, blobs)
             runtime_edges, runtime_gaps = [], []
+            resolution_context = {}
             relations = []
             build_extra = []
             build_edges = []
@@ -142,6 +143,7 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                 )
                 environment = json.loads(run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "python", runtime_tag, "-c", code]))
                 extras = {"semantic-backend": ["databricks"]} if target == "semantic-backend" else {}
+                resolution_context = {"marker_environment": environment, "extras": extras}
                 runtime_edges = python_edges(records, environment, extras)
                 upstream_wheels(records, runtime_files, blobs, local_python_names())
                 for record in records:
@@ -154,6 +156,10 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                 require(records, "empty-dotnet-publish")
                 enrich_nuget(records, snapshots["build"][2], blobs)
                 runtime_records += records
+                resolution_context = {
+                    "sdk": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "dotnet", snapshots["build"][4], "--list-sdks"]).strip(),
+                    "runtimes": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "dotnet", runtime_tag, "--list-runtimes"]).strip(),
+                }
             elif target == "web":
                 build_raw, _, build_files, build_subject, build_tag = snapshots["build"]
                 tree = json.loads(run([
@@ -161,6 +167,10 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                     build_tag, "list", "--prod", "--depth", "Infinity", "--json",
                 ]))
                 build_extra, build_edges = pnpm_inventory(tree, build_files, blobs)
+                resolution_context = {
+                    "node": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "node", build_tag, "--version"]).strip(),
+                    "pnpm": run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "pnpm", build_tag, "--version"]).strip(),
+                }
                 upstream_npm(build_extra, build_files, build_raw, "@semantic-data-nexus/web")
                 bundle_files = []
                 for path in build_files.paths():
@@ -190,6 +200,7 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                 inventory = compile_inventory(raw, files, blobs, records, source=source, subject=subject,
                                               scope=stage, gaps=gaps, edges=edges)
                 inventory["subject_relationships"] = list(relations)
+                inventory["resolution_context"] = resolution_context
                 if has_build:
                     inventory["subject_relationships"].append({
                         "type": "built-from", "from": snapshots["build"][3]["image_id"],

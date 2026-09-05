@@ -32,6 +32,7 @@ class ImageFiles:
     def __init__(self, path: Path):
         self.archive = tarfile.open(path)
         self.members = {image_path(m.name): m for m in self.archive.getmembers()}
+        self.facts: dict[str, dict] = {}
 
     def close(self) -> None:
         self.archive.close()
@@ -75,15 +76,20 @@ class Blobs:
 
     def add(self, data: bytes) -> str:
         sha = digest(data)
-        (self.directory / sha).write_bytes(data)
+        path = self.directory / sha
+        if not path.exists():
+            path.write_bytes(data)
         return sha
 
 
 def file_fact(files: ImageFiles, path: str, blobs: Blobs, *, retain: bool = False) -> dict:
-    data = files.read(path)
-    fact = {"path": image_path(path), "sha256": digest(data), "size": len(data)}
+    path = image_path(path)
+    if path not in files.facts:
+        data = files.read(path)
+        files.facts[path] = {"path": path, "sha256": digest(data), "size": len(data)}
+    fact = dict(files.facts[path])
     if retain:
-        fact["blob"] = blobs.add(data)
+        fact["blob"] = blobs.add(files.read(path))
     return fact
 
 
@@ -106,8 +112,12 @@ def python_inventory(files: ImageFiles, blobs: Blobs) -> list[dict]:
         wheel_path = folder + "/WHEEL"
         require(files.has(record_path) and files.has(wheel_path), "missing-wheel-metadata")
         owned = []
+        bytecode = []
         for relative, encoded, size in csv.reader(io.StringIO(files.read(record_path).decode())):
             target = image_path(posixpath.join(root, relative))
+            if not encoded and target.endswith(".pyc"):
+                bytecode.append({"path": target, "present": files.has(target)})
+                continue
             require(files.has(target), "missing-wheel-file")
             if encoded:
                 algorithm, expected = encoded.split("=", 1)
@@ -125,6 +135,7 @@ def python_inventory(files: ImageFiles, blobs: Blobs) -> list[dict]:
             "declared": metadata.get_all("License-Expression", []) + metadata.get_all("License", []),
             "license_files": [f for f in owned if "blob" in f],
             "files": owned, "requires": metadata.get_all("Requires-Dist", []),
+            "generated_bytecode": bytecode,
             "upstream": metadata.get_all("Project-URL", []) + metadata.get_all("Home-page", []),
         })
     return result
@@ -204,16 +215,18 @@ def dotnet_inventory(files: ImageFiles, blobs: Blobs, prefix: str = "/app/") -> 
             name, version = identity.rsplit("/", 1)
             library = doc["libraries"][identity]
             owned = []
-            for kind in ("runtime", "native", "resources"):
+            for kind in ("runtime", "native", "resources", "runtimeTargets"):
                 for claimed in entry.get(kind, {}):
                     if posixpath.basename(claimed) == "_._":
                         continue
                     relative = posixpath.basename(claimed)
+                    if kind == "runtimeTargets":
+                        relative = claimed
                     if kind == "resources":
                         relative = posixpath.basename(posixpath.dirname(claimed)) + "/" + relative
                     actual = posixpath.dirname(path) + "/" + relative
                     require(files.has(actual), "missing-published-runtime-file")
-                    owned.append({**file_fact(files, actual, blobs), "package_path": claimed})
+                    owned.append({**file_fact(files, actual, blobs), "package_path": claimed, "asset_kind": kind})
             for dep, dep_version in entry.get("dependencies", {}).items():
                 require(dep + "/" + dep_version in target, "missing-dotnet-transitive")
                 edges.add((identity, dep + "/" + dep_version))

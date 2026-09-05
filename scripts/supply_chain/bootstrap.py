@@ -44,6 +44,8 @@ def bootstrap(destination: Path) -> None:
     (destination / "schema-LICENSE").write_bytes(fetch(
         pins["schema"]["license_url"], pins["schema"]["license_sha256"],
     ))
+    for name, action in pins["actions"].items():
+        (destination / (name + "-LICENSE")).write_bytes(fetch(action["license_url"], action["license_sha256"]))
     for filename, sha in pins["schema"]["files"].items():
         (destination / filename).write_bytes(fetch(pins["schema"]["base_url"] + filename, sha))
 

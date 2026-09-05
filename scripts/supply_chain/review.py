@@ -6,7 +6,9 @@ from urllib.parse import unquote
 from pathlib import Path
 
 from scripts.supply_chain.common import canonical, digest, require, sha_file
-from scripts.supply_chain.standards import package_ref, validate_cyclonedx, validate_non_package
+from scripts.supply_chain.standards import (
+    package_ref, resolved_component_edges, validate_cyclonedx, validate_non_package,
+)
 
 
 def validate_policy(policy: dict, today: dt.date) -> dict:
@@ -72,14 +74,19 @@ def review_inventory(inventory: dict, document: dict, policy: dict, directory: P
     require(properties.get("nexus:source-revision") == expected_revision, "document-source-drift")
     require(properties.get("nexus:subject-sha256") == subject["image_id"][7:], "document-subject-drift")
     ids = {c["id"] for c in inventory["components"]}
+    file_index = {f["id"]: f for f in inventory.get("file_components", [])}
     components = {}
     for component in document["components"]:
         key = package_ref(component)
         if key in ids:
             components[key] = component
         else:
-            validate_non_package(component, inventory)
+            validate_non_package(component, inventory, file_index)
     require(len(components) == len(inventory["components"]), "component-coverage-drift")
+    dependencies = {d["ref"]: set(d.get("dependsOn", [])) for d in document.get("dependencies", [])}
+    for parent, child in resolved_component_edges(inventory):
+        require(parent in components and child in components, "missing-resolved-component")
+        require(components[child]["bom-ref"] in dependencies.get(components[parent]["bom-ref"], set()), "missing-resolved-dependency-edge")
     rows = []
     for component in inventory["components"]:
         require(evidence_digest(component) == component["evidence_sha256"], "component-evidence-drift")

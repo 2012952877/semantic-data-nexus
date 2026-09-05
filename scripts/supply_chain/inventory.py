@@ -85,6 +85,8 @@ def compile_inventory(syft: dict, files: ImageFiles, blobs: Blobs, records: list
         if package.get("metadata", {}).get("url"):
             upstream.append(package["metadata"]["url"])
         distributed = scope
+        if scope == "build" and package["foundBy"] == "javascript-lock-cataloger":
+            distributed = "build-lock-candidate"
         if scope == "build" and related and package["type"] == "npm":
             distributed = "bundled-production-input"
         component = {

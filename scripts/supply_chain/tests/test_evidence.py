@@ -208,11 +208,13 @@ def test_python_record_hashes_and_extra_transitives(tmp_path):
         rows.append([path[len(root):], "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("="), str(len(content))])
     record_path = root + "synthetic-1.0.dist-info/RECORD"
     rows.append([record_path[len(root):], "", ""])
+    rows.append(["__pycache__/synthetic.cpython-312.pyc", "", ""])
     output = io.StringIO()
     csv.writer(output).writerows(rows)
     data[record_path] = output.getvalue().encode()
     files = image(tmp_path, data)
     records = python_inventory(files, Blobs(tmp_path / "blobs"))
+    assert records[0]["generated_bytecode"][0]["present"] is False
     files.close()
     with pytest.raises(EvidenceError, match="missing-python-transitive"):
         python_edges(records, {}, {})
@@ -230,21 +232,27 @@ def test_dotnet_publish_and_restore_archive_relationship(tmp_path, monkeypatch):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as package:
         package.writestr("lib/net8.0/Synthetic.dll", dll)
+        package.writestr("runtimes/linux-x64/native/libsynthetic.so", b"synthetic native fixture")
         package.writestr("Synthetic.nuspec", '<package><metadata><license type="expression">MIT</license></metadata></package>')
         package.writestr("LICENSE", "Synthetic fixture evidence")
     nupkg = archive.getvalue()
     monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: io.BytesIO(nupkg))
     deps = {
         "runtimeTarget": {"name": "net8.0"},
-        "targets": {"net8.0": {"Synthetic/1.0": {"runtime": {"lib/net8.0/Synthetic.dll": {}}}}},
+        "targets": {"net8.0": {"Synthetic/1.0": {
+            "runtime": {"lib/net8.0/Synthetic.dll": {}},
+            "runtimeTargets": {"runtimes/linux-x64/native/libsynthetic.so": {"rid": "linux-x64", "assetType": "native"}},
+        }}},
         "libraries": {"Synthetic/1.0": {"type": "package", "sha512": base64.b64encode(hashlib.sha512(nupkg).digest()).decode()}},
     }
     data = {"app/test.deps.json": canonical(deps), "app/Synthetic.dll": dll,
+            "app/runtimes/linux-x64/native/libsynthetic.so": b"synthetic native fixture",
             "root/.nuget/packages/synthetic/1.0/synthetic.1.0.nupkg": nupkg}
     files = image(tmp_path, data)
     records, _ = dotnet_inventory(files, Blobs(tmp_path / "blobs"))
     enrich_nuget(records, files, Blobs(tmp_path / "blobs"))
     assert records[0]["archive"]["sha256"] == digest(nupkg)
+    assert {f["asset_kind"] for f in records[0]["files"]} == {"runtime", "runtimeTargets"}
     records[0]["files"][0]["sha256"] = "f" * 64
     with pytest.raises(EvidenceError, match="nuget-publish-hash-drift"):
         enrich_nuget(records, files, Blobs(tmp_path / "blobs"))
@@ -294,6 +302,30 @@ def test_cyclonedx_evidence_binding_cannot_be_removed(evidence, tmp_path, tools)
     document["components"][0]["properties"] = []
     with pytest.raises(EvidenceError, match="component-document-drift"):
         review_inventory(inventory, document, policy, tmp_path, tools, REVISION, TODAY)
+
+
+def test_resolved_transitive_edge_is_added_and_required(evidence, tmp_path, tools):
+    inventory, document, policy = evidence
+    original = inventory["components"][0]
+    nested = copy.deepcopy(original)
+    nested.update(id="nested-id", name="nested", purl="pkg:pypi/nested@1.2.3")
+    nested["evidence_sha256"] = evidence_digest(nested)
+    inventory["components"].append(nested)
+    document["components"].append({
+        "bom-ref": nested["purl"] + "?package-id=nested-id", "type": "library",
+        "name": "nested", "version": "1.2.3", "purl": nested["purl"],
+    })
+    inventory["coverage"]["resolved"] = [
+        {"ecosystem": "pypi", "name": c["name"], "version": c["version"], "ids": [c["id"]]}
+        for c in inventory["components"]
+    ]
+    inventory["resolved_edges"] = [["synthetic-library", "nested"]]
+    bound = bind_evidence(document, inventory)
+    parent = document["components"][0]["bom-ref"]
+    assert next(d for d in bound["dependencies"] if d["ref"] == parent)["dependsOn"] == [document["components"][1]["bom-ref"]]
+    bound["dependencies"] = [d for d in bound["dependencies"] if d["ref"] != parent]
+    with pytest.raises(EvidenceError, match="missing-resolved-dependency-edge"):
+        review_inventory(inventory, bound, policy, tmp_path, tools, REVISION, TODAY)
 
 
 def test_stale_source_revision_rejected(evidence, tmp_path, tools):

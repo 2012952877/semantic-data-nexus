@@ -34,10 +34,11 @@ def validate_cyclonedx(document: dict, tools: Path) -> None:
     components = document.get("components", [])
     refs = [c["bom-ref"] for c in components]
     refs.append(document["metadata"]["component"]["bom-ref"])
-    require(len(refs) == len(set(refs)), "duplicate-component-reference")
+    ref_set = set(refs)
+    require(len(refs) == len(ref_set), "duplicate-component-reference")
     for edge in document.get("dependencies", []):
-        require(edge["ref"] in refs, "dangling-dependency")
-        require(set(edge.get("dependsOn", [])) <= set(refs), "dangling-dependency")
+        require(edge["ref"] in ref_set, "dangling-dependency")
+        require(set(edge.get("dependsOn", [])) <= ref_set, "dangling-dependency")
 
 
 def normalize(document: dict) -> dict:
@@ -65,10 +66,10 @@ def package_ref(component: dict) -> str:
     return ids[0] if ids and len(ids) == 1 else reference
 
 
-def validate_non_package(component: dict, inventory: dict) -> None:
+def validate_non_package(component: dict, inventory: dict, file_index: dict | None = None) -> None:
     reference = component["bom-ref"]
     if component["type"] == "file":
-        files = {f["id"]: f for f in inventory.get("file_components", [])}
+        files = file_index if file_index is not None else {f["id"]: f for f in inventory.get("file_components", [])}
         require(reference in files, "unmapped-file-component")
         fact = files[reference]
         require(component["name"] == fact["location"]["path"], "file-component-path-drift")
@@ -85,15 +86,39 @@ def validate_non_package(component: dict, inventory: dict) -> None:
         require(False, "unmapped-cyclonedx-component")
 
 
+def resolved_component_edges(inventory: dict) -> set[tuple[str, str]]:
+    labels = {}
+    for resolved in inventory["coverage"].get("resolved", []):
+        ecosystem = resolved["ecosystem"]
+        name, version = resolved["name"], resolved["version"]
+        if ecosystem == "pypi":
+            label = name
+        elif ecosystem == "npm":
+            label = name + "@" + version
+        elif ecosystem == "nuget":
+            label = (name + "/" + version).lower()
+        else:
+            continue
+        labels[label] = resolved["ids"]
+    edges = set()
+    for parent, child in inventory.get("resolved_edges", []):
+        if parent not in labels and parent.lower() in labels:
+            parent, child = parent.lower(), child.lower()
+        require(parent in labels and child in labels, "unmapped-resolved-edge")
+        edges.update((a, b) for a in labels[parent] for b in labels[child])
+    return edges
+
+
 def bind_evidence(document: dict, inventory: dict) -> dict:
     result = copy.deepcopy(document)
     facts = {c["id"]: c for c in inventory["components"]}
+    file_index = {f["id"]: f for f in inventory.get("file_components", [])}
     require(len(facts) == len(inventory["components"]), "duplicate-inventory-component")
     seen = set()
     for component in result.get("components", []):
         identity = package_ref(component)
         if identity not in facts:
-            validate_non_package(component, inventory)
+            validate_non_package(component, inventory, file_index)
             continue
         fact = facts[identity]
         require(component.get("purl", "") == fact["purl"] and component.get("version", "") == fact["version"], "component-identity-conflict")
@@ -110,6 +135,11 @@ def bind_evidence(document: dict, inventory: dict) -> dict:
                     "comment": archive["verification"],
                 })
     require(seen == set(facts), "missing-cyclonedx-component")
+    refs = {package_ref(c): c["bom-ref"] for c in result.get("components", [])}
+    dependencies = {edge["ref"]: set(edge.get("dependsOn", [])) for edge in result.get("dependencies", [])}
+    for parent, child in resolved_component_edges(inventory):
+        dependencies.setdefault(refs[parent], set()).add(refs[child])
+    result["dependencies"] = [{"ref": ref, "dependsOn": sorted(children)} for ref, children in sorted(dependencies.items())]
     result["metadata"].setdefault("properties", []).extend([
         {"name": "nexus:source-revision", "value": inventory["source_revision"]},
         {"name": "nexus:subject-sha256", "value": inventory["subject"]["image_id"].removeprefix("sha256:")},
