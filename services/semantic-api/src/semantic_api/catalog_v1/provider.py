@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from semantic_api.catalog_v1.catalog import fingerprint
@@ -64,8 +65,13 @@ class CatalogProvider(Protocol):
     ) -> ProviderResult: ...
 
 
+@dataclass(frozen=True, slots=True, init=False)
 class CatalogHTTPProvider:
     """Same reviewed endpoint/transport as M0, with a separate explicit v1 schema."""
+
+    settings: ProviderSettings
+    configuration_fingerprint: str
+    _transport: StructuredHTTPProvider = field(repr=False)
 
     def __init__(self, settings: ProviderSettings, credential: str) -> None:
         if settings.mode is not ProviderSelection.OPENAI_COMPATIBLE:
@@ -76,14 +82,20 @@ class CatalogHTTPProvider:
             or any(ord(c) < 33 or ord(c) > 126 for c in credential)
         ):
             raise ProviderConfigError()
-        self.settings = settings
-        self.configuration_fingerprint = fingerprint(settings.model_dump(mode="json"))
-        self._transport = StructuredHTTPProvider(
-            settings,
-            credential,
-            schema=candidate_schema(),
-            schema_name="catalog_candidate_v1",
-            system_policy=POLICY,
+        object.__setattr__(self, "settings", settings)
+        object.__setattr__(
+            self, "configuration_fingerprint", fingerprint(settings.model_dump(mode="json"))
+        )
+        object.__setattr__(
+            self,
+            "_transport",
+            StructuredHTTPProvider(
+                settings,
+                credential,
+                schema=candidate_schema(),
+                schema_name="catalog_candidate_v1",
+                system_policy=POLICY,
+            ),
         )
 
     async def invoke(

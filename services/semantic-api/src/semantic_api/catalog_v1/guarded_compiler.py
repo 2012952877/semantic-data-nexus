@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import psycopg
 
 from semantic_api.catalog_v1.clarification import Answered, ClarificationRecord
-from semantic_api.catalog_v1.compiler import CatalogCompiler, CompilerLimits
+from semantic_api.catalog_v1.compiler import CatalogCompiler, CompilerConfiguration
 from semantic_api.catalog_v1.guard import (
     AuthorizationDecision,
     AuthorizationGuard,
@@ -33,7 +33,6 @@ from semantic_api.catalog_v1.models import (
     Resolution,
     ResourceVersion,
 )
-from semantic_api.catalog_v1.provider import CatalogProvider
 from semantic_api.catalog_v1.trust import CatalogAccess, TrustedContext, owner_for
 from semantic_api.catalog_v1.validator import validate
 
@@ -49,10 +48,7 @@ class Dispatch:
     attempt: Attempt
     context: CompilerContext
     answers: tuple[Resolution, ...]
-    provider: CatalogProvider = field(repr=False)
-    limits: CompilerLimits
-    capabilities: tuple[str, ...]
-    provider_configuration: str
+    configuration: CompilerConfiguration
 
 
 Preparation = Compilation | Rejected | Dispatch
@@ -91,9 +87,10 @@ class GuardedCatalogCompiler:
         context: TrustedContext,
         document: CatalogDocument,
         access: CatalogAccess,
+        configuration: CompilerConfiguration | None = None,
     ) -> CompilerContext:
         owner, initialized, identity = self.core._context_from_catalog(
-            stored.record.request, context, document, access
+            stored.record.request, context, document, access, configuration=configuration
         )
         if (
             owner != stored.record.owner
@@ -171,8 +168,9 @@ class GuardedCatalogCompiler:
                 ) as decision:
                     document = await self.catalogs.get(decision.connection, request.catalog)
                     access = self._access(decision)
+                    configuration = self.core.configuration()
                     owner, initialized, identity = self.core._context_from_catalog(
-                        request, context, document, access
+                        request, context, document, access, configuration=configuration
                     )
                     now = await self.store.now(decision.connection)
                     stored = await self.store.create(
@@ -184,10 +182,10 @@ class GuardedCatalogCompiler:
                             context=initialized,
                             authority_fingerprint=identity,
                             expires_at=now
-                            + timedelta(seconds=self.core.limits.clarification_ttl_seconds),
+                            + timedelta(seconds=configuration.limits.clarification_ttl_seconds),
                         ),
                     )
-                    self._fresh(stored, context, document, access)
+                    self._fresh(stored, context, document, access, configuration)
                     limit = await self._record_deadline(
                         decision.connection, stored.record, context, limit
                     )
@@ -202,7 +200,15 @@ class GuardedCatalogCompiler:
                         prepared = stored.record.current
                     else:
                         prepared = await self._prepare(
-                            decision.connection, stored, initialized, (), 0, None, context, limit
+                            decision.connection,
+                            stored,
+                            initialized,
+                            (),
+                            0,
+                            None,
+                            context,
+                            limit,
+                            configuration,
                         )
                 return await self._dispatch(prepared, context, limit)
         except psycopg.Error:
@@ -232,9 +238,10 @@ class GuardedCatalogCompiler:
                     access = self._access(decision)
                     stored = await self.store.lock(decision.connection, clarification_id, owner)
                     record = stored.record
+                    configuration = self.core.configuration()
                     if record.request.catalog != pin:
                         raise CompilerFailure("CLARIFICATION_NOT_AVAILABLE")
-                    self._fresh(stored, context, document, access)
+                    self._fresh(stored, context, document, access, configuration)
                     limit = await self._record_deadline(decision.connection, record, context, limit)
                     whole.reschedule(limit)
                     stored = await self._adopt(decision.connection, stored)
@@ -285,7 +292,12 @@ class GuardedCatalogCompiler:
                                     Resolution(term=record.current.ambiguity.term, choice=choice),
                                 )
                                 _, resumed, _ = self.core._context_from_catalog(
-                                    record.request, context, document, access, answers
+                                    record.request,
+                                    context,
+                                    document,
+                                    access,
+                                    answers,
+                                    configuration=configuration,
                                 )
                                 prepared = await self._prepare(
                                     decision.connection,
@@ -296,6 +308,7 @@ class GuardedCatalogCompiler:
                                     answer_choice_id,
                                     context,
                                     limit,
+                                    configuration,
                                 )
                 return await self._dispatch(prepared, context, limit)
         except psycopg.Error:
@@ -311,6 +324,7 @@ class GuardedCatalogCompiler:
         choice: str | None,
         context: TrustedContext,
         deadline: float,
+        configuration: CompilerConfiguration,
     ) -> Preparation:
         now = await self.store.now(connection)
         remaining = deadline - asyncio.get_running_loop().time()
@@ -323,12 +337,12 @@ class GuardedCatalogCompiler:
         )
         if deadline_at <= now:
             raise CompilerFailure("CLARIFICATION_EXPIRED")
-        if initialized.ambiguities and len(answers) >= self.core.limits.max_clarifications:
+        if initialized.ambiguities and len(answers) >= configuration.limits.max_clarifications:
             raise CompilerFailure("CLARIFICATION_LIMIT")
         immediate = bool(initialized.ambiguities)
         reservation = Reservation(
-            input_tokens=0 if immediate else self.core.limits.max_total_input_tokens,
-            output_tokens=0 if immediate else self.core.limits.max_total_output_tokens,
+            input_tokens=0 if immediate else configuration.limits.max_total_input_tokens,
+            output_tokens=0 if immediate else configuration.limits.max_total_output_tokens,
             provider_calls=0 if immediate else 2,
         )
         attempt = await self.store.claim(
@@ -345,10 +359,7 @@ class GuardedCatalogCompiler:
                 attempt,
                 initialized,
                 answers,
-                self.core.provider,
-                self.core.limits,
-                self.core.capabilities,
-                getattr(self.core.provider, "configuration_fingerprint", "injected-test"),
+                configuration,
             )
         response = Compilation(
             status="clarification",
@@ -395,17 +406,11 @@ class GuardedCatalogCompiler:
             return prepared
         if asyncio.get_running_loop().time() >= deadline:
             raise CompilerFailure("COMPILER_DEADLINE")
-        if (
-            self.core.provider is not prepared.provider
-            or self.core.limits != prepared.limits
-            or self.core.capabilities != prepared.capabilities
-            or getattr(self.core.provider, "configuration_fingerprint", "injected-test")
-            != prepared.provider_configuration
-        ):
+        if not self.core.configuration_matches(prepared.configuration):
             raise CompilerFailure("COMPILER_CONFIGURATION_CHANGED")
         # No guard or connection is live in this task while the provider runs.
         # Cancellation leaves the committed fence/reservation intact, never reset/retried.
-        response = await self.core._generate(prepared.context)
+        response = await self.core._generate(prepared.context, configuration=prepared.configuration)
         if asyncio.get_running_loop().time() >= deadline:
             raise CompilerFailure("COMPILER_DEADLINE")
         async with self.guard.guard(

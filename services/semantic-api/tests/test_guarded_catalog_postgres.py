@@ -67,6 +67,7 @@ class TestGuard:
         self.revoker_entered = asyncio.Event()
         self.revoker_pid = None
         self.connection_ids = []
+        self.guard_entered = asyncio.Event()
 
     @asynccontextmanager
     async def connection(self):
@@ -96,6 +97,7 @@ class TestGuard:
                 self.entries += 1
                 entry = self.entries
                 self.connection_ids.append(connection.info.backend_pid)
+                self.guard_entered.set()
                 token = ACTIVE_CONNECTION.set(connection)
                 try:
                     yield Decision(
@@ -513,6 +515,7 @@ async def test_guarded_row_wait_rollback_never_dispatches(guarded_case, interrup
             "SELECT id FROM compiler_clarifications_v1 WHERE id=%s FOR UPDATE",
             (initial.clarification_id,),
         )
+        case.guard.guard_entered.clear()
         task = asyncio.create_task(
             case.compiler.resume(
                 initial.clarification_id,
@@ -524,17 +527,18 @@ async def test_guarded_row_wait_rollback_never_dispatches(guarded_case, interrup
             )
         )
         try:
+            await wait_for(case.guard.guard_entered)
+            waiting_pid = case.guard.connection_ids[-1]
             async with asyncio.timeout(2):
                 async with case.guard.connection() as observer:
                     while True:
-                        rows = await (
+                        row = await (
                             await observer.execute(
-                                """SELECT pid FROM pg_stat_activity
-                                   WHERE %s=ANY(pg_blocking_pids(pid))""",
-                                (holder.info.backend_pid,),
+                                "SELECT pg_blocking_pids(%s)",
+                                (waiting_pid,),
                             )
-                        ).fetchall()
-                        if rows:
+                        ).fetchone()
+                        if holder.info.backend_pid in row[0]:
                             break
             if interrupt == "cancel":
                 task.cancel()
@@ -657,4 +661,81 @@ async def test_guarded_record_expiry_during_commit_exit_rolls_back(guarded_case)
         assert attempts[0]["state"] == "in_flight"
     finally:
         case.guard.exit_release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "change", ["limits", "provider", "provider_config", "capabilities", "none"]
+)
+async def test_guarded_claim_wait_uses_one_context_budget_dispatch_snapshot(guarded_case, change):
+    from semantic_api.catalog_v1.compiler import CompilerLimits
+    from semantic_api.catalog_v1.trust import CatalogAccess
+
+    case = guarded_case
+
+    class MeteredProvider(CheckedProvider):
+        async def invoke(self, context, **kwargs):
+            result = await super().invoke(context, **kwargs)
+            return result.model_copy(
+                update={
+                    "input_tokens": 1,
+                    "output_tokens": 1 if change == "none" else 2,
+                }
+            )
+
+    class PausingClaimStore(GuardedClarifications):
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.reservation = None
+
+        async def claim(self, connection, stored, **kwargs):
+            assert ACTIVE_CONNECTION.get() is connection
+            self.reservation = kwargs["reservation"]
+            self.entered.set()
+            await self.release.wait()
+            return await super().claim(connection, stored, **kwargs)
+
+    original = MeteredProvider(CASES[1]["candidate"])
+    case.core.provider = original
+    case.core.limits = CompilerLimits(max_total_output_tokens=1)
+    captured = case.core.configuration()
+    document = await case.catalogs.source.catalogs.get(case.request.catalog)
+    _, _, original_identity = case.core._context_from_catalog(
+        case.request,
+        case.context,
+        document,
+        CatalogAccess.model_validate(case.access),
+        configuration=captured,
+    )
+    pausing = PausingClaimStore()
+    case.compiler.store = pausing
+    task = asyncio.create_task(compile_case(case))
+    await wait_for(pausing.entered)
+    try:
+        assert pausing.reservation.output_tokens == 1
+        if change == "limits":
+            case.core.limits = CompilerLimits(max_total_output_tokens=10)
+        elif change == "provider":
+            case.core.provider = MeteredProvider(CASES[1]["candidate"])
+        elif change == "provider_config":
+            original.configuration_fingerprint = "synthetic-new-provider-configuration"
+        elif change == "capabilities":
+            case.core.capabilities = case.core.capabilities[:-1]
+        pausing.release.set()
+        if change == "none":
+            result = await task
+            assert result.status == "compiled" and result.output_tokens == 1
+            assert len(original.calls) == 1
+        else:
+            with pytest.raises(CompilerFailure, match="COMPILER_CONFIGURATION_CHANGED"):
+                await task
+            assert not original.calls and not case.core.provider.calls
+        row, attempts = await case.guard.inspect(case.request.request_id)
+        assert json.loads(row[0])["authority_fingerprint"] == original_identity
+        assert attempts[0]["reserved_output_tokens"] == 1
+        assert attempts[0]["state"] == ("completed" if change == "none" else "in_flight")
+        assert captured.limits.max_total_output_tokens == 1
+    finally:
+        pausing.release.set()
         await asyncio.gather(task, return_exceptions=True)

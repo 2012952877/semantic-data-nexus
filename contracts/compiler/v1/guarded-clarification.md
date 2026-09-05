@@ -38,9 +38,14 @@ can prevent final commit, but does not mean the external model never saw an
 already-authorized request. Caller cancellation is propagated to the provider
 best-effort; no zero-calls-at-all-instants claim is made.
 
-Provider identity/configuration, capability forms and limits are checked before
-dispatch. A generation captures its provider and limits so a repair cannot
-silently switch to a newly configured provider midway through an attempt.
+Context construction captures one immutable `CompilerConfiguration`: provider
+identity plus its immutable configuration fingerprint, a copied frozen limits
+value, and a tuple of capability forms. That same snapshot supplies the authority
+fingerprint, budget reservation, `Dispatch`, and generation, including across
+an awaited database claim. Dispatch rejects current configuration drift before
+any model call. The real HTTP provider's settings/configuration attributes are
+readonly; transport lifecycle state is separate. Repair uses the same captured
+provider and limits rather than rereading a mutable compiler.
 
 ## State and idempotency
 

@@ -328,3 +328,37 @@ async def test_memory_queued_direct_request_refreshes_authorization(change):
     await assert_queued_compile_refreshes_authority(
         first, second, request, context, authority, change
     )
+
+
+def test_configuration_snapshot_copies_frozen_values():
+    from dataclasses import FrozenInstanceError
+
+    from semantic_api.catalog_v1.compiler import CompilerLimits
+
+    compiler, _, _, _ = setup()
+    snapshot = compiler.configuration()
+    assert snapshot.limits is not compiler.limits
+    with pytest.raises(FrozenInstanceError):
+        snapshot.capabilities = ()
+    with pytest.raises(ValidationError):
+        snapshot.limits.max_total_output_tokens = 1
+    compiler.limits = CompilerLimits(max_total_output_tokens=1)
+    compiler.capabilities = ()
+    assert snapshot.limits.max_total_output_tokens == 8_192
+    assert snapshot.capabilities
+    assert not compiler.configuration_matches(snapshot)
+
+
+async def test_real_catalog_provider_configuration_is_readonly():
+    from dataclasses import FrozenInstanceError
+
+    from test_structured_provider import SECRET, settings
+
+    from semantic_api.catalog_v1.provider import CatalogHTTPProvider
+
+    provider = CatalogHTTPProvider(settings("http://127.0.0.1:12345/v1/chat/completions"), SECRET)
+    with pytest.raises(FrozenInstanceError):
+        provider.configuration_fingerprint = "replacement"
+    with pytest.raises(FrozenInstanceError):
+        provider.settings = settings("http://127.0.0.1:12346/v1/chat/completions")
+    await provider.aclose()

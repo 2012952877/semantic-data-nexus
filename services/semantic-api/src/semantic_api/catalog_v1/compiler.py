@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -44,6 +45,14 @@ class CompilerLimits(Frozen):
     max_clarifications: int = Field(default=8, ge=1, le=16)
 
 
+@dataclass(frozen=True)
+class CompilerConfiguration:
+    provider: CatalogProvider = field(repr=False)
+    provider_fingerprint: str
+    limits: CompilerLimits
+    capabilities: tuple[str, ...]
+
+
 class CatalogCompiler:
     def __init__(
         self,
@@ -63,6 +72,27 @@ class CatalogCompiler:
         self.clarifications = clarifications
         self.capabilities = tuple(sorted(set(capabilities)))
         self.limits = limits or CompilerLimits()
+
+    def configuration(self) -> CompilerConfiguration:
+        provider = self.provider
+        provider_fingerprint = getattr(provider, "configuration_fingerprint", "injected-test")
+        if not isinstance(provider_fingerprint, str):
+            raise CompilerFailure("COMPILER_CONFIGURATION_CHANGED")
+        return CompilerConfiguration(
+            provider,
+            provider_fingerprint,
+            CompilerLimits.model_validate_json(self.limits.model_dump_json()),
+            tuple(self.capabilities),
+        )
+
+    def configuration_matches(self, expected: CompilerConfiguration) -> bool:
+        current = self.configuration()
+        return (
+            current.provider is expected.provider
+            and current.provider_fingerprint == expected.provider_fingerprint
+            and current.limits == expected.limits
+            and current.capabilities == expected.capabilities
+        )
 
     def _deadline(self, deadline: float) -> float:
         import math
@@ -91,28 +121,41 @@ class CatalogCompiler:
         document: CatalogDocument,
         access: CatalogAccess,
         answers: tuple[Resolution, ...] = (),
+        *,
+        configuration: CompilerConfiguration | None = None,
     ) -> tuple[Owner, CompilerContext, str]:
         """Pure context construction; guarded callers supply current transaction-owned grants."""
         owner = owner_for(context, request.catalog)
+        selected_configuration = configuration or self.configuration()
         if pin_for(document) != request.catalog:
             raise CompilerFailure("CATALOG_PIN_MISMATCH")
         selected = authorized_view(document, access)
-        if len(selected.model_dump_json().encode()) > self.limits.max_context_bytes:
+        if (
+            len(selected.model_dump_json().encode())
+            > selected_configuration.limits.max_context_bytes
+        ):
             raise CompilerFailure("CONTEXT_LIMIT")
         initialized = initialize(
-            request.question, request.catalog, selected, self.capabilities, answers
+            request.question,
+            request.catalog,
+            selected,
+            selected_configuration.capabilities,
+            answers,
         )
-        if len(initialized.model_dump_json().encode()) > self.limits.max_context_bytes:
+        if (
+            len(initialized.model_dump_json().encode())
+            > selected_configuration.limits.max_context_bytes
+        ):
             raise CompilerFailure("CONTEXT_LIMIT")
         identity = fingerprint(
             {
                 "owner": owner.model_dump(mode="json"),
                 "access": {key: sorted(value) for key, value in access.model_dump().items()},
-                "capabilities": self.capabilities,
+                "capabilities": selected_configuration.capabilities,
                 "prompt": POLICY,
                 "schema": candidate_schema(),
-                "limits": self.limits.model_dump(mode="json"),
-                "provider": getattr(self.provider, "configuration_fingerprint", "injected-test"),
+                "limits": selected_configuration.limits.model_dump(mode="json"),
+                "provider": selected_configuration.provider_fingerprint,
             }
         )
         return owner, initialized, identity
@@ -256,8 +299,11 @@ class CatalogCompiler:
                 )
                 return response
 
-    async def _generate(self, context: CompilerContext) -> Compilation:
-        provider, limits = self.provider, self.limits
+    async def _generate(
+        self, context: CompilerContext, *, configuration: CompilerConfiguration | None = None
+    ) -> Compilation:
+        selected_configuration = configuration or self.configuration()
+        provider, limits = selected_configuration.provider, selected_configuration.limits
         calls: list[CallMetadata] = []
         rejected: dict[str, Any] | None = None
         diagnostics: tuple[str, ...] = ()
