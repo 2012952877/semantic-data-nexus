@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterator
+from contextlib import suppress
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -54,7 +55,9 @@ def database() -> Iterator[tuple[dict[str, str], psycopg.Connection[tuple[Any, .
         "user": os.environ["NEXUS_TEST_PG_ADMIN"],
         "password": os.environ["NEXUS_TEST_PG_PASSWORD"],
     }
-    with psycopg.connect(**settings, autocommit=True) as admin:
+    with psycopg.connect(
+        **settings, autocommit=True, options="-c lock_timeout=2000 -c statement_timeout=5000"
+    ) as admin:
         assert admin.info.server_version // 10000 == 16
         admin.execute("DROP SCHEMA IF EXISTS nexus_synthetic CASCADE")
         admin.execute("DROP ROLE IF EXISTS nexus_synthetic_reader")
@@ -186,18 +189,25 @@ async def test_real_postgres_resource_limit_and_cancel_lock_wait(
                 asyncio.Event(),
             )
         )
-        async with asyncio.timeout(2):
-            while True:
-                waiting = admin.execute(
-                    "SELECT count(*) FROM pg_catalog.pg_stat_activity "
-                    "WHERE usename = 'nexus_synthetic_reader' AND wait_event_type = 'Lock'"
-                ).fetchone()
-                if waiting and waiting[0]:
-                    break
-                await asyncio.sleep(0.01)
-        await resolver.cancel("synthetic-handle")
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(work, timeout=5)
+        try:
+            async with asyncio.timeout(2):
+                while True:
+                    admin.execute("SELECT pg_catalog.pg_stat_clear_snapshot()")
+                    waiting = admin.execute(
+                        "SELECT count(*) FROM pg_catalog.pg_stat_activity "
+                        "WHERE usename = 'nexus_synthetic_reader' AND wait_event_type = 'Lock'"
+                    ).fetchone()
+                    if waiting and waiting[0]:
+                        break
+                    await asyncio.sleep(0.01)
+            await resolver.cancel("synthetic-handle")
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(work, timeout=5)
+        finally:
+            if not work.done():
+                work.cancel()
+                with suppress(asyncio.CancelledError):
+                    await work
     assert not resolver._connections and not resolver._active
     await resolver.connection_test()
 

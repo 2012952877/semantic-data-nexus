@@ -229,7 +229,13 @@ class DuckDBOperatorExecutor:
             raise OperatorFailure("OPERATOR_INVALID", f"{spec.kind} requires projections")
         return f"SELECT {', '.join(projections)} FROM input_0", parameters
 
-    def _aggregate_query(self, spec: OperatorSpec, columns: set[str]) -> tuple[str, list[Any]]:
+    def _aggregate_query(
+        self,
+        spec: OperatorSpec,
+        columns: set[str],
+        *,
+        source: str = "input_0",
+    ) -> tuple[str, list[Any]]:
         projections = [quote_identifier(column, columns) for column in spec.group_by]
         parameters: list[Any] = []
         output_names: set[str] = set()
@@ -261,7 +267,7 @@ class DuckDBOperatorExecutor:
             if spec.group_by
             else ""
         )
-        return f"SELECT {', '.join(projections)} FROM input_0{group}", parameters
+        return f"SELECT {', '.join(projections)} FROM {quote_identifier(source)}{group}", parameters
 
     def _pivot_query(self, spec: OperatorSpec, columns: set[str]) -> tuple[str, list[Any]]:
         if not spec.pivot_column or not spec.pivot_value or not spec.pivot_values:

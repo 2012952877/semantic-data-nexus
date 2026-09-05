@@ -250,3 +250,42 @@ async def test_bounded_output_memory_no_spool_and_pre_cancel() -> None:
     compute = DuckDBComputePlugin(ResourceLimits(max_bytes=1))
     with pytest.raises(ResourceLimitFailure):
         await compute.execute(spec("DISTINCT"), (table,), asyncio.Event())
+    compute = DuckDBComputePlugin(ResourceLimits(memory_limit_bytes=1024))
+    with pytest.raises(OperatorFailure, match="DuckDB"):
+        await compute.execute(
+            spec("SORT", sort=[SortSpec(column="id")]),
+            (pa.table({"id": list(range(10000))}),),
+            asyncio.Event(),
+        )
+
+
+async def test_imputation_preserves_declared_decimal_and_narrow_integer_types() -> None:
+    for arrow_type, scalar_type, fill in (
+        (pa.int16(), ScalarType.INTEGER, 12),
+        (pa.decimal128(12, 2), ScalarType.DECIMAL, "12.34"),
+        (pa.date32(), ScalarType.DATE, "2024-02-29"),
+    ):
+        table = pa.table({"value": pa.array([None], type=arrow_type)})
+        result = await execute(
+            spec(
+                "IMPUTE",
+                impute=ImputeSpec(
+                    column="value",
+                    value=TypedExpression.literal(fill, scalar_type),
+                ),
+            ),
+            table,
+        )
+        assert result.schema == table.schema
+        assert result["value"].null_count == 0
+    with pytest.raises(OperatorFailure, match="without loss"):
+        await execute(
+            spec(
+                "IMPUTE",
+                impute=ImputeSpec(
+                    column="value",
+                    value=TypedExpression.literal("1.234", ScalarType.DECIMAL),
+                ),
+            ),
+            pa.table({"value": pa.array([None], type=pa.decimal128(12, 2))}),
+        )

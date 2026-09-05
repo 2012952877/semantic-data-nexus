@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import date as date_value
+from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
-from query_runtime.domain import OperatorKind, OperatorSpecV1
+from query_runtime.domain import OperatorKind, OperatorSpecV1, ScalarType
 from query_runtime.errors import OperatorFailure
 from query_runtime.expressions import quote_identifier
 
@@ -121,10 +124,11 @@ def build_extension_query(
                 "time_grain": None,
             }
         )
-        sql, parameters = executor._aggregate_query(aggregate, columns | {date.output})
-        # Scope the pre-bucketed input without rewriting column identifiers.
+        sql, parameters = executor._aggregate_query(
+            aggregate, columns | {date.output}, source="bucketed"
+        )
         return (
-            f"WITH bucketed AS ({inner}) {sql.replace('FROM input_0', 'FROM bucketed')}",
+            f"WITH bucketed AS ({inner}) {sql}",
             [date.grain.value, *parameters],
         )
     if kind is OperatorKind.SUMMARIZE:
@@ -160,12 +164,36 @@ def build_extension_query(
     if kind is OperatorKind.IMPUTE:
         assert spec.impute is not None
         column = quote_identifier(spec.impute.column, columns)
-        rendered = executor.render(spec.impute.value, columns, exact=True)
+        target_type = inputs[0].schema.field(spec.impute.column).type
+        literal = spec.impute.value
+        matches = {
+            ScalarType.STRING: pa.types.is_string,
+            ScalarType.INTEGER: pa.types.is_integer,
+            ScalarType.FLOAT: pa.types.is_floating,
+            ScalarType.DECIMAL: pa.types.is_decimal,
+            ScalarType.BOOLEAN: pa.types.is_boolean,
+            ScalarType.DATE: pa.types.is_date,
+            ScalarType.TIMESTAMP: pa.types.is_timestamp,
+        }
+        if not matches[literal.data_type](target_type):
+            raise _invalid("IMPUTE literal must match the target type")
+        executor.render(literal, columns, exact=True)
+        replacement: Any = literal.value
+        if literal.data_type is ScalarType.DECIMAL:
+            replacement = Decimal(str(literal.value))
+        elif literal.data_type is ScalarType.DATE:
+            replacement = date_value.fromisoformat(str(literal.value))
+        elif literal.data_type is ScalarType.TIMESTAMP:
+            replacement = datetime.fromisoformat(str(literal.value))
+        try:
+            replacement = pa.scalar(replacement, type=target_type).as_py()
+        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:
+            raise _invalid("IMPUTE replacement cannot be represented without loss") from exc
         expressions = [
-            f"COALESCE({column}, {rendered.sql}) AS {column}"
+            f"COALESCE({column}, cast_to_type(?, {column})) AS {column}"
             if c == spec.impute.column
             else quote_identifier(c)
             for c in inputs[0].column_names
         ]
-        return f"SELECT {', '.join(expressions)} FROM input_0", list(rendered.parameters)
+        return f"SELECT {', '.join(expressions)} FROM input_0", [replacement]
     return None
