@@ -67,12 +67,13 @@ CREATE TABLE identity_changes (
     sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     request_id text NOT NULL,
     workspace_id text NOT NULL REFERENCES identity_workspaces(workspace_id),
-    actor_id text NOT NULL REFERENCES identity_principals(principal_id),
+    actor_kind text NOT NULL DEFAULT 'oidc' CHECK (actor_kind IN ('oidc', 'operator')),
+    actor_id text NOT NULL,
     action text NOT NULL,
     target_id text NOT NULL,
     payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[a-f0-9]{64}$'),
     recorded_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (workspace_id, actor_id, request_id)
+    UNIQUE (workspace_id, actor_kind, actor_id, request_id)
 );
 
 CREATE TABLE identity_sessions (

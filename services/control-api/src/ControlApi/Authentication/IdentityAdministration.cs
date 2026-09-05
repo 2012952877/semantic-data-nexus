@@ -149,7 +149,8 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
         }
         await IdentityStore.ReauthorizeAsync(connection, transaction, context, "workspace:admin", ct);
         await using var existing = new NpgsqlCommand("""
-            SELECT payload_sha256 FROM identity_changes WHERE workspace_id = $1 AND actor_id = $2 AND request_id = $3
+            SELECT payload_sha256 FROM identity_changes
+            WHERE workspace_id = $1 AND actor_kind = 'oidc' AND actor_id = $2 AND request_id = $3
             """, connection, transaction);
         existing.Parameters.AddWithValue(context.Scope.WorkspaceId);
         existing.Parameters.AddWithValue(context.Principal.PrincipalId);
@@ -161,6 +162,7 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
             {
                 throw new IdempotencyConflictException("Identity request ID is already bound to another change.");
             }
+            IdentityStore.EnsureUnexpired(context);
             await transaction.CommitAsync(ct);
             return;
         }
@@ -186,6 +188,7 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
         record.Parameters.AddWithValue(targetId);
         record.Parameters.AddWithValue(digest);
         await record.ExecuteNonQueryAsync(ct);
+        IdentityStore.EnsureUnexpired(context);
         await transaction.CommitAsync(ct);
     }
 
@@ -204,6 +207,7 @@ public sealed class IdentityAdministration(NpgsqlDataSource dataSource, IReadOnl
             """, connection, transaction);
         command.Parameters.AddWithValue(context.Scope.WorkspaceId);
         var json = (string)(await command.ExecuteScalarAsync(ct))!;
+        IdentityStore.EnsureUnexpired(context);
         await transaction.CommitAsync(ct);
         return JsonSerializer.Deserialize<JsonElement>(json);
     }

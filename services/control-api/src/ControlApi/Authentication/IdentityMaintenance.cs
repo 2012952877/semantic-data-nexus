@@ -42,10 +42,10 @@ public static class IdentityMaintenance
         }
         var digest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(change))).ToLowerInvariant();
         await using var previous = new NpgsqlCommand("""
-            SELECT payload_sha256 FROM identity_changes WHERE workspace_id = $1 AND actor_id = $2 AND request_id = $3
+            SELECT payload_sha256 FROM identity_changes
+            WHERE workspace_id = $1 AND actor_kind = 'operator' AND actor_id = current_user AND request_id = $2
             """, connection, transaction);
         previous.Parameters.AddWithValue(change.WorkspaceId);
-        previous.Parameters.AddWithValue(change.PrincipalId);
         previous.Parameters.AddWithValue(change.RequestId);
         var saved = (string?)await previous.ExecuteScalarAsync(ct);
         if (saved is not null)
@@ -134,12 +134,11 @@ public static class IdentityMaintenance
             throw new InvalidOperationException("Unknown identity maintenance operation.");
         }
         await using var audit = new NpgsqlCommand("""
-            INSERT INTO identity_changes (request_id, workspace_id, actor_id, action, target_id, payload_sha256)
-            VALUES ($1,$2,$3,$4,$5,$6)
+            INSERT INTO identity_changes (request_id, workspace_id, actor_kind, actor_id, action, target_id, payload_sha256)
+            VALUES ($1,$2,'operator',current_user,$3,$4,$5)
             """, connection, transaction);
         audit.Parameters.AddWithValue(change.RequestId);
         audit.Parameters.AddWithValue(change.WorkspaceId);
-        audit.Parameters.AddWithValue(change.PrincipalId);
         audit.Parameters.AddWithValue($"operator:{change.Operation}");
         audit.Parameters.AddWithValue(change.RunId ?? change.PrincipalId);
         audit.Parameters.AddWithValue(digest);

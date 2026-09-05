@@ -59,14 +59,11 @@ public sealed class IdentityStore(NpgsqlDataSource dataSource)
         NpgsqlConnection connection, NpgsqlTransaction transaction, TrustedContext context,
         string permission, CancellationToken cancellationToken)
     {
-        if (context.Authentication.ExpiresAt <= DateTimeOffset.UtcNow)
-        {
-            throw new IdentityAccessException();
-        }
         await using var gate = new NpgsqlCommand(
             "SELECT pg_advisory_xact_lock_shared($1)", connection, transaction);
         gate.Parameters.AddWithValue(AuthorizationLock);
         await gate.ExecuteNonQueryAsync(cancellationToken);
+        EnsureUnexpired(context);
         await using var command = new NpgsqlCommand("""
             SELECT 1 FROM identity_access
             WHERE principal_id = $1 AND issuer = $2 AND subject = $3
@@ -82,6 +79,14 @@ public sealed class IdentityStore(NpgsqlDataSource dataSource)
         command.Parameters.AddWithValue(context.Membership.Revision);
         command.Parameters.AddWithValue(permission);
         if (await command.ExecuteScalarAsync(cancellationToken) is null)
+        {
+            throw new IdentityAccessException();
+        }
+    }
+
+    public static void EnsureUnexpired(TrustedContext context)
+    {
+        if (context.Authentication.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             throw new IdentityAccessException();
         }

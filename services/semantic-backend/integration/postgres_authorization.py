@@ -15,7 +15,7 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
 from semantic_backend.auth_context import AccessDenied, ResourceVersion, TrustedContext
-from semantic_backend.authorization import PostgresAuthorization
+from semantic_backend.authorization import AUTHORIZATION_LOCK, PostgresAuthorization
 
 MIGRATIONS = (
     Path(__file__).resolve().parents[2] / "control-api/src/ControlApi/Persistence/Migrations"
@@ -75,6 +75,7 @@ async def database():
                 for migration in MIGRATION_SQL:
                     await conn.execute(migration)
                 await conn.execute("""
+                    CREATE TABLE guard_evidence (event_id text PRIMARY KEY, value integer NOT NULL);
                     INSERT INTO identity_principals VALUES ('principal-a','https://identity.example.test','same-sub','',true);
                     INSERT INTO identity_workspaces (workspace_id,tenant_id,name)
                     VALUES ('workspace-a','tenant-a','Synthetic A');
@@ -178,3 +179,102 @@ async def test_assertion_replay_is_fenced_across_restarts_and_concurrency(databa
 
     assert sum(await asyncio.gather(*(claim() for _ in range(8)))) == 1
     assert not await claim()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "UPDATE identity_memberships SET active=false",
+        "UPDATE identity_resource_grants SET active=false",
+    ],
+)
+async def test_guard_commit_linearizes_before_revocation_and_denies_later_writes(
+    database, mutation
+):
+    authority = PostgresAuthorization(database)
+    context = context_for()
+    pin = ResourceVersion(
+        contract_version="resource-version/v1",
+        scope=context.scope,
+        resource_kind="ontology",
+        resource_id="catalog-a",
+        revision=1,
+        content_sha256="a" * 64,
+    )
+    attempted, changed = asyncio.Event(), asyncio.Event()
+
+    async def revoke():
+        async with await psycopg.AsyncConnection.connect(database) as conn:
+            attempted.set()
+            await conn.execute("SELECT pg_advisory_xact_lock(%s)", (AUTHORIZATION_LOCK,))
+            await conn.execute(mutation)
+        changed.set()
+
+    async with authority.guard(context, pin, "compiler:query") as decision:
+        await decision.connection.execute("INSERT INTO guard_evidence VALUES ('first',1)")
+        async with await psycopg.AsyncConnection.connect(database) as observer:
+            cursor = await observer.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (AUTHORIZATION_LOCK,)
+            )
+            assert await cursor.fetchone() == (False,)
+            cursor = await observer.execute("SELECT count(*) FROM guard_evidence")
+            assert await cursor.fetchone() == (0,)  # Not a committed response yet.
+        revoker = asyncio.create_task(revoke())
+        await attempted.wait()
+        assert not changed.is_set()
+    await asyncio.wait_for(revoker, 2)
+    assert changed.is_set()
+    with pytest.raises(AccessDenied):
+        async with authority.guard(context, pin, "compiler:query") as decision:
+            await decision.connection.execute("INSERT INTO guard_evidence VALUES ('denied',2)")
+    async with await psycopg.AsyncConnection.connect(database) as observer:
+        cursor = await observer.execute("SELECT event_id FROM guard_evidence")
+        assert await cursor.fetchall() == [("first",)]
+
+
+async def test_token_expiry_waiting_for_row_lock_rolls_back_and_releases_guard(database):
+    async with await psycopg.AsyncConnection.connect(database) as setup:
+        await setup.execute("INSERT INTO guard_evidence VALUES ('row',1)")
+    context = context_for()
+    context = context.model_copy(
+        update={
+            "authentication": context.authentication.model_copy(
+                update={"expires_at": datetime.now(UTC) + timedelta(milliseconds=250)}
+            )
+        }
+    )
+    async with await psycopg.AsyncConnection.connect(database) as blocker:
+        await blocker.execute("SELECT * FROM guard_evidence FOR UPDATE")
+        with pytest.raises((AccessDenied, TimeoutError, psycopg.errors.QueryCanceled)):
+            async with PostgresAuthorization(database).guard(context) as decision:
+                await decision.connection.execute("UPDATE guard_evidence SET value=2")
+    async with await psycopg.AsyncConnection.connect(database) as observer:
+        cursor = await observer.execute("SELECT value FROM guard_evidence")
+        assert await cursor.fetchone() == (1,)
+        cursor = await observer.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)", (AUTHORIZATION_LOCK,)
+        )
+        assert await cursor.fetchone() == (True,)
+
+
+async def test_cancelled_or_expired_commit_never_records_a_replayable_success(database):
+    context = context_for()
+    authority = PostgresAuthorization(database)
+    entered, hold = asyncio.Event(), asyncio.Event()
+
+    async def cancelled_write():
+        async with authority.guard(context) as decision:
+            await decision.connection.execute("INSERT INTO guard_evidence VALUES ('cancelled',1)")
+            entered.set()
+            await hold.wait()
+
+    writer = asyncio.create_task(cancelled_write())
+    await entered.wait()
+    writer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await writer
+    async with authority.guard(context) as decision:
+        await decision.connection.execute("INSERT INTO guard_evidence VALUES ('cancelled',2)")
+    async with await psycopg.AsyncConnection.connect(database) as observer:
+        cursor = await observer.execute("SELECT value FROM guard_evidence")
+        assert await cursor.fetchall() == [(2,)]

@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using ControlApi.Authentication;
 using ControlApi.Contracts;
 using ControlApi.Domain;
@@ -22,6 +24,7 @@ namespace ControlApi.Tests;
 
 public sealed class PostgresIdentityTests : IAsyncLifetime
 {
+    private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private const string Issuer = "https://identity.example.test/realms/one";
     private const string OtherIssuer = "https://identity.example.test/realms/two";
     private readonly string schema = $"identity_test_{Guid.NewGuid():N}";
@@ -80,6 +83,114 @@ public sealed class PostgresIdentityTests : IAsyncLifetime
 
     private PostgresRunRepository Repository(TrustedContext context) =>
         new(database, TimeProvider.System, RunAccess.Verified(context));
+
+    private async Task Maintain(MaintenanceChange change)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["RunStorage:Provider"] = "Postgres",
+            ["RunStorage:ConnectionString"] = databaseSettings,
+            ["Identity:Providers:0:Name"] = "one",
+            ["Identity:Providers:0:Authority"] = Issuer
+        }).Build();
+        using var input = new StringReader(JsonSerializer.Serialize(change));
+        await IdentityMaintenance.ExecuteAsync(configuration, input, default);
+    }
+
+    [Fact]
+    public async Task ExplicitBootstrapAndLegacyAdoptionAreAuditedAndIdempotent()
+    {
+        var bootstrap = new MaintenanceChange("bootstrap", "bootstrap-c", "workspace-c", "tenant-c",
+            "Synthetic C", "p-one", "membership-c", "one", "same-sub");
+        await Task.WhenAll(Maintain(bootstrap), Maintain(bootstrap));
+        var legacy = new PostgresRunRepository(database, TimeProvider.System, RunAccess.LegacyDevelopment());
+        var run = (await legacy.CreateAsync(new("legacy", "synthetic"), "legacy-owner", default)).Run;
+        var target = Repository(await Context("workspace-c"));
+        Assert.Null(await target.GetAsync(run.Id, default));
+        var adoption = bootstrap with
+        {
+            Operation = "adopt-legacy",
+            RequestId = "adopt-run",
+            RunId = run.Id.Value,
+            LegacySubject = "wrong-owner"
+        };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Maintain(adoption));
+        adoption = adoption with { LegacySubject = "legacy-owner" };
+        await Maintain(adoption);
+        await Maintain(adoption);
+        Assert.Equal("p-one", (await target.GetAsync(run.Id, default))!.CreatedBy);
+        Assert.Null(await legacy.GetAsync(run.Id, default));
+        Assert.Null(await Repository(await Context()).GetAsync(run.Id, default));
+        await using var audit = database.CreateCommand("""
+            SELECT count(*) FROM identity_changes WHERE workspace_id='workspace-c'
+              AND actor_kind='operator' AND actor_id=current_user
+            """);
+        Assert.Equal(2L, await audit.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task OperatorAccountRevocationInvalidatesAllWorkspaces()
+    {
+        var first = Repository(await Context());
+        var second = Repository(await Context("workspace-b"));
+        await Maintain(new("revoke-principal", "revoke-account", "workspace-a", "tenant-a",
+            "Synthetic", "p-one", "m-a", "one", "same-sub"));
+        await Assert.ThrowsAsync<IdentityAccessException>(() => first.ListAsync(100, default));
+        await Assert.ThrowsAsync<IdentityAccessException>(() => second.ListAsync(100, default));
+    }
+
+    [Fact]
+    public async Task MigrationPreservesActualVersionOneMetadataAndRollsBackVersionTwoFailure()
+    {
+        await Execute("""
+            DROP VIEW identity_access;
+            DROP TABLE identity_assertion_uses, identity_sessions, identity_changes, identity_resource_grants,
+                identity_group_members, identity_groups, identity_memberships,
+                control_start_dispatch, control_feedback, control_runs, identity_workspaces, identity_principals, control_schema_versions;
+            CREATE TABLE control_schema_versions(version integer PRIMARY KEY, checksum text NOT NULL,
+                applied_at timestamptz NOT NULL DEFAULT now());
+            """);
+        using var stream = typeof(PostgresMigrations).Assembly.GetManifestResourceStream(
+            "ControlApi.Persistence.Migrations.001_control_plane.sql")!;
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var versionOne = (await reader.ReadToEndAsync()).Replace("\r\n", "\n", StringComparison.Ordinal);
+        await Execute(versionOne);
+        await using (var version = database.CreateCommand(
+            "INSERT INTO control_schema_versions(version,checksum) VALUES (1,$1)"))
+        {
+            version.Parameters.AddWithValue(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(versionOne))));
+            await version.ExecuteNonQueryAsync();
+        }
+        var run = RunTransitions.Create(new("old-request", "synthetic"), "legacy-owner", DateTimeOffset.UtcNow);
+        var original = StoredRunCodec.Encode(run);
+        await using (var insert = database.CreateCommand("""
+            INSERT INTO control_runs(run_id,subject,client_request_id,version,created_at,metadata)
+            VALUES ($1,$2,$3,$4,$5,$6)
+            """))
+        {
+            insert.Parameters.AddWithValue(run.Id.Value);
+            insert.Parameters.AddWithValue(run.CreatedBy);
+            insert.Parameters.AddWithValue(run.ClientRequestId);
+            insert.Parameters.AddWithValue(run.Version);
+            insert.Parameters.AddWithValue(run.CreatedAt);
+            insert.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Jsonb, original);
+            await insert.ExecuteNonQueryAsync();
+        }
+        await Execute("CREATE TABLE identity_groups(conflicting_column integer)");
+        await Assert.ThrowsAsync<PostgresException>(() => new PostgresMigrations(database).ApplyAsync(default));
+        await using (var query = database.CreateCommand(
+            "SELECT count(*) FROM control_schema_versions WHERE version=2"))
+        {
+            Assert.Equal(0L, await query.ExecuteScalarAsync());
+        }
+        await Execute("DROP TABLE identity_groups");
+        await Task.WhenAll(new PostgresMigrations(database).ApplyAsync(default),
+            new PostgresMigrations(database).ApplyAsync(default));
+        var legacy = new PostgresRunRepository(database, TimeProvider.System, RunAccess.LegacyDevelopment());
+        Assert.Equal(original, StoredRunCodec.Encode((await legacy.GetAsync(run.Id, default))!));
+        await using var scope = database.CreateCommand("SELECT tenant_id IS NULL AND workspace_id IS NULL FROM control_runs");
+        Assert.True((bool)(await scope.ExecuteScalarAsync())!);
+    }
 
     [Fact]
     public async Task IdenticalRequestIdsAreScopedAndSurviveRecreation()
@@ -181,7 +292,7 @@ public sealed class PostgresIdentityTests : IAsyncLifetime
         client.DefaultRequestHeaders.Add("X-Workspace-Id", "workspace-a");
         var created = await client.PostAsJsonAsync("/api/v1/runs", new CreateRunRequest("http-request", "synthetic"));
         Assert.True(created.IsSuccessStatusCode, await created.Content.ReadAsStringAsync());
-        var run = (await created.Content.ReadFromJsonAsync<Domain.RunMetadata>())!;
+        var run = (await created.Content.ReadFromJsonAsync<Domain.RunMetadata>(JsonOptions))!;
         client.DefaultRequestHeaders.Remove("X-Workspace-Id");
         client.DefaultRequestHeaders.Add("X-Workspace-Id", "workspace-b");
         client.DefaultRequestHeaders.Add("X-Dev-Subject", "p-one");
@@ -193,8 +304,8 @@ public sealed class PostgresIdentityTests : IAsyncLifetime
         }
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync($"/api/v1/runs/{run.Id}/cancel", new { })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync($"/api/v1/runs/{run.Id}/feedback",
-            new SubmitFeedbackRequest("feedback", 5, FeedbackOutcome.Helpful, [], 1))).StatusCode);
-        Assert.Empty((await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs?limit=1&workspaceId=workspace-a"))!.Items);
+            new SubmitFeedbackRequest("feedback", 5, FeedbackOutcome.Helpful, [], 1), JsonOptions)).StatusCode);
+        Assert.Empty((await client.GetFromJsonAsync<RunListResponse>("/api/v1/runs?limit=1&workspaceId=workspace-a", JsonOptions))!.Items);
         Assert.Equal(0, (await client.GetFromJsonAsync<Domain.RunStatistics>("/api/v1/statistics/summary"))!.TotalRuns);
         client.DefaultRequestHeaders.Authorization = new("Bearer", Token(OtherIssuer));
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/runs")).StatusCode);
@@ -241,6 +352,14 @@ public sealed class PostgresIdentityTests : IAsyncLifetime
         ClientSecret = "synthetic-test-only",
         Audience = "nexus-api"
     };
+
+    private static JsonSerializerOptions CreateJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        JsonContractOptions.Configure(options);
+        Semantic.SemanticJsonContractOptions.Configure(options);
+        return options;
+    }
 }
 
 internal sealed class EnterpriseFactory(string connection, RSA key, params string[] issuers) : WebApplicationFactory<Program>

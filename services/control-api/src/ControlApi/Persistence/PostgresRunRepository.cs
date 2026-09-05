@@ -58,7 +58,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
             result = RunTransitions.Duplicate(
                 StoredRunCodec.Run((string)(await query.ExecuteScalarAsync(cancellationToken))!), request);
         }
-        await transaction.CommitAsync(cancellationToken);
+        await Commit(transaction, cancellationToken);
         return result;
     }
 
@@ -74,7 +74,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
         command.Parameters.AddWithValue(id.Value);
         AddScope(command);
         var json = (string?)await command.ExecuteScalarAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await Commit(transaction, cancellationToken);
         return json is null ? null : ReadRun(json, id);
     }
 
@@ -106,7 +106,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
                 runs.Add(StoredRunCodec.Run(reader.GetString(0)));
             }
         }
-        await transaction.CommitAsync(cancellationToken);
+        await Commit(transaction, cancellationToken);
         return runs;
     }
 
@@ -144,7 +144,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
                 throw new OptimisticConcurrencyException("Run changed during its transaction.");
             }
         }
-        await transaction.CommitAsync(cancellationToken);
+        await Commit(transaction, cancellationToken);
         return result.Result;
     }
 
@@ -284,7 +284,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
                 items.Add(item);
             }
         }
-        await transaction.CommitAsync(cancellationToken);
+        await Commit(transaction, cancellationToken);
         return items.OrderBy(item => item.SubmittedAt).ToArray();
     }
 
@@ -314,8 +314,17 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
                 }
             }
         }
-        await transaction.CommitAsync(cancellationToken);
+        await Commit(transaction, cancellationToken);
         return statistics.Finish(count);
+    }
+
+    private async Task Commit(NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        if (access.Context is { } context)
+        {
+            IdentityStore.EnsureUnexpired(context);
+        }
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private void AddScope(NpgsqlCommand command)

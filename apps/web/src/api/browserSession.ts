@@ -44,7 +44,7 @@ export class BrowserSession {
   })
   private csrf = ''
 
-  constructor(private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly fetcher: typeof fetch = (input, init) => globalThis.fetch(input, init)) {}
 
   async refresh(): Promise<void> {
     this.state.error = ''

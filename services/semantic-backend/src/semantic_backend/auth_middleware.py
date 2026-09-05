@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 from datetime import UTC, datetime
 
 import jwt
@@ -67,9 +68,11 @@ class ServiceAuthentication(BaseHTTPMiddleware):
                 or claims["htu"] != target
                 or not isinstance(claims["bh"], str)
                 or not hmac.compare_digest(claims["bh"], hashlib.sha256(body).hexdigest())
-                or claims["exp"] - claims["iat"] > 30
+                or any(type(claims[name]) is not int for name in ("exp", "iat", "nbf"))
+                or not 0 < claims["exp"] - claims["iat"] <= 30
+                or claims["nbf"] != claims["iat"]
                 or not isinstance(claims["jti"], str)
-                or len(claims["jti"]) != 32
+                or re.fullmatch(r"[a-f0-9]{32}", claims["jti"]) is None
             ):
                 raise AccessDenied("Invalid service request binding.")
             context = TrustedContext.model_validate(claims["ctx"])
@@ -79,7 +82,7 @@ class ServiceAuthentication(BaseHTTPMiddleware):
             )
         except (jwt.InvalidTokenError, ValidationError, AccessDenied, ValueError, TypeError):
             return JSONResponse({"detail": "Service authorization denied"}, status_code=403)
-        except PostgresError:
+        except (PostgresError, TimeoutError):
             return JSONResponse({"detail": "Authorization store unavailable"}, status_code=503)
         context_token = request_context.set(context)
         try:
@@ -90,7 +93,7 @@ class ServiceAuthentication(BaseHTTPMiddleware):
             return response
         except AccessDenied:
             return JSONResponse({"detail": "Service authorization denied"}, status_code=403)
-        except PostgresError:
+        except (PostgresError, TimeoutError):
             return JSONResponse({"detail": "Authorization store unavailable"}, status_code=503)
         finally:
             request_context.reset(context_token)

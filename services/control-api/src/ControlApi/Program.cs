@@ -206,9 +206,10 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("api", context =>
         RateLimitPartition.GetFixedWindowLimiter(
-            context.Items[RunAccess.ItemKey] is TrustedContext trusted
-                ? JsonSerializer.Serialize(new[] { trusted.Principal.PrincipalId, trusted.Scope.TenantId, trusted.Scope.WorkspaceId })
-                : context.User.FindFirst("sub")?.Value ??
+            context.User.FindFirst("sub") is { } subject
+                ? JsonSerializer.Serialize(new[] { context.User.FindFirst("iss")?.Value ?? "legacy-development",
+                    context.User.FindFirst("tid")?.Value ?? "", subject.Value })
+                :
             context.Connection.RemoteIpAddress?.ToString() ??
             "anonymous",
             _ => new FixedWindowRateLimiterOptions
@@ -283,8 +284,8 @@ if (app.Environment.IsProduction())
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseExceptionHandler();
 app.UseAuthentication();
-app.UseMiddleware<WorkspaceMiddleware>();
 app.UseRateLimiter();
+app.UseMiddleware<WorkspaceMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<JsonUnicodeValidationMiddleware>();
 

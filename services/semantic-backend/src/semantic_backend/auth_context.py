@@ -58,7 +58,11 @@ class TrustedContext(FrozenModel):
             self.authentication.authenticated_at
             <= self.membership.authorized_at
             < self.authentication.expires_at
-        ) or len(set(self.membership.permissions)) != len(self.membership.permissions):
+        ) or (
+            self.membership.authorized_at > datetime.now(UTC)
+            or self.authentication.expires_at <= datetime.now(UTC)
+            or len(set(self.membership.permissions)) != len(self.membership.permissions)
+        ):
             raise ValueError("Invalid trusted context ordering or permissions")
         return self
 

@@ -206,14 +206,14 @@ async def test_repository_scopes_every_lookup_and_list(monkeypatch):
     try:
         request = request_for("run_" + "a" * 32)
         status = RunStatus(run_id=request.run_id, state=RunState.STARTING)
-        record, created = await repository.create(request, status)
+        record, created = await repository.create(request, status, context=a)
         assert created and record.trusted_context == a
         request_context.set(b)
-        assert await repository.list_records() == ()
+        assert await repository.list_records(context=b) == ()
         with pytest.raises(RunNotFoundError):
-            await repository.get(request.run_id)
+            await repository.get(request.run_id, context=b)
         with pytest.raises(RunNotFoundError):
-            await repository.create(request, status)
+            await repository.create(request, status, context=b)
         request_context.set(None)
         with pytest.raises(AccessDenied):
             await repository.get(request.run_id)

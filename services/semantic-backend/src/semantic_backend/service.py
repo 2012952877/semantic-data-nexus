@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa
+from psycopg import Error as PostgresError
 from query_runtime.coordinator import QueryCoordinator, RunOutcome
 from query_runtime.domain import (
     AggregateFunction,
@@ -38,6 +42,8 @@ from semantic_api.models import (
 )
 
 from semantic_backend.adapter import AdapterFailure, CompilerRuntimeAdapter
+from semantic_backend.auth_context import AccessDenied, TrustedContext, legacy_development
+from semantic_backend.authorization import MembershipAuthority, PostgresAuthorization
 from semantic_backend.models import (
     MAX_SERIALIZED_DETAIL_BYTES,
     ColumnFormat,
@@ -95,7 +101,14 @@ class OrchestrationService:
         adapter: CompilerRuntimeAdapter | None = None,
         repository: RunRepository | None = None,
         resolver: SourceResolver | None = None,
+        authority: MembershipAuthority | None = None,
     ) -> None:
+        self._legacy = legacy_development()
+        self.authority = authority or (
+            None
+            if self._legacy
+            else PostgresAuthorization(os.environ.get("SEMANTIC_NEXUS_IDENTITY_POSTGRES", ""))
+        )
         self.compiler = compiler or SemanticCompiler.default()
         self.adapter = adapter or CompilerRuntimeAdapter()
         self.repository = repository or InMemoryRunRepository()
@@ -123,9 +136,16 @@ class OrchestrationService:
         )
 
     async def ready(self) -> bool:
+        if isinstance(self.authority, PostgresAuthorization) and not await self.authority.ready():
+            return False
         return self.compiler.ready and await self.resolver.health()
 
-    async def start(self, request: StartRunRequest) -> RunStatus:
+    async def start(
+        self, request: StartRunRequest, *, context: TrustedContext | None = None
+    ) -> RunStatus:
+        await self._authorize_request(context, "run.contributor")
+        if context is not None and request.requested_by != context.principal.principal_id:
+            raise AccessDenied("Run principal must match the verified context.")
         now = datetime.now(UTC)
         status = RunStatus(
             run_id=request.run_id,
@@ -149,27 +169,34 @@ class OrchestrationService:
                 for index, name in enumerate(_STAGES)
             ],
         )
-        record, created = await self.repository.create(request, status)
+        record, created = await self.repository.create(request, status, context=context)
         if created:
             record.deadline = asyncio.get_running_loop().time() + _RUN_TIMEOUT_SECONDS
             record.task = asyncio.create_task(
                 self._run(record),
                 name=f"semantic-backend-{request.run_id}",
             )
+            if record.trusted_context is not None:
+                record.revocation_task = asyncio.create_task(self._watch_authorization(record))
         return record.status.model_copy(deep=True)
 
-    async def get_status(self, run_id: str) -> RunStatus:
-        record = await self.repository.get(run_id)
+    async def get_status(self, run_id: str, *, context: TrustedContext | None = None) -> RunStatus:
+        await self._authorize_request(context, "run.reader")
+        record = await self.repository.get(run_id, context=context)
         async with record.lock:
             return record.status.model_copy(deep=True)
 
-    async def get_detail(self, run_id: str) -> RunDetail:
-        record = await self.repository.get(run_id)
+    async def get_detail(self, run_id: str, *, context: TrustedContext | None = None) -> RunDetail:
+        await self._authorize_request(context, "run.reader")
+        record = await self.repository.get(run_id, context=context)
         async with record.lock:
             return record.detail.model_copy(deep=True)
 
-    async def get_integrated_artifact(self, run_id: str) -> IntegratedRunArtifact:
-        record = await self.repository.get(run_id)
+    async def get_integrated_artifact(
+        self, run_id: str, *, context: TrustedContext | None = None
+    ) -> IntegratedRunArtifact:
+        await self._authorize_request(context, "run.reader")
+        record = await self.repository.get(run_id, context=context)
         async with record.lock:
             if (
                 record.status.state is not RunState.SUCCEEDED
@@ -189,8 +216,13 @@ class OrchestrationService:
                 },
             )
 
-    async def cancel(self, run_id: str) -> RunStatus:
-        record = await self.repository.get(run_id)
+    async def cancel(self, run_id: str, *, context: TrustedContext | None = None) -> RunStatus:
+        await self._authorize_request(context, "run.contributor")
+        record = await self.repository.get(run_id, context=context)
+        return await self._cancel_record(record)
+
+    async def _cancel_record(self, record: RunRecord) -> RunStatus:
+        run_id = record.request.run_id
         async with record.lock:
             if record.status.state.terminal:
                 return record.status.model_copy(deep=True)
@@ -228,16 +260,18 @@ class OrchestrationService:
         return record.status.model_copy(deep=True)
 
     async def shutdown(self) -> None:
-        records = await self.repository.list_records()
+        records = await self.repository._shutdown_records()
         current = asyncio.current_task()
         results = await asyncio.gather(
             *(
-                self.cancel(record.request.run_id)
+                self._cancel_record(record)
                 for record in records
                 if not record.status.state.terminal and record.task is not current
             ),
             return_exceptions=True,
         )
+        for record in records:
+            await self._stop_revocation_watch(record)
         close = getattr(self.resolver, "aclose", None)
         try:
             if close is not None:
@@ -363,7 +397,17 @@ class OrchestrationService:
                     raise TimeoutError("The whole-run deadline has expired.")
                 await self._succeed(record)
         except asyncio.CancelledError:
-            await self._cancelled(record)
+            if record.authorization_error is not None:
+                await self._authorization_failed(record)
+            else:
+                await self._cancelled(record)
+        except (AccessDenied, PostgresError) as exc:
+            record.authorization_error = (
+                "AUTHORIZATION_DENIED"
+                if isinstance(exc, AccessDenied)
+                else "AUTHORIZATION_UNAVAILABLE"
+            )
+            await self._authorization_failed(record)
         except TimeoutError:
             cleanup = await self._resolver_cleanup_failure(record)
             await self._fail(
@@ -400,6 +444,7 @@ class OrchestrationService:
                 ),
             )
         finally:
+            await self._stop_revocation_watch(record)
             async with record.lock:
                 record.coordinator = None
             finish_run = getattr(self.resolver, "finish_run", None)
@@ -649,17 +694,28 @@ class OrchestrationService:
                 for edge in outcome.lineage.edges
             ],
         )
-        async with record.lock:
-            detail = record.detail.model_copy(
-                update={"result": result, "manifest": committed, "lineage": lineage}
-            )
-            if serialized_detail_size(detail) > MAX_SERIALIZED_DETAIL_BYTES:
-                raise RuntimeFailure(
-                    "DETAIL_SERIALIZATION_LIMIT",
-                    "The typed run detail exceeded its serialized response boundary.",
+        locked = False
+        try:
+            async with self._publication_guard(record):
+                await record.lock.acquire()
+                locked = True
+                if (
+                    record.cancel_requested and not record.terminal_observed
+                ) or record.authorization_error is not None:
+                    raise asyncio.CancelledError
+                detail = record.detail.model_copy(
+                    update={"result": result, "manifest": committed, "lineage": lineage}
                 )
-            self._remaining_budget(record)
-            record.detail = detail
+                if serialized_detail_size(detail) > MAX_SERIALIZED_DETAIL_BYTES:
+                    raise RuntimeFailure(
+                        "DETAIL_SERIALIZATION_LIMIT",
+                        "The typed run detail exceeded its serialized response boundary.",
+                    )
+                self._remaining_budget(record)
+            record.pending_detail = detail
+        finally:
+            if locked:
+                record.lock.release()
 
     def _connector_provenance(self, run_id: str) -> tuple[dict[str, str], ...]:
         reader = getattr(self.resolver, "provenance", None)
@@ -682,13 +738,29 @@ class OrchestrationService:
         return provenance[0]["resolver"] if provenance else None
 
     async def _succeed(self, record: RunRecord) -> None:
-        async with record.lock:
-            if record.status.state.terminal:
-                return
-            self._remaining_budget(record)
-            record.status = record.status.model_copy(
-                update={"state": RunState.SUCCEEDED, "finalized_at": datetime.now(UTC)}
-            )
+        locked = False
+        try:
+            async with self._publication_guard(record):
+                await record.lock.acquire()
+                locked = True
+                if record.status.state.terminal:
+                    return
+                if (
+                    record.cancel_requested and not record.terminal_observed
+                ) or record.authorization_error is not None:
+                    raise asyncio.CancelledError
+                self._remaining_budget(record)
+                status = record.status.model_copy(
+                    update={"state": RunState.SUCCEEDED, "finalized_at": datetime.now(UTC)}
+                )
+            # Publish only after the authorization transaction commits successfully.
+            record.status = status
+            if record.pending_detail is not None:
+                record.detail = record.pending_detail
+                record.pending_detail = None
+        finally:
+            if locked:
+                record.lock.release()
 
     async def _cancelled(self, record: RunRecord) -> None:
         cleanup = await self._resolver_cleanup_failure(record)
@@ -819,6 +891,73 @@ class OrchestrationService:
             ) or record.status.state is RunState.CANCELLED:
                 raise asyncio.CancelledError
             self._remaining_budget(record)
+        await self._authorize_request(record.trusted_context, "run.contributor")
+
+    async def _authorize_request(self, context: TrustedContext | None, permission: str) -> None:
+        if self._legacy:
+            if context is not None:
+                raise AccessDenied("Legacy mode does not accept enterprise context.")
+            return
+        if context is None or self.authority is None:
+            raise AccessDenied("An explicitly verified context is required.")
+        await self.authority.reauthorize(context, permission)
+
+    @asynccontextmanager
+    async def _publication_guard(self, record: RunRecord) -> AsyncIterator[None]:
+        if self._legacy:
+            yield
+            return
+        if self.authority is None or record.trusted_context is None:
+            raise AccessDenied("An explicitly verified context is required.")
+        async with self.authority.guard(
+            record.trusted_context, permission="run.contributor", deadline=record.deadline
+        ):
+            yield
+
+    async def _watch_authorization(self, record: RunRecord) -> None:
+        while True:
+            await asyncio.sleep(0.25)
+            async with record.lock:
+                if record.status.state.terminal:
+                    return
+            try:
+                await self._authorize_request(record.trusted_context, "run.contributor")
+            except (AccessDenied, PostgresError, TimeoutError) as exc:
+                async with record.lock:
+                    if record.status.state.terminal:
+                        return
+                    record.authorization_error = (
+                        "AUTHORIZATION_DENIED"
+                        if isinstance(exc, AccessDenied)
+                        else "AUTHORIZATION_UNAVAILABLE"
+                    )
+                    task = record.task
+                if task is not None:
+                    task.cancel()
+                return
+
+    @staticmethod
+    async def _stop_revocation_watch(record: RunRecord) -> None:
+        if record.revocation_task is not None:
+            record.revocation_task.cancel()
+            try:
+                await record.revocation_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _authorization_failed(self, record: RunRecord) -> None:
+        cleanup = await self._resolver_cleanup_failure(record)
+        async with record.lock:
+            if not record.status.state.terminal:
+                record.detail = record.detail.model_copy(update={"result": None, "manifest": None})
+                record.pending_detail = None
+        await self._fail(
+            record,
+            cleanup.code
+            if cleanup is not None
+            else record.authorization_error or "AUTHORIZATION_DENIED",
+            "Workspace authorization ended; active work was cancelled and no result was released.",
+        )
 
     @staticmethod
     def _remaining_budget(record: RunRecord) -> float:

@@ -72,6 +72,42 @@ or maintenance command, not out-of-band unlocked DML. Database credentials belon
 only to trusted services/operators; expose neither PostgreSQL nor backend directly
 to browsers. Production requires verified TLS for database and service transport.
 
+Running jobs retain the explicitly verified context in `RunRecord`, not whatever
+context a background task happens to inherit. Public service methods require an
+explicit `context=` outside legacy mode. Authority is checked before dispatch,
+between stages and before publication; an in-flight monitor checks every 250 ms
+(plus bounded database latency) and cancels the run task on revocation or authority
+unavailability. Cancellation reaches the existing provider/runtime cleanup paths.
+Shutdown uses a private lifecycle snapshot and record cancellation, not an
+unauthenticated public run lookup. Terminal absorption remains unchanged.
+
+### Atomic authorization and commit protocol for #33
+
+`PostgresAuthorization.guard(context, pin=None, permission="run.reader",
+deadline=None)` is an async context manager returning `AuthorizationDecision`.
+Its `connection` is the single live `psycopg.AsyncConnection` transaction;
+`access` is the five-set `CatalogAccess` for a supplied pin. `deadline` is the
+caller's absolute monotonic deadline. Transactions are bounded by the earliest
+of that deadline, token expiry and five seconds; SQL/lock waits and cancellation
+roll back, release locks and never create a replayable committed response.
+
+Lock order is **shared authorization gate 731320032 -> optional immutable catalog
+pin key-share -> clarification/idempotency row lock -> writes -> commit**.
+Identity administration/maintenance acquires the same gate exclusively before
+row locks or writes. The guard sets READ COMMITTED, rechecks actual wall-clock
+expiry after the authorization lock and again before commit, and keeps current
+membership/resource grants stable through the transaction.
+
+The catalog/clarification adapter must use `decision.connection` for its CAS,
+idempotency and response write in the **same database/schema**, never connect or
+commit independently. Snapshot preparation and model/network work belong outside
+this short guard. Two remote authorization calls do not substitute for this
+transaction. Return/cache success only after successful context-manager exit.
+The runtime similarly stages result/terminal DTOs and publishes them only after
+guard commit; a commit-time failure leaves no successful state or manifest.
+The #33 adapter/HTTP composition remains separately owned until its reviewed
+library integration lands.
+
 ## Existing and future surfaces
 
 | Existing surface | Enforcement |
@@ -156,6 +192,10 @@ The operational `identity_changes` ledger records redacted metadata and a payloa
 digest in the same transaction. It is not audit-envelope/v1 or usage-envelope/v1:
 identity administration and bootstrap may have no versioned resource, and must
 not fabricate a resource identity or usage charge.
+HTTP decisions record the verified principal with `actor_kind=oidc`; maintenance
+records `actor_kind=operator` and PostgreSQL `current_user`, not the target user's
+identity as a fabricated actor. Operator roles must be individually attributable
+under the installation's database access policy.
 
 First workspace creation is an **operator-only** maintenance command, never
 automatic first-login admin assignment. It takes explicit JSON on stdin using
