@@ -1,0 +1,461 @@
+{
+  "contract_version": "capability-registry/v1",
+  "baseline": {"release": "v0.1.0", "commit": "3d53a2404e74d76c160aaeb92ace1e8a3e6bd999", "parent_issue": 28},
+  "sources": [
+    {"id": "observed.standard", "kind": "sanitized-observation", "summary": "Independent summary of the sanitized reference report, sections 3.2-3.4: twenty visible standard domains and Ask interaction modes.", "limitations": "Visibility establishes product scope, not backend implementation, deployed permissions, durability, or compatibility. Source material is not distributed."},
+    {"id": "observed.operators", "kind": "sanitized-observation", "summary": "The sanitized reference report enumerates twenty-six operator family names.", "limitations": "Inventory only. Exact semantics, algorithms, connector coverage, and authorization behavior are unknown; our conformance cases are independent requirements."},
+    {"id": "requirements.commercial", "kind": "product-requirement", "summary": "Parent issue #28 and implementation issues #29-#38 define commercial and integration acceptance.", "limitations": "Requirements are not observations or implementation evidence; no certification, billing activation, or release deadline is implied."},
+    {"id": "repository.m0", "kind": "repository", "summary": "M0 is a local synthetic two-scenario baseline, with typed v0 contracts and process-local state.", "limitations": "Existing M0 subsets do not establish full standard capabilities. See README.md and the immutable baseline commit."}
+  ],
+  "evidence": [
+    {"id": "registry.code", "kind": "implementation", "ref": "contracts/product/validation.py", "scope": "Offline registry coverage, reference, evidence and DAG checks; not a runtime feature switch."},
+    {"id": "registry.test", "kind": "test", "ref": "tests/test_product_contracts.py::test_capability_registry", "scope": "Checked-in registry satisfies the executable scope contract."},
+    {"id": "context.code", "kind": "implementation", "ref": "contracts/product/v1/trusted-context.schema.json", "scope": "Trusted-context shape only, not OIDC verification or access enforcement."},
+    {"id": "resource.code", "kind": "implementation", "ref": "contracts/product/v1/resource-version.schema.json", "scope": "Resource identity shape only, not persistence or publication."},
+    {"id": "audit.code", "kind": "implementation", "ref": "contracts/product/v1/audit-envelope.schema.json", "scope": "Append-only envelope and offline sequence checks, not an audit store."},
+    {"id": "usage.code", "kind": "implementation", "ref": "contracts/product/v1/usage-envelope.schema.json", "scope": "Usage and correction envelopes only, not collection, quotas or charging."},
+    {"id": "schemas.test", "kind": "test", "ref": "tests/test_product_contracts.py::test_positive_examples", "scope": "Synthetic positive fixtures validate against local Draft 2020-12 schemas with format checking."},
+    {"id": "schemas.negative", "kind": "test", "ref": "tests/test_product_contracts.py::test_negative_examples", "scope": "Synthetic invalid examples are rejected. No claim about deployed security."}
+  ],
+  "capabilities": [
+    {
+      "id": "standard.ask", "description": "Governed analysis workspace with progress, results and lineage across all Ask modes.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 supports two synthetic single-question scenarios, not generalized analysis or all interaction modes.",
+      "dependencies": ["ask.single", "ask.chat", "ask.ontology-assistant", "ask.clarification"], "owner_surface": "web", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Complete an authorized question and navigate progress, typed results and lineage.", "test_ref": null}, "negative": {"scenario": "Unsupported or unauthorized questions cannot trigger execution.", "test_ref": null}, "integration": {"scenario": "UI to authorized compiler/runtime to committed results across reconnect.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.runs", "description": "Searchable run history, details, cancellation, pinning and retention-aware deletion.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 history and cancellation are process-local; full lifecycle and durable pinning are missing.",
+      "dependencies": ["foundation.durable-runtime", "foundation.identity-workspace"], "owner_surface": "web", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Find, pin and cancel owned runs, retaining final diagnostics after restart.", "test_ref": null}, "negative": {"scenario": "Cross-workspace IDs cannot reveal, pin or cancel another run.", "test_ref": null}, "integration": {"scenario": "History UI, control store and worker agree after cancellation and restart.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.statistics", "description": "Scoped run, stage and outcome aggregates with defined counting rules.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "No complete durable standard statistics surface.",
+      "dependencies": ["foundation.durable-runtime", "foundation.identity-workspace"], "owner_surface": "control-api", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Aggregate known synthetic runs by stage and outcome with explicit filters.", "test_ref": null}, "negative": {"scenario": "Retries and foreign workspaces do not inflate or leak counts.", "test_ref": null}, "integration": {"scenario": "Console aggregates reconcile with persisted runs across restart.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.my-data", "description": "Personal scoped data catalog, upload preflight, folders and reference-aware removal.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Checked-in synthetic data is not an end-user upload/catalog workflow.",
+      "dependencies": ["foundation.identity-workspace", "commercial.secret-references"], "owner_surface": "semantic-backend", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Upload bounded synthetic data, catalog it and detect dependent references.", "test_ref": null}, "negative": {"scenario": "Reject oversized files, path traversal and removal of referenced objects.", "test_ref": null}, "integration": {"scenario": "Upload UI, scoped metadata and object store reconcile partial failures.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.ontologies", "description": "Author entities, fields, metrics, relations, bindings and policies; import, publish and roll back versions.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "v0 schemas and synthetic ontology exist; durable governed authoring/publishing do not.",
+      "dependencies": ["foundation.resource-version", "foundation.identity-workspace", "foundation.control-persistence"], "owner_surface": "control-api", "issue": 35, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Publish a validated draft and roll back by publishing a new immutable revision.", "test_ref": null}, "negative": {"scenario": "Reject stale concurrent edits, invalid bindings and unauthorized publication.", "test_ref": null}, "integration": {"scenario": "Editor, store and compiler agree on the pinned revision after rollback.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.knowledge-bases", "description": "Governed term/member retrieval configuration, retrieval tests, synchronization and index lifecycle.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Synthetic member resolution is not an indexed knowledge lifecycle or general document chatbot.",
+      "dependencies": ["standard.ontologies", "commercial.secret-references"], "owner_surface": "semantic-api", "issue": 35, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Resolve a scoped member with provenance after a completed index synchronization.", "test_ref": null}, "negative": {"scenario": "Ambiguous, stale or unauthorized retrieval cannot silently bind a member.", "test_ref": null}, "integration": {"scenario": "Ontology revision, search adapter and sync cancellation preserve the published index.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.resolvers", "description": "Versioned resolver discovery, validation, import preview and bounded sampling.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Fake and opt-in Databricks resolver subsets exist; the standard dynamic management workflow does not.",
+      "dependencies": ["foundation.connector-conformance", "commercial.secret-references"], "owner_surface": "connectors", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Discover and validate an adapter, preview metadata and sample within limits.", "test_ref": null}, "negative": {"scenario": "Unknown capabilities and unsafe identifiers fail closed without live calls.", "test_ref": null}, "integration": {"scenario": "Catalog registration, test workbench and runtime use the same pinned adapter.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.credentials", "description": "Manage secret references, lifecycle and delegated verification without disclosing values.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Environment-only opt-in configuration is not a scoped credential registry.",
+      "dependencies": ["commercial.secret-references", "foundation.control-persistence"], "owner_surface": "control-api", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Create a secret reference, verify permission and disable future use.", "test_ref": null}, "negative": {"scenario": "Reject inline secrets and cross-workspace reference resolution.", "test_ref": null}, "integration": {"scenario": "Admin UI, authorized broker and adapter never return or log secret material.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.llms", "description": "Manage model/provider configurations, defaults, activation and grants.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 has a deterministic test provider, not a real-model catalog.",
+      "dependencies": ["foundation.real-provider", "foundation.identity-workspace", "foundation.resource-version"], "owner_surface": "control-api", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Choose an authorized model revision and record its provenance on a run.", "test_ref": null}, "negative": {"scenario": "Disabled or unauthorized providers cannot be selected through direct API calls.", "test_ref": null}, "integration": {"scenario": "Catalog defaults flow into bounded provider calls and truthful usage records.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.prompt-templates", "description": "Version and authorize independently authored compiler templates with activation controls.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "No standard prompt lifecycle; reference prompts must never be copied.",
+      "dependencies": ["foundation.resource-version", "foundation.identity-workspace", "foundation.real-provider"], "owner_surface": "control-api", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Publish an original template and pin its revision for compilation.", "test_ref": null}, "negative": {"scenario": "Unauthorized edits and template instructions cannot bypass SQG validation.", "test_ref": null}, "integration": {"scenario": "Template catalog and compiler retain reproducible version provenance.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.compute-engines", "description": "Manage compute adapters, connection tests, activation and defaults.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Bounded M0 execution does not provide a governed engine catalog.",
+      "dependencies": ["foundation.connector-conformance", "foundation.identity-workspace"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Select a registered compatible engine after a bounded connection test.", "test_ref": null}, "negative": {"scenario": "Disabled engines or mismatched capabilities cannot receive plans.", "test_ref": null}, "integration": {"scenario": "Engine administration, planner and runtime honor one catalog revision.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.result-stores", "description": "Manage result destinations, tests, activation and manifest-based publication.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 committed inline results are process-local, not durable managed destinations.",
+      "dependencies": ["foundation.durable-runtime", "commercial.secret-references"], "owner_surface": "query-runtime", "issue": 34, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Publish a manifest only after all typed result parts are committed.", "test_ref": null}, "negative": {"scenario": "Partial writes, invalid digests and foreign-workspace pagination never expose rows.", "test_ref": null}, "integration": {"scenario": "Destination administration, object storage and pagination survive worker restart.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.resolver-test", "description": "Scoped conformance workbench driven by registered adapter test specifications.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Package tests exist, but not the standard authorized test workbench.",
+      "dependencies": ["standard.resolvers"], "owner_surface": "web", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Run a registered synthetic test and show bounded structured diagnostics.", "test_ref": null}, "negative": {"scenario": "Reject arbitrary SQL and unregistered test commands.", "test_ref": null}, "integration": {"scenario": "UI test request uses the same authorization and capability guards as execution.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.users", "description": "Administer user records and grants bound to verified identities.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Development identity is not enterprise user lifecycle or isolation.",
+      "dependencies": ["foundation.identity-workspace"], "owner_surface": "control-api", "issue": 32, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Resolve a verified issuer/subject to an authorized scoped principal.", "test_ref": null}, "negative": {"scenario": "Email collisions, forged headers and deactivated users do not grant access.", "test_ref": null}, "integration": {"scenario": "Identity middleware, user administration and resource APIs enforce revocation.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.groups", "description": "Manage scoped groups, membership changes and activation.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "No complete durable group-grant administration.",
+      "dependencies": ["foundation.identity-workspace"], "owner_surface": "control-api", "issue": 32, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Add an authorized member and apply a scoped group grant.", "test_ref": null}, "negative": {"scenario": "Removal and group disablement invalidate grants without tenant leakage.", "test_ref": null}, "integration": {"scenario": "Admin membership changes propagate to API authorization and cached decisions.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.run-feedback", "description": "Submit and review run-linked feedback under scoped permissions.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "No complete persisted feedback and administrative review workflow.",
+      "dependencies": ["foundation.durable-runtime", "foundation.identity-workspace"], "owner_surface": "control-api", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Submit feedback on an owned run and review with an authorized reviewer.", "test_ref": null}, "negative": {"scenario": "Foreign run IDs and unprivileged review requests disclose no feedback.", "test_ref": null}, "integration": {"scenario": "Feedback survives restart and links to the correct immutable run revision.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.api-logs", "description": "Permission-scoped API diagnostic search with redacted details.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 diagnostics do not establish a retained, authorized API log product.",
+      "dependencies": ["commercial.audit-metering", "integration.otel"], "owner_surface": "control-api", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Search request metadata by scoped trace correlation.", "test_ref": null}, "negative": {"scenario": "Tokens, prompts, query bodies and another workspace's logs remain inaccessible.", "test_ref": null}, "integration": {"scenario": "API instrumentation, retention and console filters enforce the same scope.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.replay", "description": "Validate sanitized diagnostic exports and replay recorded events offline without execution.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 diagnostics/export are not the complete validated replay workbench.",
+      "dependencies": ["foundation.durable-runtime"], "owner_surface": "web", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Load a compatible synthetic diagnostic archive and step through ordered events.", "test_ref": null}, "negative": {"scenario": "Reject oversized archives, invalid versions and event gaps; replay cannot execute tools.", "test_ref": null}, "integration": {"scenario": "Exported committed history reconstructs the same timeline without network access.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.api-reference", "description": "Versioned reference for our own API shapes, errors and authorization requirements.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Existing v0 HTTP docs are not a complete standard-console reference.",
+      "dependencies": ["integration.openapi-json-schema"], "owner_surface": "web", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Browse supported API versions and validated synthetic examples.", "test_ref": null}, "negative": {"scenario": "Unimplemented routes and stale request examples cannot be presented as delivered.", "test_ref": null}, "integration": {"scenario": "Published reference is checked against running owned API contracts.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "standard.help", "description": "Role-appropriate help explaining actual workflows, boundaries and failure recovery.", "category": "standard-domain",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "M0 repository runbooks do not constitute full in-product standard help.",
+      "dependencies": ["foundation.capability-registry"], "owner_surface": "web", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Find relevant guidance from each supported workspace workflow.", "test_ref": null}, "negative": {"scenario": "Planned features are visibly unavailable rather than described as delivered.", "test_ref": null}, "integration": {"scenario": "Help capability labels agree with the versioned registry and release evidence.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "ask.single", "description": "Compile a single scoped natural-language question into a validated executable graph.", "category": "ask-mode",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Two deterministic M0 scenarios are not generalized natural-language compilation.",
+      "dependencies": ["foundation.catalog-compiler", "foundation.durable-runtime"], "owner_surface": "semantic-api", "issue": 33, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Compile held-out questions against a pinned authorized catalog.", "test_ref": null}, "negative": {"scenario": "Unknown concepts and model-generated SQL cannot bypass validation.", "test_ref": null}, "integration": {"scenario": "Ask request passes provider, validator, planner and bounded runtime.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "ask.chat", "description": "Resolve follow-up questions with bounded, scoped prior-answer context.", "category": "ask-mode",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "No complete multi-turn resolution path; no assumed proprietary session model.",
+      "dependencies": ["foundation.catalog-compiler", "foundation.identity-workspace"], "owner_surface": "semantic-api", "issue": 33, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Resolve a follow-up using authorized prior answer references.", "test_ref": null}, "negative": {"scenario": "Reject forged prior answers and foreign-workspace history references.", "test_ref": null}, "integration": {"scenario": "Chat UI and compiler produce independently traceable runs from bounded history.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "ask.ontology-assistant", "description": "Explain the selected semantic model without executing data queries.", "category": "ask-mode",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "No dedicated non-executing ontology assistance workflow.",
+      "dependencies": ["standard.ontologies", "foundation.real-provider"], "owner_surface": "semantic-api", "issue": 35, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Explain an authorized model entity with version provenance.", "test_ref": null}, "negative": {"scenario": "Requests to query data or invoke actions remain non-executing.", "test_ref": null}, "integration": {"scenario": "Assistant uses scoped published ontology and cannot reach execution tools.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "ask.clarification", "description": "Pause ambiguous analysis for an explicit, validated user choice.", "category": "ask-mode",
+      "observed_source": {"ref": "observed.standard", "confidence": "high"}, "state": "planned", "current_gap": "Failing an ambiguous M0 question is not a persisted clarification workflow.",
+      "dependencies": ["foundation.catalog-compiler", "foundation.identity-workspace"], "owner_surface": "semantic-api", "issue": 33, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Resume a pending question once after a valid authorized clarification.", "test_ref": null}, "negative": {"scenario": "Reject stale, duplicate and foreign-workspace responses without implicit execution.", "test_ref": null}, "integration": {"scenario": "UI prompt, atomic response and resumed compiler retain original scope and versions.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.act", "description": "Explicitly authorized tool action family; writes are never implicit.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "unsupported", "current_gap": "Not supported by v0 execution; future acceptance requires a separate tool authorization boundary.",
+      "dependencies": ["foundation.connector-conformance", "foundation.identity-workspace", "commercial.audit-metering"], "owner_surface": "connectors", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Execute only a registered synthetic tool with explicit principal/resource/action authorization.", "test_ref": null}, "negative": {"scenario": "Deny missing, expired or mismatched tool authorization; never silently execute writes.", "test_ref": null}, "integration": {"scenario": "Authorization, confirmation policy, idempotency and audit guard the exact tool invocation.", "test_ref": null}}, "evidence": [],
+      "execution_policy": {"tool_authorization": "explicit", "implicit_writes": "deny"}
+    },
+    {
+      "id": "operator.aggregate", "description": "Grouped aggregate family with typed measure semantics.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 has typed AGGREGATE support; broader catalog/adapter conformance is not delivered.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Aggregate grouped synthetic decimal measures with defined null behavior.", "test_ref": null}, "negative": {"scenario": "Reject ambiguous source aliases and unsupported measures.", "test_ref": null}, "integration": {"scenario": "Local and pushdown aggregates match typed reference results.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.ask", "description": "Governed semantic question operator family, independent of the Ask page.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "Family name observed; internal semantics unknown and not implemented as a standard operator.",
+      "dependencies": ["foundation.connector-conformance", "foundation.catalog-compiler"], "owner_surface": "semantic-api", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Resolve a bounded semantic request through a pinned catalog.", "test_ref": null}, "negative": {"scenario": "Reject recursive expansion exceeding the declared budget.", "test_ref": null}, "integration": {"scenario": "Nested semantic requests retain authorization and provenance.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.date", "description": "Typed calendar/date transformation family.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No full DATE family conformance; timezone/calendar choices require specification.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Transform synthetic dates under an explicit timezone and calendar.", "test_ref": null}, "negative": {"scenario": "Reject invalid dates and ambiguous timezone assumptions.", "test_ref": null}, "integration": {"scenario": "Pushdown and local date boundaries agree.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.deduplicate", "description": "Key-based duplicate removal with deterministic survivor rules.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard deduplication conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Retain the specified survivor for repeated synthetic keys.", "test_ref": null}, "negative": {"scenario": "Reject missing tie-breakers where survivor choice affects results.", "test_ref": null}, "integration": {"scenario": "Partitioning and adapter pushdown preserve survivor identity.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.derive", "description": "Derive typed expressions without arbitrary code execution.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 typed DERIVE exists; standard expression catalog and cross-adapter conformance remain.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Compute decimal expressions with exact tagged numeric literals.", "test_ref": null}, "negative": {"scenario": "Reject unsafe expressions and invalid numeric coercion.", "test_ref": null}, "integration": {"scenario": "Local and pushed expressions preserve null, precision and errors.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.distinct", "description": "Distinct projected rows with defined equality semantics.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard DISTINCT conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Eliminate duplicate projected rows using typed equality.", "test_ref": null}, "negative": {"scenario": "Reject incompatible equality or collation requirements.", "test_ref": null}, "integration": {"scenario": "Distinct results match across batch boundaries and adapters.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.except", "description": "Typed set difference with declared multiplicity.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard EXCEPT conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Subtract compatible synthetic row sets with explicit duplicate semantics.", "test_ref": null}, "negative": {"scenario": "Reject mismatched input schemas.", "test_ref": null}, "integration": {"scenario": "Set difference is equivalent locally and through pushdown.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.explode", "description": "Bounded expansion of typed collection values.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard EXPLODE conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Expand a typed synthetic collection with defined empty/null behavior.", "test_ref": null}, "negative": {"scenario": "Stop expansion when the declared output budget is exceeded.", "test_ref": null}, "integration": {"scenario": "Streaming expansion preserves lineage and bounded backpressure.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.filter", "description": "Typed predicate filtering with explicit null semantics.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 FILTER is implemented for a typed subset; standard family conformance remains.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Filter synthetic rows with typed scalar and set predicates.", "test_ref": null}, "negative": {"scenario": "Reject malformed predicate values and unbound columns.", "test_ref": null}, "integration": {"scenario": "Local and pushed filters agree on null and numeric semantics.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.impute", "description": "Explicit missing-value replacement policy.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard IMPUTE conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Replace missing values with a declared typed strategy and record provenance.", "test_ref": null}, "negative": {"scenario": "Reject silent statistical inference or incompatible replacement types.", "test_ref": null}, "integration": {"scenario": "Batch boundaries do not change imputation results.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.intersect", "description": "Typed set intersection with declared multiplicity.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard INTERSECT conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Intersect compatible synthetic row sets.", "test_ref": null}, "negative": {"scenario": "Reject incompatible schemas and unsupported multiplicity semantics.", "test_ref": null}, "integration": {"scenario": "Local and adapter intersections match including nulls.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.join", "description": "Authorized relationship-bound joins with explicit key aliases.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 JOIN has explicit relation/key checks; standard adapter and join-kind conformance remains.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Join synthetic inputs through a declared relation and explicit aliases.", "test_ref": null}, "negative": {"scenario": "Reject ambiguous self-join keys and unapproved relationships.", "test_ref": null}, "integration": {"scenario": "Pushdown/local joins preserve cardinality, nullability and budget guards.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.pick", "description": "Deterministic bounded selection from an ordered input.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "Observed family only; exact selection semantics require our adapter specification.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Pick declared positions from deterministically ordered synthetic input.", "test_ref": null}, "negative": {"scenario": "Reject out-of-range or ambiguous ordering policies.", "test_ref": null}, "integration": {"scenario": "Parallel execution preserves the specified selection.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.pivot", "description": "Bounded row-to-column reshaping with explicit output domains.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 PIVOT exists; standard family and multi-adapter conformance remain.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Pivot known synthetic domain values into a typed output schema.", "test_ref": null}, "negative": {"scenario": "Reject undeclared output growth and duplicate output aliases.", "test_ref": null}, "integration": {"scenario": "Pivot preserves exact measures across local and pushed execution.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.project", "description": "Explicit typed column selection and renaming.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 PROJECT exists; full standard catalog/adapter conformance remains.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Select and rename permitted columns with stable output order.", "test_ref": null}, "negative": {"scenario": "Reject hidden, unknown or duplicate output columns.", "test_ref": null}, "integration": {"scenario": "Projection preserves lineage and column policies across adapters.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.resample", "description": "Time-series resampling under explicit interval and gap policies.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard RESAMPLE conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Resample synthetic timestamps with explicit interval boundaries and timezone.", "test_ref": null}, "negative": {"scenario": "Reject invalid intervals and unbounded gap filling.", "test_ref": null}, "integration": {"scenario": "Resampling is stable across partition and daylight-saving boundaries.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.sample", "description": "Bounded sampling with declared reproducibility semantics.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "Resolver sampling is not full SAMPLE operator conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Sample within a declared bound and record method and seed where supported.", "test_ref": null}, "negative": {"scenario": "Reject invalid sizes and unsupported reproducibility claims.", "test_ref": null}, "integration": {"scenario": "Planner does not substitute inequivalent adapter sampling methods.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.search", "description": "Scoped retrieval through an explicitly registered search adapter.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No complete standard SEARCH operator conformance.",
+      "dependencies": ["foundation.connector-conformance", "standard.knowledge-bases"], "owner_surface": "connectors", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Retrieve bounded synthetic matches with index/version provenance.", "test_ref": null}, "negative": {"scenario": "Reject unauthorized indexes and unsupported ranking assumptions.", "test_ref": null}, "integration": {"scenario": "Search bindings enforce workspace filters before retrieval.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.select", "description": "Authorized source selection bound to ontology fields.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 SELECT exists; full standard source/catalog conformance remains.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Select authorized typed fields from a pinned synthetic source.", "test_ref": null}, "negative": {"scenario": "Reject arbitrary physical names and unauthorized sources.", "test_ref": null}, "integration": {"scenario": "Source policies and projection are honored by every adapter.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.sort", "description": "Typed ordering with explicit direction, null ordering and tie rules.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "M0 SORT exists; standard collation and adapter conformance remain.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Sort typed synthetic rows with declared null and tie behavior.", "test_ref": null}, "negative": {"scenario": "Reject unsupported collation or missing sort fields.", "test_ref": null}, "integration": {"scenario": "Spill and pushdown retain equivalent ordering.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.summarize", "description": "Bounded summary generation with source provenance.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "Answer formatting is not standard SUMMARIZE operator conformance; reference algorithms unknown.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "semantic-api", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Summarize authorized synthetic input with evidence references and limits.", "test_ref": null}, "negative": {"scenario": "Reject unsupported claims and inputs exceeding the summary policy.", "test_ref": null}, "integration": {"scenario": "Summary output preserves provenance and exposes provider usage if applicable.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.union-all", "description": "Schema-compatible concatenation preserving duplicates.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard UNION_ALL conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Concatenate compatible synthetic rows retaining duplicates.", "test_ref": null}, "negative": {"scenario": "Reject incompatible input types rather than silently widening.", "test_ref": null}, "integration": {"scenario": "All rows and lineage survive streaming and pushdown.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.union-distinct", "description": "Schema-compatible union with duplicate elimination.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard UNION_DISTINCT conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Union compatible synthetic inputs with declared equality semantics.", "test_ref": null}, "negative": {"scenario": "Reject incompatible collations and schema mismatch.", "test_ref": null}, "integration": {"scenario": "Duplicate elimination agrees across partitions and adapters.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.unpivot", "description": "Typed column-to-row reshaping with explicit output names.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard UNPIVOT conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Unpivot declared synthetic columns with explicit null retention.", "test_ref": null}, "negative": {"scenario": "Reject incompatible value types and alias collisions.", "test_ref": null}, "integration": {"scenario": "Unpivot output schema and row counts match across adapters.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "operator.window", "description": "Partitioned window calculations with explicit order and frame.", "category": "operator",
+      "observed_source": {"ref": "observed.operators", "confidence": "high"}, "state": "planned", "current_gap": "No standard WINDOW conformance.",
+      "dependencies": ["foundation.connector-conformance"], "owner_surface": "query-runtime", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Calculate windows over synthetic partitions with declared frames.", "test_ref": null}, "negative": {"scenario": "Reject ambiguous order, unsupported frames and memory budget violations.", "test_ref": null}, "integration": {"scenario": "Spill, partitioning and pushdown retain window semantics.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "foundation.capability-registry", "description": "Executable versioned scope, dependency and evidence registry.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "implemented", "current_gap": "Offline contract checker only; not a runtime capability advertisement or release certification.",
+      "dependencies": [], "owner_surface": "contracts", "issue": 29, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Validate complete standard/mode/operator coverage and all references.", "test_ref": "tests/test_product_contracts.py::test_capability_registry"}, "negative": {"scenario": "Reject cycles, dangling references and unsupported delivery claims.", "test_ref": "tests/test_product_contracts.py::test_invalid_registry"}, "integration": {"scenario": "Future release automation consumes evidenced states without treating planned entries as available.", "test_ref": null}}, "evidence": ["registry.code", "registry.test"]
+    },
+    {
+      "id": "foundation.trusted-context", "description": "Versioned server-produced principal and authorized workspace context shape.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "implemented", "current_gap": "Schema validation is not authentication, membership lookup or integrated isolation.",
+      "dependencies": [], "owner_surface": "contracts", "issue": 29, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Validate synthetic issuer/subject, scope and membership context.", "test_ref": "tests/test_product_contracts.py::test_positive_examples"}, "negative": {"scenario": "Reject header-based authority, missing membership and malformed identity.", "test_ref": "tests/test_product_contracts.py::test_negative_examples"}, "integration": {"scenario": "Identity middleware alone produces context after token and membership verification.", "test_ref": null}}, "evidence": ["context.code", "schemas.test", "schemas.negative"]
+    },
+    {
+      "id": "foundation.resource-version", "description": "Scoped immutable resource identity and content digest shape.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "implemented", "current_gap": "Schema only; no persistent version allocation, canonical serializer or migration adapter.",
+      "dependencies": [], "owner_surface": "contracts", "issue": 29, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Validate a scoped synthetic resource revision and digest.", "test_ref": "tests/test_product_contracts.py::test_positive_examples"}, "negative": {"scenario": "Reject invalid revisions, digests and unknown fields.", "test_ref": "tests/test_product_contracts.py::test_negative_examples"}, "integration": {"scenario": "Publication and runs pin immutable storage identities with optimistic concurrency.", "test_ref": null}}, "evidence": ["resource.code", "schemas.test", "schemas.negative"]
+    },
+    {
+      "id": "foundation.audit-envelope", "description": "Versioned metadata-only append audit envelope.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "implemented", "current_gap": "Offline shape/sequence validation, not a durable tamper-proof audit service.",
+      "dependencies": ["foundation.resource-version"], "owner_surface": "contracts", "issue": 29, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Validate synthetic audit records and contiguous append sequences.", "test_ref": "tests/test_product_contracts.py::test_positive_examples"}, "negative": {"scenario": "Reject mutation verbs, payload fields and invalid sequence ancestry.", "test_ref": "tests/test_product_contracts.py::test_negative_examples"}, "integration": {"scenario": "Authorized storage adapter atomically appends immutable events with scoped access.", "test_ref": null}}, "evidence": ["audit.code", "schemas.test", "schemas.negative"]
+    },
+    {
+      "id": "foundation.usage-envelope", "description": "Versioned measured usage and append-only correction shape.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "implemented", "current_gap": "No usage collection, quota enforcement, pricing or billing activation.",
+      "dependencies": [], "owner_surface": "contracts", "issue": 29, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Validate exact decimal measurements and signed corrections.", "test_ref": "tests/test_product_contracts.py::test_positive_examples"}, "negative": {"scenario": "Reject floating quantities, negative measurements and mutation verbs.", "test_ref": "tests/test_product_contracts.py::test_negative_examples"}, "integration": {"scenario": "Durable collector deduplicates events and reconciles scoped corrections.", "test_ref": null}}, "evidence": ["usage.code", "schemas.test", "schemas.negative"]
+    },
+    {
+      "id": "foundation.real-provider", "description": "Genuine bounded structured-output model provider behind deterministic validation.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "M0 does not call a model. Issue #30 targets OpenAI Chat Completions structured protocol and loopback mock; live model, Azure and private-gateway support remain unimplemented or unverified, not implied by transport tests.",
+      "dependencies": ["foundation.capability-registry"], "owner_surface": "semantic-api", "issue": 30, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Parse a provider response into validated typed SQG with usage/provenance.", "test_ref": null}, "negative": {"scenario": "Malformed output, timeout and cancellation do not fall back to fabricated success.", "test_ref": null}, "integration": {"scenario": "Explicitly authorized real-provider evidence complements deterministic transport tests.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "foundation.control-persistence", "description": "Transactional PostgreSQL control metadata persistence.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "M0 control state is process-local; sibling issue #31 owns implementation.",
+      "dependencies": ["foundation.resource-version"], "owner_surface": "control-api", "issue": 31, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Persist metadata and idempotency decisions across process restart.", "test_ref": null}, "negative": {"scenario": "Concurrent creates and stale updates cannot lose writes or duplicate runs.", "test_ref": null}, "integration": {"scenario": "Real PostgreSQL integration covers transactions and failure rollback.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "foundation.identity-workspace", "description": "OIDC-backed identity and authoritative tenant/workspace membership enforcement.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "New schemas are not wired into v0 APIs or middleware.",
+      "dependencies": ["foundation.trusted-context", "foundation.control-persistence", "integration.oidc-oauth2"], "owner_surface": "control-api", "issue": 32, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Verify token issuer, subject, audience and authorized workspace membership.", "test_ref": null}, "negative": {"scenario": "Spoofed tenant/workspace headers, expired tokens and revoked membership cannot authorize.", "test_ref": null}, "integration": {"scenario": "Every UI/API/storage path denies cross-workspace access, including events and results.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "foundation.catalog-compiler", "description": "Generalized catalog-bound compilation and clarification instead of scenario templates.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "M0 compiler is intentionally scenario-bounded.",
+      "dependencies": ["foundation.real-provider", "foundation.resource-version"], "owner_surface": "semantic-api", "issue": 33, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Compile held-out catalog questions and request clarification when bindings are ambiguous.", "test_ref": null}, "negative": {"scenario": "Unknown metrics and provider instructions cannot create unauthorized bindings.", "test_ref": null}, "integration": {"scenario": "Compiler outputs traverse unchanged deterministic v0 validation and runtime guards.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "foundation.durable-runtime", "description": "Durable runs, ordered events, cancellation, recovery, committed typed results and lineage.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "M0 bounded runtime and committed inline results do not survive restart.",
+      "dependencies": ["foundation.control-persistence", "foundation.resource-version", "integration.arrow-parquet"], "owner_surface": "query-runtime", "issue": 34, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Recover a run, reconnect from event cursor and paginate committed results after restart.", "test_ref": null}, "negative": {"scenario": "Partial writes, event gaps and duplicate workers cannot publish success or leak rows.", "test_ref": null}, "integration": {"scenario": "Bounded streaming, spool/backpressure, retry and cancellation survive worker/store failures.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "foundation.connector-conformance", "description": "Versioned plugin/catalog conformance and capability-aware execution gating.", "category": "foundation",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "M0 has a bounded resolver boundary, not conformance for every observed family.",
+      "dependencies": ["foundation.capability-registry", "foundation.resource-version"], "owner_surface": "connectors", "issue": 37, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Register only a pinned adapter passing typed synthetic conformance cases.", "test_ref": null}, "negative": {"scenario": "Unknown operators and inequivalent pushdown fail closed.", "test_ref": null}, "integration": {"scenario": "Planner and runtime share tested capability snapshots, budgets and failure semantics.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.audit-metering", "description": "Durable scoped audit and deduplicated usage accounting with truthful provenance.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Envelope schemas are not integrated collectors or audit persistence.",
+      "dependencies": ["foundation.audit-envelope", "foundation.usage-envelope", "foundation.identity-workspace", "foundation.durable-runtime"], "owner_surface": "control-api", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Append scoped audit and usage records and reconcile retries/corrections.", "test_ref": null}, "negative": {"scenario": "Reject overwrites, duplicate charging and sensitive payload logging.", "test_ref": null}, "integration": {"scenario": "API, runtime and provider usage reconcile to durable evidence without billing activation.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.quotas", "description": "Atomic workspace quota reservation, enforcement and release.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Per-request M0 budgets are not shared durable quotas.",
+      "dependencies": ["commercial.audit-metering"], "owner_surface": "control-api", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Reserve usage atomically and release unused capacity on terminal states.", "test_ref": null}, "negative": {"scenario": "Concurrent requests cannot overspend or bypass limits after restart.", "test_ref": null}, "integration": {"scenario": "Quota decisions, execution and usage reconciliation agree under retries.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.migrations", "description": "Versioned control schema migrations with compatibility and rollback procedures.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "No M0 durable control database migration baseline.",
+      "dependencies": ["foundation.control-persistence"], "owner_surface": "control-api", "issue": 31, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Upgrade a prior synthetic database while preserving scoped identities.", "test_ref": null}, "negative": {"scenario": "Failed or incompatible migrations do not partially activate a schema.", "test_ref": null}, "integration": {"scenario": "Upgrade and documented rollback/read compatibility are exercised against PostgreSQL.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.restore", "description": "Measured backup/restore and retention evidence across metadata and results.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "No commercial restore/RPO/RTO evidence.",
+      "dependencies": ["foundation.durable-runtime", "commercial.migrations"], "owner_surface": "operations", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Restore synthetic metadata/results and measure against explicitly agreed recovery objectives.", "test_ref": null}, "negative": {"scenario": "Missing objects and corrupt backups cannot be reported as successful recovery.", "test_ref": null}, "integration": {"scenario": "Restore drill verifies authorization, manifests and event cursors together.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.failure-load", "description": "Reproducible failure, capacity and sustained-load evidence with declared workload limits.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Synthetic M0 success tests are not commercial load or failure certification.",
+      "dependencies": ["foundation.durable-runtime", "foundation.identity-workspace", "commercial.quotas"], "owner_surface": "operations", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Measure latency, throughput and resource use for a published synthetic workload.", "test_ref": null}, "negative": {"scenario": "Worker/store/provider failures cannot cause unbounded retries, memory growth or isolation leaks.", "test_ref": null}, "integration": {"scenario": "Failure injection and sustained load cover complete UI/API/storage execution paths.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.secret-references", "description": "Authorized secret-reference resolution with rotation, revocation and redaction.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Common schema defines reference shape; no secret broker or integrated policy.",
+      "dependencies": ["foundation.identity-workspace"], "owner_surface": "control-api", "issue": 32, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Resolve an authorized reference only at the adapter boundary.", "test_ref": null}, "negative": {"scenario": "Deny arbitrary store paths and ensure logs/responses never contain secret values.", "test_ref": null}, "integration": {"scenario": "Rotation and revocation propagate across cached adapter credentials.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "commercial.license-sbom", "description": "Pinned dependency license/NOTICE review, SBOM and release supply-chain evidence.", "category": "commercial",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Repository license and clean-room scan do not establish dependency-wide commercial approval.",
+      "dependencies": ["foundation.capability-registry"], "owner_surface": "operations", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Produce an SBOM and reviewed license/NOTICE mapping for exact release artifacts.", "test_ref": null}, "negative": {"scenario": "Unpinned, unknown-license or incompatible components block adoption/release.", "test_ref": null}, "integration": {"scenario": "Release images and packages reconcile with locked dependency and provenance records.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "integration.openapi-json-schema", "description": "OpenAPI and JSON Schema as versioned public interface standards.", "category": "integration",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "v0 JSON Schemas exist; complete versioned standard API generation/drift checks are not integrated.",
+      "dependencies": ["foundation.capability-registry"], "owner_surface": "control-api", "issue": 36, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Validate owned API examples and schemas against the published API version.", "test_ref": null}, "negative": {"scenario": "Breaking drift and undocumented routes fail compatibility checks.", "test_ref": null}, "integration": {"scenario": "Client generation/reference and running API responses agree.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "integration.oidc-oauth2", "description": "Standards-based identity and delegated authorization with deployment-specific issuer configuration.", "category": "integration",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Contract shape alone does not integrate an IdP or enforce OAuth scopes.",
+      "dependencies": ["foundation.trusted-context"], "owner_surface": "control-api", "issue": 32, "milestone": "M1",
+      "acceptance": {"positive": {"scenario": "Validate an authorized issuer/audience and map stable subject identity.", "test_ref": null}, "negative": {"scenario": "Reject bad signatures, issuer confusion, expiration and wrong audiences.", "test_ref": null}, "integration": {"scenario": "OIDC login and delegated calls preserve least privilege across services.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "integration.otel", "description": "OpenTelemetry correlation and redacted operational signals.", "category": "integration",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "Run diagnostics are not evidence of end-to-end OTel exporters and retention controls.",
+      "dependencies": ["foundation.durable-runtime"], "owner_surface": "operations", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Correlate synthetic requests, stages and provider calls through an approved exporter.", "test_ref": null}, "negative": {"scenario": "Telemetry export failure cannot leak payloads or block durable execution.", "test_ref": null}, "integration": {"scenario": "Traces, metrics and redaction hold across service and worker boundaries.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "integration.arrow-parquet", "description": "Typed Arrow interchange and Parquet result parts behind owned manifests.", "category": "integration",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "M0 result shape support is not durable typed object-store interchange.",
+      "dependencies": ["foundation.resource-version"], "owner_surface": "query-runtime", "issue": 34, "milestone": "M2",
+      "acceptance": {"positive": {"scenario": "Round-trip decimals, nulls and timestamps through typed batches and result parts.", "test_ref": null}, "negative": {"scenario": "Reject incompatible schemas and corrupt or uncommitted result parts.", "test_ref": null}, "integration": {"scenario": "Object-store parts and manifests support bounded exact result pagination.", "test_ref": null}}, "evidence": []
+    },
+    {
+      "id": "integration.openlineage", "description": "Targeted export from owned lineage contracts to a pinned OpenLineage version.", "category": "integration",
+      "observed_source": {"ref": "requirements.commercial", "confidence": "not-observed"}, "state": "planned", "current_gap": "No installed exporter or compatibility claim; mapping/adapter decision remains.",
+      "dependencies": ["foundation.durable-runtime", "commercial.license-sbom"], "owner_surface": "operations", "issue": 38, "milestone": "M3",
+      "acceptance": {"positive": {"scenario": "Export authorized synthetic lineage with explicit supported facets.", "test_ref": null}, "negative": {"scenario": "Unsupported facets and sensitive physical identifiers cannot silently escape.", "test_ref": null}, "integration": {"scenario": "Pinned consumer validates exports and delivery retries do not alter internal lineage.", "test_ref": null}}, "evidence": []
+    }
+  ]
+}
