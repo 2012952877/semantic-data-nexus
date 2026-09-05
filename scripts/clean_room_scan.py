@@ -212,10 +212,10 @@ _PROSE_IDENTIFIER = re.compile(
     ["']?
     \s*
     (?:(?:[:=]|\bis\b|[-\u2013\u2014])\s*)?
-    (?:["'`(<\[]\s*)?
+    (?:["'`(<\[{]\s*)?
     (?P<value>[A-Za-z0-9-]{10,})
     \s*
-    (?:["'`)>\]])?
+    (?:["'`)>\]}])?
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -262,7 +262,7 @@ _CONCRETE_DATABRICKS_HOST = re.compile(
         adb-\d{5,}\.\d+\.azuredatabricks\.net
         | dbc-[a-z0-9]{8,}\.cloud\.databricks\.com
     )
-    (?=$|[^A-Za-z0-9.:-]|[.](?=$|[\s/"'`),;!?\]}>]))
+    (?=$|[^A-Za-z0-9.:-]|[.]+(?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -276,7 +276,7 @@ _PRIVATE_NETWORK_URL = re.compile(
         | [a-z0-9.-]+\.(?:corp|internal|lan)
     )
     (?::\d+)?
-    (?=$|[^A-Za-z0-9.:-]|[.](?=$|[\s/"'`),;!?\]}>]))
+    (?=$|[^A-Za-z0-9.:-]|[.]+(?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -286,7 +286,7 @@ _AZURE_APP_SERVICE_URL = re.compile(
     (?P<host>[a-z0-9][a-z0-9-]{0,58}[a-z0-9])
     [.]azurewebsites[.]net
     (?::\d+)?
-    (?=$|[^A-Za-z0-9.:-]|[.](?=$|[\s/"'`),;!?\]}>]))
+    (?=$|[^A-Za-z0-9.:-]|[.]+(?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -297,7 +297,7 @@ _ONMICROSOFT_IDENTITY = re.compile(
     @
     (?P<tenant>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)
     [.]onmicrosoft[.]com
-    (?=$|[^A-Za-z0-9.-]|[.](?=$|[\s/"'`),;!?\]}>]))
+    (?=$|[^A-Za-z0-9.-]|[.]+(?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -335,7 +335,7 @@ _CONTENT_RULES = (
     (
         "azure-storage-key",
         re.compile(
-            r"(?i)DefaultEndpointsProtocol=https?;[^\r\n]{0,300}\bAccountKey=[A-Za-z0-9+/=]{16,}"
+            r"(?i)DefaultEndpointsProtocol=https?;[^\r\n]{0,300}\bAccountKey[=][A-Za-z0-9+/=]{16,}"
         ),
         "an Azure Storage connection string with key material is prohibited",
     ),
@@ -451,7 +451,7 @@ def _path_findings(path: str) -> Iterable[Finding]:
 def _literal_value(raw_value: str | None) -> tuple[str, bool]:
     if raw_value is None:
         return "", False
-    value = raw_value.strip().rstrip(",;)")
+    value = raw_value.strip().rstrip(",;")
     quoted = len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}
     return (value[1:-1] if quoted else value), quoted
 
@@ -461,6 +461,21 @@ def _has_placeholder_marker(value: str) -> bool:
     return bool(tokens.intersection(_SAFE_VALUE_MARKERS))
 
 
+def _is_explicit_nonliteral_reference(value: str, path: str) -> bool:
+    if re.fullmatch(r"\$\{[^{}\r\n]+\}", value):
+        return True
+    suffix = PurePosixPath(path).suffix.lower()
+    if (
+        suffix in _SOURCE_CODE_SUFFIXES | {".md", ".yaml", ".yml"}
+        and value.startswith("$(")
+        and value.endswith(")")
+    ):
+        return True
+    return suffix in {".md", ".ps1"} and value.startswith(
+        "[System.Net.NetworkCredential]::new("
+    )
+
+
 def _is_safe_literal(raw_value: str | None, path: str) -> bool:
     value, quoted = _literal_value(raw_value)
     lowered = value.strip().lower()
@@ -468,10 +483,26 @@ def _is_safe_literal(raw_value: str | None, path: str) -> bool:
         return True
     if _has_placeholder_marker(lowered):
         return True
+    if _is_explicit_nonliteral_reference(value.strip(), path):
+        return True
+    if quoted:
+        return False
+    candidate = value.strip()
+    while len(candidate) >= 2 and (candidate[0], candidate[-1]) in {
+        ("(", ")"),
+        ("{", "}"),
+        ("<", ">"),
+    }:
+        candidate = candidate[1:-1].strip()
+    if re.fullmatch(
+        r"(?is)(?:[rubf]{1,3})?(?:\"\"\".*\"\"\"|'''.*'''|\".*\"|'.*')",
+        candidate,
+    ):
+        return False
+    lowered = candidate.lower()
     if lowered.startswith(
         (
             "<",
-            "[",
             "$",
             "{{",
             "%",
@@ -486,12 +517,10 @@ def _is_safe_literal(raw_value: str | None, path: str) -> bool:
         )
     ):
         return True
-    if quoted:
-        return False
     return PurePosixPath(path).suffix.lower() in _SOURCE_CODE_SUFFIXES and bool(
         re.fullmatch(
             r"[A-Za-z_$][A-Za-z0-9_$.\[\]():\"'-]*",
-            value,
+            candidate,
         )
     )
 
@@ -502,7 +531,8 @@ def _is_private_identifier_key(key: str) -> bool:
 
 
 def _key_tokens(key: str) -> tuple[str, ...]:
-    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", separated)
     return tuple(
         token for token in re.split(r"[^A-Za-z0-9]+", separated.lower()) if token
     )
@@ -524,7 +554,18 @@ def _is_credential_key(key: str) -> bool:
 
 def _is_private_identifier_literal(key: str, raw_value: str | None) -> bool:
     value, _quoted = _literal_value(raw_value)
-    normalized = value.strip().strip("{}")
+    normalized = value.strip()
+    while len(normalized) >= 2 and (normalized[0], normalized[-1]) in {
+        ("(", ")"),
+        ("{", "}"),
+        ("<", ">"),
+        ("[", "]"),
+    }:
+        normalized = normalized[1:-1].strip()
+    unquoted, quoted = _literal_value(normalized)
+    if quoted:
+        normalized = unquoted.strip()
+    normalized = normalized.strip("`")
     if not normalized or _has_placeholder_marker(normalized):
         return False
     if normalized.lower() == _ZERO_UUID:
@@ -537,6 +578,13 @@ def _is_private_identifier_literal(key: str, raw_value: str | None) -> bool:
     return normalized_key.endswith("warehouseid") and bool(
         _WAREHOUSE_IDENTIFIER_LITERAL.fullmatch(normalized)
     )
+
+
+def _assignment_rhs(line: str, match: re.Match[str]) -> str:
+    equals_index = line.find("=", match.start())
+    if equals_index < 0:
+        return match.group("value")
+    return line[equals_index + 1 :].strip().rstrip(";")
 
 
 def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
@@ -585,7 +633,7 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
 
     for match in _POWERSHELL_ASSIGNMENT.finditer(line):
         key = match.group("braced_key") or match.group("plain_key")
-        value = match.group("value")
+        value = _assignment_rhs(line, match)
         if _is_credential_key(key) and not _is_safe_literal(value, path):
             yield Finding(
                 path,
@@ -606,7 +654,7 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
 
     for match in _DECLARED_ASSIGNMENT.finditer(line):
         key = match.group("key")
-        value = match.group("value")
+        value = _assignment_rhs(line, match)
         if _is_credential_key(key) and not _is_safe_literal(value, path):
             yield Finding(
                 path,

@@ -65,6 +65,9 @@ class CleanRoomScanTests(unittest.TestCase):
             "AZURE_OPENAI_" + "API_KEY",
             "DATABASE_" + "PASSWORD",
             "ApplicationInsights__" + "ConnectionString",
+            "azureOpen" + "AIApiKey",
+            "my" + "APIKey",
+            "tenant" + "SASToken",
         ]
 
         for key in namespaced_keys:
@@ -117,6 +120,21 @@ class CleanRoomScanTests(unittest.TestCase):
             (
                 "main.bicep",
                 f"param {object_key} string = '{object_value}'",
+                "private-account-identifier",
+            ),
+            (
+                "settings.py",
+                f'{first_name}: str = r"shortKey7"',
+                "credential-assignment",
+            ),
+            (
+                "settings.py",
+                f'{first_name}: str = """shortKey7"""',
+                "credential-assignment",
+            ),
+            (
+                "settings.py",
+                f'{object_key}: str = ("{object_value}")',
                 "private-account-identifier",
             ),
         ]
@@ -188,12 +206,22 @@ class CleanRoomScanTests(unittest.TestCase):
 
     def test_quoted_credential_requires_an_explicit_placeholder(self) -> None:
         key = "DATABRICKS_" + "TOKEN"
-        literal = "ordinary-looking-literal"
-        findings = scan_blob("settings.json", f'"{key}": "{literal}"\n'.encode())
+        literals = [
+            '"ordinary-looking-literal"',
+            '"configuration.shortKey7"',
+            '["shortKey7"]',
+        ]
 
-        self.assertEqual(
-            [finding.rule for finding in findings], ["credential-assignment"]
-        )
+        for literal in literals:
+            with self.subTest(literal=literal):
+                findings = scan_blob(
+                    "settings.json",
+                    f'"{key}": {literal}\n'.encode(),
+                )
+                self.assertEqual(
+                    [finding.rule for finding in findings],
+                    ["credential-assignment"],
+                )
 
     def test_reports_private_key_and_concrete_workspace_without_values(self) -> None:
         header_value = ("-" * 5) + "BEGIN PRIVATE KEY" + ("-" * 5)
@@ -274,7 +302,7 @@ class CleanRoomScanTests(unittest.TestCase):
         app_host = "https://" + "ab" + "." + "azurewebsites" + ".net"
         tenant_identity = "user#EXT#@" + "ab" + "." + "onmicrosoft" + ".com"
         content = "\n".join(
-            f"{value}."
+            f"{value}..."
             for value in (private_ip, private_dns, app_host, tenant_identity)
         ).encode()
 
@@ -413,6 +441,7 @@ class CleanRoomScanTests(unittest.TestCase):
                 f"{tenant_label} ({tenant_value})",
                 f"{tenant_label}: <{tenant_value}>",
                 f"{tenant_label}: `{tenant_value}`",
+                f"{tenant_label}: {{{tenant_value}}}",
             ]
         ).encode()
 
@@ -420,7 +449,7 @@ class CleanRoomScanTests(unittest.TestCase):
 
         self.assertEqual(
             [finding.rule for finding in findings],
-            ["private-account-identifier"] * 6,
+            ["private-account-identifier"] * 7,
         )
         rendered = json.dumps([finding.__dict__ for finding in findings])
         self.assertNotIn(tenant_value, rendered)
