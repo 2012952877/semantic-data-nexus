@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 
 namespace ControlApi.Persistence;
@@ -7,12 +8,42 @@ public static class StorageRegistration
 {
     public static IServiceCollection AddRunStorage(this IServiceCollection services, IConfiguration configuration)
     {
+        // Resolve selection after the host has applied all configuration providers.
+        services.TryAddSingleton(configuration);
+        services.AddSingleton(provider => new StorageSettings(provider.GetRequiredService<IConfiguration>()));
+        services.AddSingleton(provider => NpgsqlDataSource.Create(
+            provider.GetRequiredService<StorageSettings>().ConnectionString ??
+                throw new StorageConfigurationException("Postgres is not selected.")));
+        services.AddSingleton<PostgresMigrations>();
+        services.AddSingleton<IRunRepository>(provider =>
+            provider.GetRequiredService<StorageSettings>().IsPostgres
+                ? new PostgresRunRepository(provider.GetRequiredService<NpgsqlDataSource>(),
+                    provider.GetRequiredService<TimeProvider>())
+                : new InMemoryRunRepository(provider.GetRequiredService<TimeProvider>()));
+        // Lock waiters must not exhaust the pool used by repository operations holding a lock.
+        services.AddSingleton<IRunDispatchCoordinator>(provider =>
+            provider.GetRequiredService<StorageSettings>().IsPostgres
+                ? new PostgresDispatchCoordinator(
+                    NpgsqlDataSource.Create(provider.GetRequiredService<StorageSettings>().ConnectionString!),
+                    ownsDataSource: true)
+                : new RunDispatchCoordinator());
+        services.AddHostedService<StorageStartup>();
+        services.AddHealthChecks().AddCheck<StorageReadiness>("control-storage", tags: ["ready"]);
+        return services;
+    }
+}
+
+internal sealed class StorageSettings
+{
+    public bool IsPostgres { get; }
+    public string? ConnectionString { get; }
+
+    public StorageSettings(IConfiguration configuration)
+    {
         var provider = configuration["RunStorage:Provider"] ?? "Memory";
         if (provider == "Memory")
         {
-            services.AddSingleton<IRunRepository, InMemoryRunRepository>();
-            services.AddSingleton<IRunDispatchCoordinator, RunDispatchCoordinator>();
-            return services;
+            return;
         }
         if (provider != "Postgres")
         {
@@ -44,23 +75,21 @@ public static class StorageRegistration
         {
             throw new StorageConfigurationException("RunStorage:ConnectionString is invalid.");
         }
-        services.AddSingleton(_ => NpgsqlDataSource.Create(options.ConnectionString));
-        services.AddSingleton<PostgresMigrations>();
-        services.AddSingleton<IRunRepository, PostgresRunRepository>();
-        services.AddSingleton<IRunDispatchCoordinator, PostgresDispatchCoordinator>();
-        services.AddHostedService<PostgresStartup>();
-        services.AddHealthChecks().AddCheck<PostgresReadiness>("control-storage", tags: ["ready"]);
-        return services;
+        IsPostgres = true;
+        ConnectionString = options.ConnectionString;
     }
 }
 
-internal sealed class PostgresStartup(PostgresMigrations migrations) : IHostedService
+internal sealed class StorageStartup(StorageSettings settings, IServiceProvider services) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await migrations.ApplyAsync(cancellationToken);
+            if (settings.IsPostgres)
+            {
+                await services.GetRequiredService<PostgresMigrations>().ApplyAsync(cancellationToken);
+            }
         }
         catch (NpgsqlException)
         {
@@ -71,14 +100,18 @@ internal sealed class PostgresStartup(PostgresMigrations migrations) : IHostedSe
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
-internal sealed class PostgresReadiness(NpgsqlDataSource dataSource) : IHealthCheck
+internal sealed class StorageReadiness(StorageSettings settings, IServiceProvider services) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context, CancellationToken cancellationToken = default)
     {
+        if (!settings.IsPostgres)
+        {
+            return HealthCheckResult.Healthy();
+        }
         try
         {
-            await using var command = dataSource.CreateCommand(
+            await using var command = services.GetRequiredService<NpgsqlDataSource>().CreateCommand(
                 "SELECT 1 FROM control_schema_versions WHERE version = 1");
             return await command.ExecuteScalarAsync(cancellationToken) is not null
                 ? HealthCheckResult.Healthy()

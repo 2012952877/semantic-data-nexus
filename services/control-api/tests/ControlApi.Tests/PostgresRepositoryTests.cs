@@ -17,7 +17,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     private NpgsqlDataSource admin = null!;
     private NpgsqlDataSource first = null!;
     private NpgsqlDataSource second = null!;
-    private string connectionString = null!;
+    private string databaseSettings = null!;
     private PostgresRunRepository A => new(first, TimeProvider.System);
     private PostgresRunRepository B => new(second, TimeProvider.System);
 
@@ -29,9 +29,9 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
         admin = NpgsqlDataSource.Create(configured!);
         await using var command = admin.CreateCommand($"CREATE SCHEMA {schema}");
         await command.ExecuteNonQueryAsync();
-        connectionString = new NpgsqlConnectionStringBuilder(configured!) { SearchPath = schema }.ConnectionString;
-        first = NpgsqlDataSource.Create(connectionString);
-        second = NpgsqlDataSource.Create(connectionString);
+        databaseSettings = new NpgsqlConnectionStringBuilder(configured!) { SearchPath = schema }.ConnectionString;
+        first = NpgsqlDataSource.Create(databaseSettings);
+        second = NpgsqlDataSource.Create(databaseSettings);
         await new PostgresMigrations(first).ApplyAsync(default);
     }
 
@@ -67,7 +67,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
             new SubmitFeedbackRequest("feedback", 5, FeedbackOutcome.Helpful, ["clear"], updated.Version),
             "subject", default);
         await first.DisposeAsync();
-        first = NpgsqlDataSource.Create(connectionString);
+        first = NpgsqlDataSource.Create(databaseSettings);
         var loaded = await A.GetAsync(run.Id, default);
         Assert.Equal(RunState.Succeeded, loaded!.State);
         Assert.Equal("node", loaded.Stages.Single().Nodes.Single().NodeId);
@@ -196,7 +196,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
         var claim = await A.ClaimStartAsync(run.Id, default);
         Assert.True(claim.Acquired);
         await first.DisposeAsync();
-        first = NpgsqlDataSource.Create(connectionString);
+        first = NpgsqlDataSource.Create(databaseSettings);
         var retry = await B.ClaimStartAsync(run.Id, default);
         Assert.False(retry.Acquired);
         Assert.Equal(RunState.DispatchUnknown, retry.Run.State);
@@ -210,7 +210,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     public async Task LostLockConnectionDoesNotPermitSecondStartClaim()
     {
         var run = await Create();
-        var options = new NpgsqlConnectionStringBuilder(connectionString) { ApplicationName = schema + "_lock" };
+        var options = new NpgsqlConnectionStringBuilder(databaseSettings) { ApplicationName = schema + "_lock" };
         await using var lockSource = NpgsqlDataSource.Create(options.ConnectionString);
         var coordinator = new PostgresDispatchCoordinator(lockSource);
         var lease = await coordinator.AcquireAsync(run.Id, default);
@@ -300,6 +300,68 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentCancelAndStatusNeverLoseCancellationIntent()
+    {
+        var run = await Create();
+        var running = await A.ApplySemanticStatusAsync(run.Id, run.Version,
+            StubSemanticBackendClient.Status(run.Id, RunState.Running), default);
+        async Task Observe()
+        {
+            try
+            {
+                await B.ApplySemanticStatusAsync(run.Id, running.Version,
+                    StubSemanticBackendClient.Status(run.Id, RunState.Running), default);
+            }
+            catch (OptimisticConcurrencyException)
+            {
+                // Cancellation won the version race.
+            }
+        }
+        await Task.WhenAll(A.RequestCancellationAsync(run.Id, null, default), Observe());
+        var current = (await B.GetAsync(run.Id, default))!;
+        Assert.Equal(RunState.CancelRequested, current.State);
+        Assert.Equal(CancellationDeliveryState.Pending, current.CancellationDelivery);
+        Assert.Equal(1, current.CancellationGeneration);
+    }
+
+    [Fact]
+    public async Task FailedMigrationRollsBackDdlAndVersionRecord()
+    {
+        await using (var setup = first.CreateCommand("""
+            DROP TABLE control_start_dispatch, control_feedback, control_runs, control_schema_versions;
+            CREATE TABLE control_feedback (conflicting_column integer);
+            """))
+        {
+            await setup.ExecuteNonQueryAsync();
+        }
+        await Assert.ThrowsAsync<PostgresException>(() => new PostgresMigrations(first).ApplyAsync(default));
+        await using var query = second.CreateCommand(
+            "SELECT to_regclass('control_runs') IS NULL AND to_regclass('control_schema_versions') IS NULL");
+        Assert.True((bool)(await query.ExecuteScalarAsync())!);
+        await using (var repair = first.CreateCommand("DROP TABLE control_feedback"))
+        {
+            await repair.ExecuteNonQueryAsync();
+        }
+        await new PostgresMigrations(second).ApplyAsync(default);
+        await Create();
+    }
+
+    [Theory]
+    [InlineData("metadata - 'State'")]
+    [InlineData("jsonb_set(metadata, '{TokenUsage}', '{\"InputTokens\": 0}')")]
+    [InlineData("jsonb_set(metadata, '{CancellationDelivery}', '999')")]
+    [InlineData("jsonb_set(metadata, '{TokenUsage}', '{\"InputTokens\": -1, \"OutputTokens\": 0}')")]
+    public async Task CorruptRequiredFieldsAndUsageNeverBecomeDefaults(string expression)
+    {
+        var run = await Create();
+        // Expressions come exclusively from static test cases, never user input.
+        await using var corrupt = first.CreateCommand($"UPDATE control_runs SET metadata = {expression} WHERE run_id = $1");
+        corrupt.Parameters.AddWithValue(run.Id.Value);
+        await corrupt.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<StorageCorruptionException>(() => B.GetAsync(run.Id, default));
+    }
+
+    [Fact]
     public async Task DatabaseUnavailableNeverFallsBack()
     {
         await using var unavailable = NpgsqlDataSource.Create(
@@ -312,7 +374,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     private Dictionary<string, string?> Settings() => new()
     {
         ["RunStorage:Provider"] = "Postgres",
-        ["RunStorage:ConnectionString"] = connectionString
+        ["RunStorage:ConnectionString"] = databaseSettings
     };
 
     [Fact]
@@ -353,17 +415,50 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
         Assert.Equal(RunState.Running, (await B.GetAsync(run.Id, default))!.State);
     }
 
+    [Fact]
+    public async Task ApiCorruptionIsStableAndReadinessReflectsDatabaseFailure()
+    {
+        var run = await Create();
+        using var factory = new ControlApiFactory(settings: Settings());
+        using var client = factory.CreateAuthenticatedClient();
+        await using (var corrupt = first.CreateCommand(
+            "UPDATE control_runs SET metadata = jsonb_set(metadata, '{State}', '999')"))
+        {
+            await corrupt.ExecuteNonQueryAsync();
+        }
+        var response = await client.GetAsync($"/api/v1/runs/{run.Id}");
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Contains("control_storage_corrupt", await response.Content.ReadAsStringAsync());
+        await using (var drop = first.CreateCommand("DROP TABLE control_schema_versions"))
+        {
+            await drop.ExecuteNonQueryAsync();
+        }
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/health/ready")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
+        await using (var drop = first.CreateCommand("DROP TABLE control_start_dispatch, control_feedback, control_runs"))
+        {
+            await drop.ExecuteNonQueryAsync();
+        }
+        var unavailable = await client.GetAsync($"/api/v1/runs/{run.Id}");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, unavailable.StatusCode);
+        var body = await unavailable.Content.ReadAsStringAsync();
+        Assert.Contains("control_storage_unavailable", body);
+        Assert.DoesNotContain("Npgsql", body);
+        Assert.DoesNotContain(schema, body);
+    }
+
     [Theory]
     [InlineData("Unknown", null)]
     [InlineData("Postgres", null)]
     [InlineData("Postgres", "not-a-connection-string")]
-    public void InvalidConfigurationFailsAtRegistration(string provider, string? connection)
+    public void InvalidConfigurationFailsAtResolution(string provider, string? connection)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["RunStorage:Provider"] = provider,
             ["RunStorage:ConnectionString"] = connection
         }).Build();
-        Assert.Throws<StorageConfigurationException>(() => new ServiceCollection().AddRunStorage(configuration));
+        using var services = new ServiceCollection().AddRunStorage(configuration).BuildServiceProvider();
+        Assert.Throws<StorageConfigurationException>(() => services.GetRequiredService<IRunRepository>());
     }
 }

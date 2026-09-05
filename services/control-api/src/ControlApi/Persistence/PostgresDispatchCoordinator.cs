@@ -6,8 +6,11 @@ using Npgsql;
 
 namespace ControlApi.Persistence;
 
-public sealed class PostgresDispatchCoordinator(NpgsqlDataSource dataSource) : IRunDispatchCoordinator
+public sealed class PostgresDispatchCoordinator(NpgsqlDataSource dataSource, bool ownsDataSource = false)
+    : IRunDispatchCoordinator, IAsyncDisposable
 {
+    public ValueTask DisposeAsync() => ownsDataSource ? dataSource.DisposeAsync() : ValueTask.CompletedTask;
+
     public async ValueTask<IAsyncDisposable> AcquireAsync(RunId runId, CancellationToken cancellationToken)
     {
         var connection = await dataSource.OpenConnectionAsync(cancellationToken);

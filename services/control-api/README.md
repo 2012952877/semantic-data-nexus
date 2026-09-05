@@ -167,7 +167,9 @@ The configured database/search path is the installation boundary. Use a dedicate
 database and a migration-capable role for startup, backed up under your operations
 policy; restrict database access to trusted application/operators. Require TLS
 certificate verification in remote connection configuration. Connection pooling
-is enabled with 32 connections, 5-second connection and 30-second command timeouts.
+uses separate repository and orchestration pools of at most 32 connections each,
+with 5-second connection and 30-second command timeouts. The separate pools keep
+lock waiters from starving repository work already inside a dispatch lease.
 Parameter logging, server error detail and persisted security info are disabled.
 Never put connection strings in source, command history, PRs, or log messages.
 

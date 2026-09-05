@@ -245,12 +245,12 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken);
         await using var command = new NpgsqlCommand("SELECT metadata::text FROM control_runs", connection, transaction);
-        var runs = new List<RunMetadata>();
+        var statistics = new RunStatisticsAccumulator();
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             while (await reader.ReadAsync(cancellationToken))
             {
-                runs.Add(StoredRunCodec.Run(reader.GetString(0)));
+                statistics.Add(StoredRunCodec.Run(reader.GetString(0)));
             }
         }
         await using var feedback = new NpgsqlCommand("SELECT feedback::text FROM control_feedback", connection, transaction);
@@ -264,6 +264,6 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
             }
         }
         await transaction.CommitAsync(cancellationToken);
-        return RunTransitions.Statistics(runs, count);
+        return statistics.Finish(count);
     }
 }

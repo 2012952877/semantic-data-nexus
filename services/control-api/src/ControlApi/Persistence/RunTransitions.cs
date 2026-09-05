@@ -208,13 +208,37 @@ internal static class RunTransitions
 
     public static RunStatistics Statistics(IReadOnlyList<RunMetadata> runs, long feedbackCount)
     {
-        var durations = runs.Where(run => run.State.IsTerminal()).Select(run => run.Duration)
-            .Where(duration => duration is not null && duration >= TimeSpan.Zero)
-            .Select(duration => duration!.Value.TotalMilliseconds).ToArray();
-        return new(runs.Count, Enum.GetValues<RunState>().ToDictionary(
-                state => state, state => runs.LongCount(run => run.State == state)),
-            durations.Length == 0 ? null : durations.Average(),
-            runs.Sum(run => run.TokenUsage.InputTokens), runs.Sum(run => run.TokenUsage.OutputTokens),
-            feedbackCount);
+        var accumulator = new RunStatisticsAccumulator();
+        foreach (var run in runs)
+        {
+            accumulator.Add(run);
+        }
+        return accumulator.Finish(feedbackCount);
     }
+}
+
+internal sealed class RunStatisticsAccumulator
+{
+    private readonly Dictionary<RunState, long> states = Enum.GetValues<RunState>().ToDictionary(state => state, _ => 0L);
+    private long total;
+    private long input;
+    private long output;
+    private long durations;
+    private double averageDuration;
+
+    public void Add(RunMetadata run)
+    {
+        total = checked(total + 1);
+        states[run.State] = checked(states[run.State] + 1);
+        input = checked(input + run.TokenUsage.InputTokens);
+        output = checked(output + run.TokenUsage.OutputTokens);
+        if (run.Duration is { } duration && duration >= TimeSpan.Zero)
+        {
+            durations++;
+            averageDuration += (duration.TotalMilliseconds - averageDuration) / durations;
+        }
+    }
+
+    public RunStatistics Finish(long feedbackCount) =>
+        new(total, states, durations == 0 ? null : averageDuration, input, output, feedbackCount);
 }

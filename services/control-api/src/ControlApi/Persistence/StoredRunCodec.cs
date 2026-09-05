@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using ControlApi.Domain;
 using ControlApi.Semantic;
 
@@ -9,7 +10,20 @@ internal static class StoredRunCodec
     private static readonly JsonSerializerOptions Options = new()
     {
         IgnoreReadOnlyProperties = true,
-        MaxDepth = 32
+        MaxDepth = 32,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver
+        {
+            Modifiers =
+            {
+                typeInfo =>
+                {
+                    foreach (var property in typeInfo.Properties.Where(property => property.Set is not null))
+                    {
+                        property.IsRequired = true;
+                    }
+                }
+            }
+        }
     };
 
     public static string Encode<T>(T value) => JsonSerializer.Serialize(value, Options);
@@ -75,15 +89,6 @@ internal static class StoredRunCodec
     {
         try
         {
-            using var document = JsonDocument.Parse(json);
-            // Constructor fields are mandatory, including enum/number fields whose default looks valid.
-            foreach (var parameter in typeof(T).GetConstructors().Single().GetParameters())
-            {
-                if (!document.RootElement.TryGetProperty(parameter.Name!, out _))
-                {
-                    throw new StorageCorruptionException();
-                }
-            }
             return JsonSerializer.Deserialize<T>(json, Options) ?? throw new StorageCorruptionException();
         }
         catch (JsonException)
