@@ -117,23 +117,44 @@ public static class ControlApiEndpoints
 
         try
         {
-            var status = current.State switch
+            SemanticRunStatus status;
+            if (repository is IDurableStartDispatch durableDispatch)
             {
-                RunState.StartPending => await StartSemanticRun(
-                    current,
-                    subject,
-                    context,
-                    semanticBackend,
-                    cancellationToken),
-                RunState.DispatchUnknown => await ReconcileOrStartSemanticRun(
-                    current,
-                    subject,
-                    context,
-                    semanticBackend,
-                    cancellationToken),
-                _ => throw new InvalidOperationException(
-                    $"Run state '{current.State}' does not require start reconciliation.")
-            };
+                var claim = await durableDispatch.ClaimStartAsync(current.Id, cancellationToken);
+                current = claim.Run;
+                if (!current.State.RequiresStartReconciliation())
+                {
+                    return TypedResults.Ok(current);
+                }
+                if (claim.Acquired)
+                {
+                    status = await StartSemanticRun(current, subject, context, semanticBackend, cancellationToken);
+                }
+                else
+                {
+                    try
+                    {
+                        status = await semanticBackend.GetStatusAsync(current.Id, cancellationToken);
+                    }
+                    catch (SemanticBackendException exception)
+                        when (exception.FailureKind == SemanticFailureKind.NotFound)
+                    {
+                        throw new DispatchRecoveryRequiredException();
+                    }
+                }
+            }
+            else
+            {
+                status = current.State switch
+                {
+                    RunState.StartPending => await StartSemanticRun(
+                        current, subject, context, semanticBackend, cancellationToken),
+                    RunState.DispatchUnknown => await ReconcileOrStartSemanticRun(
+                        current, subject, context, semanticBackend, cancellationToken),
+                    _ => throw new InvalidOperationException(
+                        $"Run state '{current.State}' does not require start reconciliation.")
+                };
+            }
             var updated = await repository.ApplySemanticStatusAsync(
                 current.Id,
                 current.Version,

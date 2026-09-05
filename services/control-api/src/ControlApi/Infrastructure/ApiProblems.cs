@@ -59,6 +59,12 @@ public sealed class ApiExceptionHandler(
     {
         var (status, code, title, detail) = exception switch
         {
+            StorageCorruptionException =>
+                (500, "control_storage_corrupt", "Control storage corruption", exception.Message),
+            DispatchRecoveryRequiredException =>
+                (503, "dispatch_recovery_required", "Dispatch recovery required", exception.Message),
+            Npgsql.NpgsqlException =>
+                (503, "control_storage_unavailable", "Control storage unavailable", "The control database is unavailable."),
             RunNotFoundException =>
                 (404, "run_not_found", "Run not found", exception.Message),
             OptimisticConcurrencyException =>
@@ -82,7 +88,7 @@ public sealed class ApiExceptionHandler(
         var traceId = Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
         if (status >= 500)
         {
-            LogServerFailure(logger, code, traceId, exception);
+            LogServerFailure(logger, code, traceId, exception is Npgsql.NpgsqlException ? null : exception);
         }
         else
         {
