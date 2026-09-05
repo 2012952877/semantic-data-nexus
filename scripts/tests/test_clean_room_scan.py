@@ -112,18 +112,29 @@ class CleanRoomScanTests(unittest.TestCase):
     def test_reports_concrete_app_service_and_tenant_identity_without_values(
         self,
     ) -> None:
-        app_host = "https://m0-" + "customer" + "." + "azurewebsites" + ".net/path"
+        app_hosts = [
+            "https://m0-" + "customer" + "." + "azurewebsites" + ".net/path",
+            "https://" + "ab" + "." + "azurewebsites" + ".net",
+        ]
         tenant_identity = (
             "operator" + "@" + "private-tenant" + "." + "onmicrosoft" + ".com"
         )
         findings = scan_blob(
             "deployment.txt",
-            f"endpoint={app_host}\nowner={tenant_identity}\n".encode(),
+            (
+                f"endpoint={app_hosts[0]}\n"
+                f"shortEndpoint={app_hosts[1]}\n"
+                f"owner={tenant_identity}\n"
+            ).encode(),
         )
 
         self.assertEqual(
-            {finding.rule for finding in findings},
-            {"private-app-service-host", "private-tenant-identity"},
+            [finding.rule for finding in findings],
+            [
+                "private-app-service-host",
+                "private-app-service-host",
+                "private-tenant-identity",
+            ],
         )
         rendered = json.dumps(
             [
@@ -136,7 +147,8 @@ class CleanRoomScanTests(unittest.TestCase):
                 for finding in findings
             ]
         )
-        self.assertNotIn(app_host, rendered)
+        for app_host in app_hosts:
+            self.assertNotIn(app_host, rendered)
         self.assertNotIn(tenant_identity, rendered)
 
     def test_reports_keyed_private_identity_and_warehouse_ids(self) -> None:

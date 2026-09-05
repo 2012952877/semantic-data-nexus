@@ -207,7 +207,7 @@ _PRIVATE_NETWORK_URL = re.compile(
 _AZURE_APP_SERVICE_URL = re.compile(
     r"""
     https?://
-    (?P<host>[a-z0-9][a-z0-9-]{1,61}[a-z0-9])
+    (?P<host>[a-z0-9][a-z0-9-]{0,58}[a-z0-9])
     [.]azurewebsites[.]net
     (?::\d+)?
     (?=$|[^A-Za-z0-9.:-])
