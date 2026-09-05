@@ -185,6 +185,9 @@ CSRF rejection, Web workspace selection, BFF/backend execution, scoped reads and
 application logout. Unit JWT fixtures are additional negative evidence, not
 claimed end-to-end SSO. Entra still requires separately authorized tenant-specific
 validation before a production rollout.
+It is also an unconditional reusable dependency of the stable `M0 release gate`;
+failure, cancellation, skipping or a missing result prevents aggregate success.
+Path-filtered standalone execution is supplementary, not the release requirement.
 
 ## Provisioning, grants, revocation and migration
 
