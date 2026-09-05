@@ -121,6 +121,14 @@ class CatalogBindings(BaseModel):
         )
 
 
+def _require_binding_pin(graph: SQGV1, context: CompilerContext, bindings: CatalogBindings) -> None:
+    if (
+        bindings.catalog != graph.catalog
+        or bindings.content_sha256 != context.semantic_catalog.bindings_sha256
+    ):
+        raise CompilerFailure("BINDING_PIN_MISMATCH")
+
+
 def adapt_catalog(
     graph: SQGV1,
     context: CompilerContext,
@@ -130,11 +138,7 @@ def adapt_catalog(
     run_id: str,
 ) -> AdaptedExecution:
     validate(graph, context)
-    if (
-        bindings.catalog != graph.catalog
-        or bindings.content_sha256 != context.semantic_catalog.bindings_sha256
-    ):
-        raise CompilerFailure("BINDING_PIN_MISMATCH")
+    _require_binding_pin(graph, context, bindings)
     entities = {item.entity_id: item for item in bindings.entities}
     if len(entities) != len(bindings.entities) or len(
         {item.source.alias for item in bindings.entities}
@@ -460,8 +464,17 @@ async def execute_catalog(
         raise CompilerFailure("COMPILER_DEADLINE")
     async with asyncio.timeout_at(deadline):
         _, authorized, identity = await compiler._context(request, context, compilation.resolutions)
+        validate(compilation.graph, authorized)
+        _require_binding_pin(compilation.graph, authorized, bindings)
+        selected = {
+            node.operation.entity_id
+            for node in compilation.graph.nodes
+            if isinstance(node.operation, Select)
+        }
         capabilities = {
-            e.source.alias: await resolver.capabilities(e.source.alias) for e in bindings.entities
+            e.source.alias: await resolver.capabilities(e.source.alias)
+            for e in bindings.entities
+            if e.entity_id in selected
         }
         adapted = adapt_catalog(
             compilation.graph, authorized, bindings, capabilities, run_id=run_id

@@ -311,6 +311,41 @@ async def test_source_binding_and_cardinality_conformance(violation):
             )
 
 
+async def test_revoked_entity_is_rejected_before_connector_capability_discovery():
+    case = copy.deepcopy(CASES[0])
+    case["question"] = "Total energy in June 2026"
+    graph = case["candidate"]["graph"]
+    graph["nodes"] = [node for node in graph["nodes"] if node["id"] != "active"]
+    next(node for node in graph["nodes"] if node["id"] == "locations")["dependencies"] = [
+        "period",
+        "sites",
+    ]
+    async with wire(case["candidate"]) as (provider, _):
+        compiler, request, context, bindings, resolver, authority = setup(case, provider)
+        deadline = asyncio.get_running_loop().time() + 15
+        compilation = await compiler.compile(request, context=context, deadline=deadline)
+        authority.access = authority.access.model_copy(
+            update={"entity_ids": frozenset({"grid.reading"})}
+        )
+
+        async def forbidden_discovery(alias):
+            raise AssertionError("No connector discovery is authorized for the stale graph")
+
+        resolver.capabilities = forbidden_discovery
+        with pytest.raises(CompilerFailure, match="ENTITY_NOT_AVAILABLE"):
+            await execute_catalog(
+                request,
+                compilation,
+                compiler=compiler,
+                context=context,
+                bindings=bindings,
+                resolver=resolver,
+                run_id="synthetic-stale-grant",
+                deadline=deadline,
+                limits=ResourceLimits(max_rows=100, max_bytes=1_000_000),
+            )
+
+
 async def test_runtime_cancellation_and_reauthorization_before_return():
     case = CASES[1]
     async with wire(case["candidate"]) as (provider, _):
