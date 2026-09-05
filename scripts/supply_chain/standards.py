@@ -25,7 +25,11 @@ def validate_cyclonedx(document: dict, tools: Path) -> None:
             registry = registry.with_resource(url, resource)
     require(document.get("specVersion") == "1.6", "wrong-cyclonedx-version")
     validator = Draft7Validator(schemas["bom-1.6.schema.json"], registry=registry)
-    require(not next(validator.iter_errors(document), None), "invalid-cyclonedx")
+    error = next(validator.iter_errors(document), None)
+    if error:
+        # Report the official schema location, never the rejected package-controlled value.
+        location = "-".join(str(p) for p in error.absolute_schema_path)
+        require(False, "invalid-cyclonedx-" + location)
     components = document.get("components", [])
     refs = [c["bom-ref"] for c in components]
     refs.append(document["metadata"]["component"]["bom-ref"])

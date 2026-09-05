@@ -8,6 +8,8 @@ import re
 import sys
 import tempfile
 import tomllib
+import tarfile
+import zipfile
 from pathlib import Path
 
 from scripts.supply_chain.adapters import (
@@ -17,7 +19,7 @@ from scripts.supply_chain.adapters import (
 from scripts.supply_chain.common import (
     EvidenceError, HERE, ROOT, canonical, digest, load, require, run, sha_file, write,
 )
-from scripts.supply_chain.inventory import compile_inventory
+from scripts.supply_chain.inventory import compile_inventory, reconcile
 from scripts.supply_chain.review import review_inventory
 from scripts.supply_chain.standards import bind_evidence, normalize, validate_cyclonedx
 from scripts.supply_chain.tool_evidence import collect_tools
@@ -71,7 +73,6 @@ def snapshot_image(tag: str, name: str, work: Path, tools: Path, output: Path, r
     run(args)
     raw, cdx = load(raw_path), load(cdx_path)
     require(raw["descriptor"]["version"] == load(HERE / "tools.json")["syft"]["version"], "unexpected-syft-version")
-    validate_cyclonedx(cdx, tools)
     # Keep cataloger facts, not host paths, Docker configuration, or full environment.
     metadata = raw["source"]["metadata"]
     raw["source"]["metadata"] = {key: metadata[key] for key in (
@@ -82,10 +83,13 @@ def snapshot_image(tag: str, name: str, work: Path, tools: Path, output: Path, r
     raw["descriptor"]["configuration_sha256"] = sha_file(HERE / "syft.yaml")
     raw["descriptor"]["pins_sha256"] = sha_file(HERE / "tools.json")
     write(output / (name + ".syft.json"), raw)
+    write(output / (name + ".generator.cdx.json"), cdx)
+    validate_cyclonedx(cdx, tools)
     subject = {
         "name": name, "image_id": image_id, "platform": "linux/amd64",
         "image_archive_sha256": sha_file(archive), "filesystem_archive_sha256": sha_file(filesystem),
         "syft_sha256": digest(canonical(raw)),
+        "syft_executable_sha256": sha_file(syft),
     }
     archive.unlink()
     return raw, cdx, ImageFiles(filesystem), subject
@@ -209,15 +213,31 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
 def accept(output: Path, tools: Path, revision: str, policy_path: Path) -> bool:
     bundle = load(output / "bundle.json")
     require(bundle["source_revision"] == revision and bundle["subjects"], "stale-bundle")
+    require(len(bundle["subjects"]) == len(set(bundle["subjects"])), "duplicate-subject")
     for path, expected in bundle["files"].items():
-        require(not Path(path).is_absolute() and ".." not in Path(path).parts, "unsafe-evidence-path")
+        require(re.fullmatch(r"[a-zA-Z0-9_.\-/]+", path) and not path.startswith("/")
+                and ".." not in path.split("/"), "unsafe-evidence-path")
         require(sha_file(output / path) == expected, "bundle-file-hash-drift")
+    required = {"source.json", "toolchain.json"}
+    for subject in bundle["subjects"]:
+        require(re.fullmatch("[a-z-]+", subject), "invalid-subject-name")
+        required.update(subject + suffix for suffix in (".inventory.json", ".cdx.json", ".syft.json"))
+    require(required <= set(bundle["files"]), "missing-bundle-file")
+    source = load(output / "source.json")
+    require(source["revision"] == revision and source["inputs"], "missing-source-provenance")
+    toolchain = load(output / "toolchain.json")
+    require(toolchain["syft"] == load(HERE / "tools.json")["syft"], "tool-provenance-drift")
     policy = load(policy_path)
     reports = []
     for subject in bundle["subjects"]:
-        require(re.fullmatch("[a-z-]+", subject), "invalid-subject-name")
+        inventory = load(output / (subject + ".inventory.json"))
+        raw = load(output / (subject + ".syft.json"))
+        require(inventory["subject"]["syft_sha256"] == digest(canonical(raw)), "scanner-facts-drift")
+        require(inventory["inputs"] == source["inputs"] and inventory["source_tree"] == source["tree"], "source-input-drift")
+        require(inventory["coverage"] == reconcile(raw, inventory["resolved"]), "resolved-coverage-drift")
+        require({c["id"] for c in inventory["components"]} == {p["id"] for p in raw["artifacts"]}, "scanner-component-drift")
         reports.append(review_inventory(
-            load(output / (subject + ".inventory.json")), load(output / (subject + ".cdx.json")),
+            inventory, load(output / (subject + ".cdx.json")),
             policy, output, tools, revision, dt.datetime.now(dt.timezone.utc).date(),
         ))
     status = "ACCEPTED" if all(r["status"] == "ACCEPTED" for r in reports) else "BLOCKED"
@@ -245,7 +265,7 @@ def main() -> int:
     except EvidenceError as error:
         print("Supply-chain error: " + str(error), file=sys.stderr)
         return 1
-    except (OSError, ValueError, KeyError, TypeError, LookupError):
+    except (OSError, ValueError, KeyError, TypeError, LookupError, tarfile.TarError, zipfile.BadZipFile):
         print("Supply-chain error: invalid-or-unavailable-evidence", file=sys.stderr)
         return 1
 

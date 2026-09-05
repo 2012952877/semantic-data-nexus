@@ -276,6 +276,35 @@ def test_bundle_hash_drift_rejected_before_review(evidence, tmp_path, tools):
         accept(tmp_path, tools, REVISION, tmp_path / "unused-policy.json")
 
 
+def test_missing_bundle_manifest_files_rejected(tmp_path, tools):
+    write(tmp_path / "bundle.json", {
+        "source_revision": REVISION, "subjects": ["synthetic-runtime"], "files": {},
+    })
+    with pytest.raises(EvidenceError, match="missing-bundle-file"):
+        accept(tmp_path, tools, REVISION, tmp_path / "unused-policy.json")
+
+
+def test_cyclonedx_evidence_binding_cannot_be_removed(evidence, tmp_path, tools):
+    inventory, document, policy = evidence
+    document = bind_evidence(document, inventory)
+    document["components"][0]["properties"] = []
+    with pytest.raises(EvidenceError, match="component-document-drift"):
+        review_inventory(inventory, document, policy, tmp_path, tools, REVISION, TODAY)
+
+
+def test_stale_source_revision_rejected(evidence, tmp_path, tools):
+    inventory, document, policy = evidence
+    with pytest.raises(EvidenceError, match="stale-source-revision"):
+        review_inventory(inventory, bind_evidence(document, inventory), policy, tmp_path, tools, "d" * 40, TODAY)
+
+
+def test_version_prefix_is_not_exact_review(evidence):
+    policy = evidence[2]
+    policy["reviews"][0]["version"] = "1.2"
+    with pytest.raises(EvidenceError, match="unversioned-review"):
+        validate_policy(policy, TODAY)
+
+
 def test_real_pinned_generator_and_offline_schema(tmp_path, tools):
     source = tmp_path / "input"
     source.mkdir()

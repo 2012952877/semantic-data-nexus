@@ -130,3 +130,12 @@ jobs:
           if [ "$REQUIRE_ACCEPTANCE" = true ]; then
             test "$ACCEPTANCE" = ACCEPTED
           fi
+
+      - name: Preserve clearly incomplete diagnostic evidence
+        if: failure() && steps.artifact.outcome != 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-INCOMPLETE-${{ matrix.target }}-${{ env.SOURCE_SHA }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: warn
+          retention-days: 3
