@@ -22,12 +22,21 @@ from xml.etree import ElementTree
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
-from scripts.supply_chain.common import digest, require
+from scripts.supply_chain.common import digest, reject_constant, require, sha_file, unique_object
 
 
 def image_path(path: str) -> str:
     require("\\" not in path and "\x00" not in path, "invalid-image-path")
-    return posixpath.normpath("/" + path.lstrip("/"))
+    parts = []
+    for part in path.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            require(parts, "image-path-escape")
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/" + "/".join(parts)
 
 
 class ImageFiles:
@@ -35,7 +44,9 @@ class ImageFiles:
 
     def __init__(self, path: Path):
         self.archive = tarfile.open(path)
-        self.members = {image_path(m.name): m for m in self.archive.getmembers()}
+        entries = self.archive.getmembers()
+        self.members = {image_path(m.name): m for m in entries}
+        require(len(self.members) == len(entries), "duplicate-image-archive-entry")
         self.owners = {p: self.archive for p in self.members}
         self.layers: list[tarfile.TarFile] = []
         self.streams: list[io.BufferedIOBase] = []
@@ -43,14 +54,27 @@ class ImageFiles:
         self.facts: dict[str, dict] = {}
 
     @classmethod
-    def from_docker_archive(cls, path: Path) -> ImageFiles:
+    def from_docker_archive(cls, path: Path, expected_image_id: str | None = None) -> ImageFiles:
         with ExitStack() as cleanup:
             image = cls(path)
             cleanup.callback(image.close)
-            manifest = json.loads(image.read("/manifest.json"))
+            manifest = json.loads(image.read("/manifest.json"), object_pairs_hook=unique_object, parse_constant=reject_constant)
             require(isinstance(manifest, list) and len(manifest) == 1, "ambiguous-image-manifest")
             layer_names = manifest[0]["Layers"]
             require(isinstance(layer_names, list) and layer_names, "missing-image-layers")
+            config_name = manifest[0]["Config"]
+            require(isinstance(config_name, str) and not config_name.startswith("/")
+                    and ".." not in config_name.split("/"), "invalid-image-config-path")
+            config_data = image.read(config_name)
+            config_digest = digest(config_data)
+            require(posixpath.basename(config_name).removesuffix(".json") == config_digest, "image-config-digest-drift")
+            if expected_image_id is not None:
+                require(expected_image_id == "sha256:" + config_digest, "image-subject-digest-drift")
+            config = json.loads(config_data, object_pairs_hook=unique_object, parse_constant=reject_constant)
+            require(config["rootfs"]["type"] == "layers", "unsupported-image-rootfs")
+            diff_ids = config["rootfs"]["diff_ids"]
+            require(len(diff_ids) == len(layer_names)
+                    and all(re.fullmatch("sha256:[0-9a-f]{64}", d) for d in diff_ids), "invalid-image-layer-digests")
             image.members.clear()
             image.owners.clear()
             image.expanded = tempfile.TemporaryDirectory(prefix="image-layers-", dir=path.parent)
@@ -59,14 +83,20 @@ class ImageFiles:
                 stream = image.archive.extractfile(name)
                 require(stream is not None, "missing-image-layer")
                 image.streams.append(stream)
+                blob_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                stream.seek(0)
+                if name.startswith("blobs/sha256/"):
+                    require(posixpath.basename(name) == blob_digest, "image-layer-blob-drift")
                 signature = stream.read(2)
                 stream.seek(0)
                 if signature == b"\x1f\x8b":
                     expanded = Path(image.expanded.name) / f"{index}.tar"
                     with gzip.GzipFile(fileobj=stream) as source, expanded.open("wb") as destination:
                         shutil.copyfileobj(source, destination)
+                    require("sha256:" + sha_file(expanded) == diff_ids[index], "image-layer-digest-drift")
                     layer = tarfile.open(expanded)
                 else:
+                    require("sha256:" + blob_digest == diff_ids[index], "image-layer-digest-drift")
                     layer = tarfile.open(fileobj=stream, mode="r:*")
                 image.layers.append(layer)
                 image.apply_layer(layer)
@@ -98,6 +128,8 @@ class ImageFiles:
             if posixpath.basename(path).startswith(".wh."):
                 continue
             target = image_path(posixpath.join(self.resolve(posixpath.dirname(path)), posixpath.basename(path)))
+            if member.issym():
+                image_path(posixpath.join(posixpath.dirname(target), member.linkname))
             existing = self.members.get(target)
             if existing and not (existing.isdir() and member.isdir()):
                 self.remove(target)

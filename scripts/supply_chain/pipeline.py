@@ -69,6 +69,7 @@ def snapshot_image(tag: str, name: str, work: Path, tools: Path, output: Path, r
     require(raw["descriptor"]["version"] == load(HERE / "tools.json")["syft"]["version"], "unexpected-syft-version")
     # Keep cataloger facts, not host paths, Docker configuration, or full environment.
     metadata = raw["source"]["metadata"]
+    require(metadata.get("imageID") == image_id, "scanner-image-identity-drift")
     raw["source"]["metadata"] = {key: metadata[key] for key in (
         "imageID", "manifestDigest", "mediaType", "tags", "repoDigests", "architecture",
         "os", "osVersion", "variant", "layers", "size",
@@ -85,7 +86,7 @@ def snapshot_image(tag: str, name: str, work: Path, tools: Path, output: Path, r
         "syft_sha256": digest(canonical(raw)),
         "syft_executable_sha256": sha_file(syft),
     }
-    return raw, cdx, ImageFiles.from_docker_archive(archive), subject
+    return raw, cdx, ImageFiles.from_docker_archive(archive, image_id), subject
 
 
 def collect(target: str, output: Path, tools: Path, revision: str) -> None:
@@ -286,7 +287,7 @@ def main() -> int:
     except EvidenceError as error:
         print("Supply-chain error: " + str(error), file=sys.stderr)
         return 1
-    except (OSError, ValueError, KeyError, TypeError, LookupError, tarfile.TarError, zipfile.BadZipFile):
+    except (OSError, ValueError, KeyError, TypeError, LookupError, EOFError, tarfile.TarError, zipfile.BadZipFile):
         print("Supply-chain error: invalid-or-unavailable-evidence", file=sys.stderr)
         return 1
 

@@ -185,6 +185,13 @@ def test_duplicate_reviews_fail(evidence):
         validate_policy(policy, TODAY)
 
 
+def test_ordinary_approval_cannot_substitute_a_license(evidence, tmp_path, tools):
+    evidence[2]["reviews"][0]["license_conclusion"] = "Apache-2.0"
+    result = review(evidence, tmp_path, tools)
+    assert result["status"] == "BLOCKED"
+    assert "license-conclusion-conflict" in result["components"][0]["issues"]
+
+
 @pytest.mark.parametrize("text", ['{"reviews": [], "reviews": [{}]}', '{"version": NaN}'])
 def test_ambiguous_or_nonstandard_json_rejected(tmp_path, text):
     path = tmp_path / "invalid.json"

@@ -117,8 +117,13 @@ def review_inventory(inventory: dict, document: dict, policy: dict, directory: P
         if approval:
             available = {f["blob"] for f in component["license_files"] if "blob" in f}
             require(set(approval["notice_blobs"]) <= available, "unbound-notice-evidence")
+            observed_licenses = set(component["declared"]) | {
+                d["value"] for d in component["detected"] if d.get("value")
+            }
             if state in {"unknown", "conflicting"} and approval["decision"] != "exception":
                 issues.append("explicit-exception-required")
+            elif approval["decision"] == "approved" and approval["license_conclusion"] not in observed_licenses:
+                issues.append("license-conclusion-conflict")
             elif not issues:
                 state = "reviewed" if approval["decision"] == "approved" else "reviewed-exception"
         else:

@@ -32,6 +32,12 @@ Syft enrichment/network and Go-tool execution are disabled. Saved image layers a
 read as archives with OCI whiteout/opaque-directory semantics, not extracted onto
 the host or executed. Container filesystem export is deliberately not used: Docker
 mount handling changes `/etc/hosts` and `/etc/hostname` relative to image bytes.
+The reader verifies the config/image digest, ordered uncompressed layer digests,
+and content-addressed blob digests. It supports plain/gzip Docker-save layers;
+unsupported or damaged representations fail closed rather than being treated as
+an empty filesystem. It is an evidence reader, not a container runtime.
+Gzip data may be cached as a temporary tar blob; archive member names never
+become host filesystem paths.
 The only post-build
 container commands read interpreter facts and `pnpm list`; they have no network.
 Python introspection uses `-I -S` so site initialization and installed `.pth`
