@@ -31,6 +31,7 @@ def collect_tools(output: Path, tools: Path) -> None:
         "syft": load(HERE / "tools.json")["syft"],
         "syft_license_blob": blobs.add((tools / "syft-LICENSE").read_bytes()),
         "schemas": load(HERE / "tools.json")["schema"],
+        "schema_license_blob": blobs.add((tools / "schema-LICENSE").read_bytes()),
         "python_packages": packages, "python_version": sys.version.split()[0],
         "requirements_lock_sha256": sha_file(HERE / "requirements.lock"),
         "python_tools_sha256": sha_file(HERE / "python-tools.json"),

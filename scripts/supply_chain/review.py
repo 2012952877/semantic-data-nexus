@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from urllib.parse import unquote
 from pathlib import Path
 
 from scripts.supply_chain.common import canonical, digest, require, sha_file
@@ -22,7 +23,8 @@ def validate_policy(policy: dict, today: dt.date) -> dict:
         for field in ("purl", "version", "reviewer", "rationale", "license_conclusion"):
             require(isinstance(entry[field], str) and entry[field].strip(), "invalid-review-entry")
         require(entry["purl"].startswith("pkg:") and "*" not in entry["purl"] + entry["version"], "wildcard-review")
-        require("@" + entry["version"] in entry["purl"], "unversioned-review")
+        encoded_version = entry["purl"].split("?", 1)[0].split("#", 1)[0].rpartition("@")[2]
+        require(unquote(encoded_version) == entry["version"] and "*" not in unquote(entry["purl"]), "unversioned-review")
         require(re.fullmatch("[0-9a-f]{64}", entry["evidence_sha256"]), "invalid-review-hash")
         require(entry["decision"] in {"approved", "exception"}, "invalid-review-decision")
         require(entry["notice"] in {"required", "not-required"}, "invalid-notice-decision")
@@ -76,7 +78,9 @@ def review_inventory(inventory: dict, document: dict, policy: dict, directory: P
         require(evidence_digest(component) == component["evidence_sha256"], "component-evidence-drift")
         require(component["id"] in components, "missing-component")
         cdx = components[component["id"]]
-        require(cdx.get("purl") == component["purl"] and cdx.get("version") == component["version"], "component-identity-conflict")
+        require(cdx.get("purl", "") == component["purl"] and cdx.get("version", "") == component["version"], "component-identity-conflict")
+        bindings = {p["name"]: p["value"] for p in cdx.get("properties", [])}
+        require(bindings.get("nexus:evidence-sha256") == component["evidence_sha256"], "component-document-drift")
         for fact in component["files"] + component["license_files"]:
             require(re.fullmatch("[0-9a-f]{64}", fact["sha256"]), "invalid-artifact-hash")
             if "blob" in fact:

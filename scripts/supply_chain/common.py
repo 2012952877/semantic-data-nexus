@@ -39,7 +39,7 @@ def write(path: Path, value: object) -> None:
 
 def run(args: list[str], *, cwd: Path | None = None) -> str:
     result = subprocess.run(args, cwd=cwd, capture_output=True, check=False)
-    require(result.returncode == 0, "external-command-failed")
+    require(result.returncode == 0, "external-command-failed-" + Path(args[0]).stem + "-" + str(result.returncode))
     return result.stdout.decode("utf-8")
 
 

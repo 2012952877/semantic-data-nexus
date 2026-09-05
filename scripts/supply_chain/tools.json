@@ -1,6 +1,7 @@
 {
   "syft": {
     "version": "1.51.1",
+    "revision": "91a0032987d91b7411b52f6f5c185c5e7f775495",
     "license": "Apache-2.0",
     "license_url": "https://raw.githubusercontent.com/anchore/syft/v1.51.1/LICENSE",
     "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -15,6 +16,9 @@
   },
   "schema": {
     "revision": "55343ba19dee1785acf1ce9191540d5fd7b590db",
+    "license": "Apache-2.0",
+    "license_url": "https://raw.githubusercontent.com/CycloneDX/specification/55343ba19dee1785acf1ce9191540d5fd7b590db/LICENSE",
+    "license_sha256": "6c29f22a4a7385285c6f579ec9f33c5e989f00739d6b257243a0b082ec9447ae",
     "base_url": "https://raw.githubusercontent.com/CycloneDX/specification/55343ba19dee1785acf1ce9191540d5fd7b590db/schema/",
     "files": {
       "bom-1.6.schema.json": "3e92dddbc30cf7f6a02b80f0942b1a4cfd4fb1c26f1dfc4310afa9d613cafb93",

@@ -67,7 +67,7 @@ def bind_evidence(document: dict, inventory: dict) -> dict:
         identity = package_ref(component)
         require(identity in facts, "unmapped-cyclonedx-component")
         fact = facts[identity]
-        require(component.get("purl") == fact["purl"] and component.get("version") == fact["version"], "component-identity-conflict")
+        require(component.get("purl", "") == fact["purl"] and component.get("version", "") == fact["version"], "component-identity-conflict")
         seen.add(identity)
         component.setdefault("properties", []).extend([
             {"name": "nexus:evidence-sha256", "value": fact["evidence_sha256"]},

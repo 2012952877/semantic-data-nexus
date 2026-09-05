@@ -41,6 +41,9 @@ def bootstrap(destination: Path) -> None:
     (destination / name).chmod(0o755)
     license_data = fetch(pins["syft"]["license_url"], pins["syft"]["license_sha256"])
     (destination / "syft-LICENSE").write_bytes(license_data)
+    (destination / "schema-LICENSE").write_bytes(fetch(
+        pins["schema"]["license_url"], pins["schema"]["license_sha256"],
+    ))
     for filename, sha in pins["schema"]["files"].items():
         (destination / filename).write_bytes(fetch(pins["schema"]["base_url"] + filename, sha))
 

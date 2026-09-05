@@ -52,15 +52,16 @@ jobs:
         target: [semantic-api, semantic-backend, control-api, web]
     env:
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      SUPPLY_CHAIN_TOOLS: ${{ runner.temp }}/supply-chain-tools
-      EVIDENCE_DIR: ${{ runner.temp }}/supply-chain-evidence
       TARGET: ${{ matrix.target }}
       REQUIRE_ACCEPTANCE: ${{ inputs.require_acceptance || false }}
     steps:
       - name: Require private repository
         env:
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
-        run: test "$REPOSITORY_PRIVATE" = true
+        run: |
+          test "$REPOSITORY_PRIVATE" = true
+          echo "SUPPLY_CHAIN_TOOLS=$RUNNER_TEMP/supply-chain-tools" >> "$GITHUB_ENV"
+          echo "EVIDENCE_DIR=$RUNNER_TEMP/supply-chain-evidence" >> "$GITHUB_ENV"
 
       - name: Check out exact source revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
