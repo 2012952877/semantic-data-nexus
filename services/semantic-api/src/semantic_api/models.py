@@ -46,6 +46,7 @@ class CompilationMode(StrEnum):
 
 class ProviderSelection(StrEnum):
     STATIC = "static"
+    OPENAI_COMPATIBLE = "openai_compatible"
 
 
 class CompileStatus(StrEnum):
@@ -395,10 +396,21 @@ class SQG(StrictModel):
     result_schema: list[ResultColumn] = Field(default_factory=list)
 
 
+class ProviderCallMetadata(StrictModel):
+    provider: Literal["openai_compatible"] = "openai_compatible"
+    model: str
+    deployment: str | None = None
+    phase: Literal["compile", "repair"] = "compile"
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    outcome: str = "succeeded"
+
+
 class TokenMetadata(StrictModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     max_output_tokens: int
+    provider_calls: list[ProviderCallMetadata] = Field(default_factory=list)
 
 
 class TimingMetadata(StrictModel):

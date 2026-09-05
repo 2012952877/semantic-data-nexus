@@ -1,6 +1,6 @@
 # Semantic backend
 
-The semantic backend owns M0 run orchestration. It invokes the deterministic
+The semantic backend owns M0 run orchestration. By default it invokes the deterministic
 `semantic-api` compiler, converts only a succeeded validated SQG through the
 versioned source-mapping adapter, plans and executes it with `query-runtime`,
 and publishes bounded result and lineage details.
@@ -8,6 +8,30 @@ and publishes bounded result and lineage details.
 Offline mode is the default and reads the repository's deterministic synthetic
 CSV corpus. The service never accepts SQL and does not log request content,
 credentials, signed URLs, connection strings, or provider exception text.
+
+## Model-provider configuration
+
+The default constructor uses `SemanticCompiler.from_environment()` through its `default()`
+factory. The server-side `SEMANTIC_COMPILER_*` settings documented in
+[semantic-api](../semantic-api/README.md#structured-model-provider-m1) select either explicit
+local/dev fixtures (default) or real structured model calls. This requires no Control API DTO,
+Web or source-resolver configuration change. Compiler and source-resolver selection are
+independent; selecting a model does not enable Databricks.
+
+Readiness includes local provider configuration validity without a model call. Invalid settings
+leave the service not ready and runs fail closed; there is no static fallback. Run cancellation
+and application lifespan shutdown close in-flight provider HTTP requests. The backend's
+existing 30-second whole-run deadline also applies, even when per-call provider timeouts are
+configured higher. Model output reaches the runtime only after authoritative SQG validation.
+
+Detailed model/phase/usage metadata is on the compiler response and internal integrated
+artifact. The existing public BFF run contract still exposes only aggregate integer token usage;
+no new model/deployment fields are claimed on that contract. Successful real runs use actual
+validated provider counts. The existing zero-initialized counters on failed/cancelled runs are
+not billing records; consult compiler call metadata for known versus unknown usage.
+
+This is the two-mode M1 provider boundary, not generalized compilation (#33) or production
+acceptance. No live model calls or hosted-demo changes were made for this implementation.
 
 ## Run locally
 

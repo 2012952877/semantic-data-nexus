@@ -40,7 +40,11 @@ async def run(args: argparse.Namespace) -> int:
         evaluation_timezone=args.timezone,
         compilation_mode=CompilationMode(args.mode),
     )
-    response = await SemanticCompiler.default().compile(request, str(uuid4()))
+    compiler = SemanticCompiler.default()
+    try:
+        response = await compiler.compile(request, str(uuid4()))
+    finally:
+        await compiler.aclose()
     print(json.dumps(response.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0 if response.normalized_sqg is not None else 2
 

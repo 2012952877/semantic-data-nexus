@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from time import perf_counter
 
 from semantic_api.initializer import DeterministicInitializer
@@ -20,13 +20,19 @@ from semantic_api.models import (
 from semantic_api.ontology import OntologyRegistry
 from semantic_api.provider import (
     CompilerProvider,
+    ProviderError,
     ProviderInvoker,
     ProviderResult,
-    ProviderTimeoutError,
     StaticFixtureProvider,
     StructuredCompileContext,
     UntrustedQuestion,
 )
+from semantic_api.provider_config import (
+    ProviderConfigError,
+    ProviderRuntime,
+    runtime_from_environment,
+)
+from semantic_api.structured_provider import StructuredHTTPProvider
 from semantic_api.validator import SQGValidator
 
 
@@ -38,21 +44,58 @@ class SemanticCompiler:
         *,
         provider_timeout_seconds: float = 5,
         max_output_tokens: int = 2_048,
+        runtime: ProviderRuntime | None = None,
+        configuration_valid: bool = True,
     ) -> None:
+        if runtime is not None and provider_factory is not None:
+            raise ValueError("Specify either a provider runtime or a provider factory, not both.")
         self.registry = registry
         self.initializer = DeterministicInitializer(registry)
         self.validator = SQGValidator(registry)
-        self.provider_factory = provider_factory or (lambda _: StaticFixtureProvider())
-        self.provider_timeout_seconds = provider_timeout_seconds
-        self.max_output_tokens = max_output_tokens
+        self.runtime = runtime
+        self.configuration_valid = configuration_valid
+        self.provider_factory = (
+            runtime.select if runtime is not None else provider_factory or self._static_provider
+        )
+        self.provider_timeout_seconds = (
+            runtime.settings.timeout_seconds + 0.25
+            if runtime is not None
+            else provider_timeout_seconds
+        )
+        self.max_output_tokens = (
+            runtime.settings.max_output_tokens if runtime is not None else max_output_tokens
+        )
 
     @classmethod
     def default(cls) -> SemanticCompiler:
-        return cls(OntologyRegistry.load_default())
+        return cls.from_environment()
+
+    @classmethod
+    def from_environment(cls, env: Mapping[str, str] | None = None) -> SemanticCompiler:
+        registry = OntologyRegistry.load_default()
+        try:
+            runtime = runtime_from_environment(env)
+        except ProviderConfigError:
+            return cls(registry, configuration_valid=False)
+        return cls(registry, runtime=runtime)
+
+    @staticmethod
+    def _static_provider(selection: ProviderSelection) -> CompilerProvider:
+        if selection is not ProviderSelection.STATIC:
+            raise ProviderError("PROVIDER_NOT_CONFIGURED")
+        return StaticFixtureProvider()
+
+    async def aclose(self) -> None:
+        if self.runtime is not None:
+            await self.runtime.aclose()
 
     @property
     def ready(self) -> bool:
-        return bool(self.registry.document.version)
+        return (
+            bool(self.registry.document.version)
+            and self.configuration_valid
+            and (self.runtime is None or self.runtime.ready)
+        )
 
     def initialize(self, request: InitializeRequest, correlation_id: str) -> InitializeResponse:
         return self.initializer.initialize(request, correlation_id)
@@ -92,12 +135,18 @@ class SemanticCompiler:
             time_windows=authoritative.time_windows,
             semantic_context=authoritative.selected_semantic_context,
         )
-        provider = self.provider_factory(request.provider_selection)
-        invoker = ProviderInvoker(provider, self.provider_timeout_seconds)
         provider_start = perf_counter()
         try:
+            if not self.ready:
+                raise ProviderError("PROVIDER_CONFIGURATION")
+            provider = self.provider_factory(request.provider_selection)
+            invoker = ProviderInvoker(
+                provider,
+                self.provider_timeout_seconds,
+                await_cancellation=isinstance(provider, StructuredHTTPProvider),
+            )
             provider_result = await invoker.compile(context)
-        except ProviderTimeoutError:
+        except ProviderError as error:
             provider_ms = self._elapsed_ms(provider_start)
             return self._failure(
                 correlation_id=correlation_id,
@@ -106,17 +155,17 @@ class SemanticCompiler:
                 diagnostics=[
                     *authoritative.diagnostics,
                     Diagnostic(
-                        code="PROVIDER_TIMEOUT",
+                        code=error.code,
                         severity=DiagnosticSeverity.ERROR,
                         stage=DiagnosticStage.PROVIDER,
-                        message="The compiler provider exceeded the configured timeout.",
+                        message=str(error),
                     ),
                 ],
                 initialization_ms=initialization_ms,
                 provider_ms=provider_ms,
                 validation_ms=0,
                 total_start=total_start,
-                tokens=empty_tokens,
+                tokens=self._error_tokens(error),
             )
         provider_ms = self._elapsed_ms(provider_start)
 
@@ -153,7 +202,7 @@ class SemanticCompiler:
             repair_result = await invoker.repair(
                 context, provider_result.candidate, validation.diagnostics
             )
-        except ProviderTimeoutError:
+        except ProviderError as error:
             provider_ms += self._elapsed_ms(repair_start)
             return self._failure(
                 correlation_id=correlation_id,
@@ -163,17 +212,17 @@ class SemanticCompiler:
                     *authoritative.diagnostics,
                     *validation.diagnostics,
                     Diagnostic(
-                        code="REPAIR_TIMEOUT",
+                        code="REPAIR_TIMEOUT" if error.code == "PROVIDER_TIMEOUT" else error.code,
                         severity=DiagnosticSeverity.ERROR,
                         stage=DiagnosticStage.REPAIR,
-                        message="The single structured repair attempt timed out.",
+                        message="The single structured repair attempt could not complete.",
                     ),
                 ],
                 initialization_ms=initialization_ms,
                 provider_ms=provider_ms,
                 validation_ms=validation_ms,
                 total_start=total_start,
-                tokens=tokens,
+                tokens=self._combine_tokens(tokens, self._error_tokens(error)),
                 repair_attempted=True,
             )
         provider_ms += self._elapsed_ms(repair_start)
@@ -187,11 +236,7 @@ class SemanticCompiler:
         )
         validation_ms += self._elapsed_ms(repair_validation_start)
         repair_tokens = self._tokens(repair_result)
-        tokens = TokenMetadata(
-            input_tokens=self._sum_optional(tokens.input_tokens, repair_tokens.input_tokens),
-            output_tokens=self._sum_optional(tokens.output_tokens, repair_tokens.output_tokens),
-            max_output_tokens=self.max_output_tokens,
-        )
+        tokens = self._combine_tokens(tokens, repair_tokens)
         if repaired.valid:
             return CompileResponse(
                 status=CompileStatus.SUCCEEDED,
@@ -277,6 +322,24 @@ class SemanticCompiler:
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             max_output_tokens=self.max_output_tokens,
+            provider_calls=[result.metadata] if result.metadata is not None else [],
+        )
+
+    def _error_tokens(self, error: ProviderError) -> TokenMetadata:
+        metadata = error.metadata
+        return TokenMetadata(
+            input_tokens=metadata.input_tokens if metadata is not None else None,
+            output_tokens=metadata.output_tokens if metadata is not None else None,
+            max_output_tokens=self.max_output_tokens,
+            provider_calls=[metadata] if metadata is not None else [],
+        )
+
+    def _combine_tokens(self, left: TokenMetadata, right: TokenMetadata) -> TokenMetadata:
+        return TokenMetadata(
+            input_tokens=self._sum_optional(left.input_tokens, right.input_tokens),
+            output_tokens=self._sum_optional(left.output_tokens, right.output_tokens),
+            max_output_tokens=self.max_output_tokens,
+            provider_calls=[*left.provider_calls, *right.provider_calls],
         )
 
     @staticmethod

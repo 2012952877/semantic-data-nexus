@@ -238,8 +238,11 @@ class OrchestrationService:
             return_exceptions=True,
         )
         close = getattr(self.resolver, "aclose", None)
-        if close is not None:
-            await close()
+        try:
+            if close is not None:
+                await close()
+        finally:
+            await self.compiler.aclose()
         failures = [result for result in results if isinstance(result, BaseException)]
         if failures:
             raise RuntimeError(
@@ -273,9 +276,11 @@ class OrchestrationService:
                     CompileRequest.model_validate(initialize_request.model_dump()),
                     request.trace_id,
                 )
+                async with record.lock:
+                    record.compile_response = compile_response
                 if compile_response.status is not CompileStatus.SUCCEEDED:
                     code = (
-                        compile_response.diagnostics[0].code
+                        compile_response.diagnostics[-1].code
                         if compile_response.diagnostics
                         else "COMPILE_FAILED"
                     )
@@ -521,7 +526,6 @@ class OrchestrationService:
             policy_checks=["validated_sqg", "versioned_source_mapping"],
         )
         async with record.lock:
-            record.compile_response = response
             record.status = record.status.model_copy(
                 update={
                     "token_usage": TokenUsage(

@@ -12,6 +12,7 @@ from pydantic import Field
 from semantic_api.models import (
     CompilationMode,
     Diagnostic,
+    ProviderCallMetadata,
     ResolvedTerm,
     ResolvedTermKind,
     SemanticContext,
@@ -100,6 +101,7 @@ class ProviderResult(StrictModel):
     candidate: dict[str, Any]
     input_tokens: int | None = None
     output_tokens: int | None = None
+    metadata: ProviderCallMetadata | None = None
 
 
 class CompilerProvider(Protocol):
@@ -113,16 +115,33 @@ class CompilerProvider(Protocol):
     ) -> ProviderResult: ...
 
 
-class ProviderTimeoutError(TimeoutError):
-    pass
+class ProviderError(Exception):
+    """Only stable, value-free diagnostics may cross the provider boundary."""
+
+    def __init__(self, code: str, metadata: ProviderCallMetadata | None = None) -> None:
+        super().__init__("The compiler provider could not complete the structured request.")
+        self.code = code
+        self.metadata = metadata
+
+
+class ProviderTimeoutError(ProviderError, TimeoutError):
+    def __init__(self, message: str = "compiler provider exceeded its timeout") -> None:
+        super().__init__("PROVIDER_TIMEOUT")
 
 
 class ProviderInvoker:
-    def __init__(self, provider: CompilerProvider, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        provider: CompilerProvider,
+        timeout_seconds: float,
+        *,
+        await_cancellation: bool = False,
+    ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         self.provider = provider
         self.timeout_seconds = timeout_seconds
+        self.await_cancellation = await_cancellation
 
     async def compile(self, context: StructuredCompileContext) -> ProviderResult:
         return await self._bounded(self.provider.compile(context))
@@ -155,14 +174,21 @@ class ProviderInvoker:
         try:
             done, _ = await asyncio.wait({task}, timeout=self.timeout_seconds)
         except asyncio.CancelledError:
-            task.cancel()
-            task.add_done_callback(self._consume_task_result)
+            await self._cancel_task(task)
             raise
         if not done or loop.time() > deadline:
-            task.cancel()
-            task.add_done_callback(self._consume_task_result)
+            await self._cancel_task(task)
             raise ProviderTimeoutError("compiler provider exceeded its timeout")
         return task.result()
+
+    async def _cancel_task(self, task: asyncio.Task[ProviderResult]) -> None:
+        task.cancel()
+        if self.await_cancellation:
+            # Only opt in for our cooperative async transport, not arbitrary
+            # injected in-process providers that may suppress cancellation.
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            task.add_done_callback(self._consume_task_result)
 
     @staticmethod
     def _consume_task_result(task: asyncio.Task[ProviderResult]) -> None:
