@@ -84,6 +84,10 @@ _SUSPICIOUS_PATH_PARTS = {
     "screenshots",
 }
 _SAFE_RAW_DATA_PREFIXES = ("data/synthetic/generated/",)
+# Reviewed DDL, not a general migration-directory exemption. Content rules still apply.
+_REVIEWED_DDL_PATHS = frozenset(
+    {"services/control-api/src/ControlApi/Persistence/Migrations/001_control_plane.sql"}
+)
 _SAFE_VALUE_MARKERS = (
     "dummy",
     "example",
@@ -432,12 +436,16 @@ def _path_findings(path: str) -> Iterable[Finding]:
             "proprietary-binary-asset",
             "tracked screenshots, Office documents, PDFs, and raster assets are prohibited",
         )
-    if suffix in _RAW_DATA_SUFFIXES and not path.startswith(_SAFE_RAW_DATA_PREFIXES):
+    if (
+        suffix in _RAW_DATA_SUFFIXES
+        and not path.startswith(_SAFE_RAW_DATA_PREFIXES)
+        and path not in _REVIEWED_DDL_PATHS
+    ):
         yield Finding(
             path,
             0,
             "unapproved-raw-data",
-            "raw data or SQL is allowed only in the reviewed synthetic data path",
+            "raw data or SQL requires a reviewed synthetic path or explicit DDL file approval",
         )
     if lowered_parts & _SUSPICIOUS_PATH_PARTS or lowered_name.startswith("screenshot"):
         yield Finding(

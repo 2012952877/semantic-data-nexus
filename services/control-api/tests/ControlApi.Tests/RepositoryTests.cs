@@ -7,6 +7,26 @@ namespace ControlApi.Tests;
 
 public sealed class RepositoryTests
 {
+    [Fact]
+    public async Task LocalDiagnosticsSaturateWithoutPoisoningMemoryTransitions()
+    {
+        var repository = new InMemoryRunRepository(TimeProvider.System);
+        var run = (await repository.CreateAsync(
+            new CreateRunRequest("bounded-dispatch", "synthetic-workload"), "subject", default)).Run;
+        for (var index = 0; index < 120; index++)
+        {
+            await repository.MarkStartDispatchUnknownAsync(run.Id, $"dispatch_failure_{index % 2}", default);
+        }
+        var saturated = (await repository.GetAsync(run.Id, default))!;
+        Assert.Equal(100, saturated.Diagnostics.Count);
+        Assert.Equal(101, saturated.Version);
+        _ = StoredRunCodec.Run(StoredRunCodec.Encode(saturated));
+        var failed = await repository.MarkFailedAsync(run.Id, "start_rejected", "Synthetic rejection", default);
+        Assert.Equal(RunState.Failed, failed.State);
+        Assert.Equal(saturated.Diagnostics, failed.Diagnostics);
+        _ = StoredRunCodec.Run(StoredRunCodec.Encode(failed));
+    }
+
     [Theory]
     [InlineData("run_0123456789abcdef0123456789abcdef", true)]
     [InlineData("run_0123456789ABCDEF0123456789ABCDEF", false)]
