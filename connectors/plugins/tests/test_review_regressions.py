@@ -498,3 +498,221 @@ def test_lossy_target_conversion_is_rejected_before_arrow_scalar(
     monkeypatch.setattr(pa, "scalar", forbidden_conversion)
     with pytest.raises(OperatorFailure, match="without loss"):
         DuckDBComputePlugin()._build_query(operation, (table,))
+
+
+def decimal_arithmetic(
+    kind: ExpressionKind,
+    left: str,
+    right: str,
+    wrapped: bool,
+) -> OperatorSpecV1:
+    expression = TypedExpression(
+        kind=kind,
+        data_type=ScalarType.DECIMAL,
+        args=(
+            TypedExpression.literal(left, ScalarType.DECIMAL),
+            TypedExpression.literal(right, ScalarType.DECIMAL),
+        ),
+    )
+    if wrapped:
+        expression = coalesce(expression, TypedExpression.literal(None, ScalarType.DECIMAL))
+    return OperatorSpecV1(
+        version="query-runtime/v1",
+        kind=OperatorKind.PROJECT,
+        expressions=(NamedExpression(name="value", expression=expression),),
+    )
+
+
+CARRY_CASES = [
+    (ExpressionKind.ADD, "999999999999999999", "1", "1000000000000000000"),
+    (ExpressionKind.ADD, "0.999999999999999999", "0.000000000000000001", "1.000000000000000000"),
+    (ExpressionKind.SUBTRACT, "999999999999999999", "-1", "1000000000000000000"),
+    (ExpressionKind.SUBTRACT, "-999999999999999999", "1", "-1000000000000000000"),
+    (
+        ExpressionKind.SUBTRACT,
+        "0.999999999999999999",
+        "-0.000000000000000001",
+        "1.000000000000000000",
+    ),
+    (ExpressionKind.MULTIPLY, "999999999999999999", "2", "1999999999999999998"),
+    (ExpressionKind.MULTIPLY, "0.999999999999999999", "2", "1.999999999999999998"),
+    (
+        ExpressionKind.MULTIPLY,
+        "0.999999999999999999",
+        "0.999999999999999999",
+        "0.999999999999999998000000000000000001",
+    ),
+    (
+        ExpressionKind.ADD,
+        "99999999999999999999999999999999999999",
+        "0",
+        "99999999999999999999999999999999999999",
+    ),
+]
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "coalesce"])
+@pytest.mark.parametrize(("kind", "left", "right", "expected"), CARRY_CASES)
+async def test_decimal_arithmetic_promotes_operands_before_carry(
+    kind: ExpressionKind,
+    left: str,
+    right: str,
+    expected: str,
+    wrapped: bool,
+) -> None:
+    result = await DuckDBComputePlugin().execute(
+        decimal_arithmetic(kind, left, right, wrapped),
+        (pa.table({"id": [1]}),),
+        asyncio.Event(),
+    )
+    assert result["value"][0].as_py() == Decimal(expected)
+    assert pa.types.is_decimal128(result.schema.field("value").type)
+    assert result.schema.field("value").type.scale == max(0, -Decimal(expected).as_tuple().exponent)
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "coalesce"])
+@pytest.mark.parametrize(("kind", "left", "right", "expected"), CARRY_CASES[:2])
+async def test_decimal_carry_survives_shared_runtime_dispatch(
+    tmp_path: Path,
+    kind: ExpressionKind,
+    left: str,
+    right: str,
+    expected: str,
+    wrapped: bool,
+) -> None:
+    runtime, resolver = runtime_for(tmp_path, pa.table({"id": [1]}), parquet_results=True)
+    result = await run_result(runtime, decimal_arithmetic(kind, left, right, wrapped))
+    assert result["value"][0].as_py() == Decimal(expected)
+    assert resolver.source_calls == 1
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "coalesce"])
+@pytest.mark.parametrize(
+    ("kind", "left", "right"),
+    [
+        (ExpressionKind.ADD, "99999999999999999999999999999999999999", "1"),
+        (ExpressionKind.MULTIPLY, "99999999999999999999", "99999999999999999999"),
+        (ExpressionKind.MULTIPLY, "0.00000000000000000001", "0.00000000000000000001"),
+    ],
+)
+async def test_decimal_arithmetic_still_rejects_unrepresentable_results(
+    kind: ExpressionKind,
+    left: str,
+    right: str,
+    wrapped: bool,
+) -> None:
+    with pytest.raises(OperatorFailure):
+        await DuckDBComputePlugin().execute(
+            decimal_arithmetic(kind, left, right, wrapped),
+            (pa.table({"id": [1]}),),
+            asyncio.Event(),
+        )
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "coalesce"])
+@pytest.mark.parametrize(
+    ("kind", "right", "expected"),
+    [
+        (ExpressionKind.ADD, "1", "1000000000000000000"),
+        (ExpressionKind.SUBTRACT, "-1", "1000000000000000000"),
+        (ExpressionKind.MULTIPLY, "2", "1999999999999999998"),
+    ],
+)
+async def test_decimal_column_arithmetic_carry_in_dispatch(
+    tmp_path: Path,
+    kind: ExpressionKind,
+    right: str,
+    expected: str,
+    wrapped: bool,
+) -> None:
+    table = pa.table(
+        {
+            "amount": pa.array([Decimal("999999999999999999"), None], pa.decimal128(18, 0)),
+        }
+    )
+    expression = TypedExpression(
+        kind=kind,
+        data_type=ScalarType.DECIMAL,
+        args=(
+            TypedExpression.col("amount", ScalarType.DECIMAL),
+            TypedExpression.literal(right, ScalarType.DECIMAL),
+        ),
+    )
+    if wrapped:
+        expression = coalesce(expression, TypedExpression.literal(None, ScalarType.DECIMAL))
+    runtime, _ = runtime_for(tmp_path, table, parquet_results=True)
+    result = await run_result(
+        runtime,
+        OperatorSpecV1(
+            version="query-runtime/v1",
+            kind=OperatorKind.PROJECT,
+            expressions=(NamedExpression(name="value", expression=expression),),
+        ),
+    )
+    assert result["value"].to_pylist() == [Decimal(expected), None]
+    assert result.schema.field("value").type == pa.decimal128(19, 0)
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        (ExpressionKind.ADD, "14.25"),
+        (ExpressionKind.SUBTRACT, "10.25"),
+        (ExpressionKind.MULTIPLY, "24.50"),
+    ],
+)
+async def test_mixed_integer_decimal_arithmetic_keeps_existing_semantics(
+    kind: ExpressionKind,
+    expected: str,
+) -> None:
+    expression = TypedExpression(
+        kind=kind,
+        data_type=ScalarType.DECIMAL,
+        args=(
+            TypedExpression.literal("12.25", ScalarType.DECIMAL),
+            TypedExpression.literal(2, ScalarType.INTEGER),
+        ),
+    )
+    operation = OperatorSpecV1(
+        version="query-runtime/v1",
+        kind=OperatorKind.PROJECT,
+        expressions=(NamedExpression(name="value", expression=expression),),
+    )
+    result = await DuckDBComputePlugin().execute(
+        operation, (pa.table({"id": [1]}),), asyncio.Event()
+    )
+    assert result["value"][0].as_py() == Decimal(expected)
+
+
+@pytest.mark.parametrize(
+    ("kind", "right", "expected"),
+    [
+        (ExpressionKind.ADD, 1, "1000000000000000000"),
+        (ExpressionKind.SUBTRACT, -1, "1000000000000000000"),
+        (ExpressionKind.MULTIPLY, 2, "1999999999999999998"),
+    ],
+)
+async def test_decimal_carry_with_narrow_integer_column(
+    kind: ExpressionKind,
+    right: int,
+    expected: str,
+) -> None:
+    expression = TypedExpression(
+        kind=kind,
+        data_type=ScalarType.DECIMAL,
+        args=(
+            TypedExpression.literal("999999999999999999", ScalarType.DECIMAL),
+            TypedExpression.col("step", ScalarType.INTEGER),
+        ),
+    )
+    operation = OperatorSpecV1(
+        version="query-runtime/v1",
+        kind=OperatorKind.PROJECT,
+        expressions=(NamedExpression(name="value", expression=expression),),
+    )
+    result = await DuckDBComputePlugin().execute(
+        operation,
+        (pa.table({"step": pa.array([right], pa.int32())}),),
+        asyncio.Event(),
+    )
+    assert result["value"][0].as_py() == Decimal(expected)

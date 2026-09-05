@@ -44,6 +44,14 @@ _SQL_TYPES = {
     ScalarType.TIMESTAMP: "TIMESTAMP",
 }
 
+_DECIMAL_ARITHMETIC = frozenset(
+    {
+        ExpressionKind.ADD,
+        ExpressionKind.SUBTRACT,
+        ExpressionKind.MULTIPLY,
+    }
+)
+
 
 def quote_identifier(identifier: str, available: set[str] | None = None) -> str:
     if not identifier or "\x00" in identifier:
@@ -94,6 +102,30 @@ def render_expression(
     parameters = tuple(param for item in rendered for param in item.parameters)
     if expression.kind in _BINARY:
         _require_arity(expression, 2)
+        if (
+            exact_literals
+            and expression.kind in _DECIMAL_ARITHMETIC
+            and expression.data_type is ScalarType.DECIMAL
+            and _is_exact_numeric_expression(expression)
+        ):
+            types = column_types or {}
+            integer_digits, scale = _decimal_expression_shape(expression, types)
+            precision = max(1, integer_digits + scale)
+            operand_scales = (
+                [_decimal_expression_shape(arg, types)[1] for arg in expression.args]
+                if expression.kind is ExpressionKind.MULTIPLY
+                else [scale, scale]
+            )
+            # Promote before arithmetic: an outer cast cannot rescue DECIMAL(18) carry.
+            widened_operands = [
+                f"CAST({item.sql} AS DECIMAL({precision}, {operand_scale}))"
+                for item, operand_scale in zip(rendered, operand_scales, strict=True)
+            ]
+            return RenderedExpression(
+                f"CAST(({widened_operands[0]} {_BINARY[expression.kind]} {widened_operands[1]}) "
+                f"AS DECIMAL({precision}, {scale}))",
+                parameters,
+            )
         return RenderedExpression(
             f"({rendered[0].sql} {_BINARY[expression.kind]} {rendered[1].sql})",
             parameters,
@@ -129,10 +161,32 @@ def render_expression(
     )
 
 
+def _is_exact_numeric_expression(expression: TypedExpression) -> bool:
+    if expression.data_type not in {ScalarType.DECIMAL, ScalarType.INTEGER}:
+        return False
+    if expression.kind in {ExpressionKind.COLUMN, ExpressionKind.LITERAL}:
+        return True
+    return expression.kind in _DECIMAL_ARITHMETIC | {ExpressionKind.COALESCE} and all(
+        _is_exact_numeric_expression(arg) for arg in expression.args
+    )
+
+
 def _decimal_expression_shape(
     expression: TypedExpression,
     column_types: Mapping[str, pa.DataType],
 ) -> tuple[int, int]:
+    if expression.data_type is ScalarType.INTEGER:
+        if expression.kind is ExpressionKind.LITERAL:
+            value = scalar_value(expression.data_type.value, expression.value)
+            assert type(value) is int or value is None
+            return (len(str(abs(value))) if value else 0), 0
+        if expression.kind is ExpressionKind.COLUMN:
+            data_type = column_types.get(expression.column or "")
+            if data_type is None or not pa.types.is_integer(data_type):
+                raise OperatorFailure("EXPRESSION_TYPE", "Integer column requires its Arrow schema")
+            sign_bits = 0 if pa.types.is_unsigned_integer(data_type) else 1
+            return len(str(2 ** (data_type.bit_width - sign_bits))), 0
+        return 19, 0
     if expression.data_type is not ScalarType.DECIMAL:
         raise OperatorFailure("EXPRESSION_TYPE", "Exact decimal operands are required")
     if expression.kind is ExpressionKind.LITERAL:
@@ -154,7 +208,7 @@ def _decimal_expression_shape(
                 "Decimal COALESCE has no lossless common type within precision 38",
             )
         return integer_digits, scale
-    if expression.kind in {ExpressionKind.ADD, ExpressionKind.SUBTRACT, ExpressionKind.MULTIPLY}:
+    if expression.kind in _DECIMAL_ARITHMETIC:
         if expression.kind is ExpressionKind.MULTIPLY:
             scale = sum(scale for _, scale in shapes)
             integer_digits = sum(digits for digits, _ in shapes)

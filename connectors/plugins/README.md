@@ -128,6 +128,8 @@ Registration or an empty result is never evidence for an unsupported capability.
 Typed results retain decimal, date, microsecond timestamp and null values. Exact v1
 decimal literals use strings with at most 38 digits; floating AVG/division are explicitly
 not exact-decimal arithmetic. Literal casts reserve only the required precision.
+Exact decimal addition/subtraction promote operands before evaluation to accommodate
+carry; multiplication promotes precision while retaining each operand's own scale.
 Decimal COALESCE computes a lossless common type from input Arrow schemas and literal
 values; null/zero defaults do not reserve unused integer digits or reduce fractional
 scale. A common type requiring more than 38 digits is rejected rather than rounded.
