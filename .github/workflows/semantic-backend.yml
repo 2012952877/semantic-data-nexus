@@ -1,6 +1,7 @@
 name: Semantic backend
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "data/synthetic/**"

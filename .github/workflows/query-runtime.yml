@@ -1,10 +1,14 @@
 name: query-runtime
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "services/query-runtime/**"
       - ".github/workflows/query-runtime.yml"
+
+permissions:
+  contents: read
 
 jobs:
   test:

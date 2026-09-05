@@ -1,6 +1,7 @@
 name: Semantic API
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "services/semantic-api/**"

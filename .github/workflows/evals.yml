@@ -1,6 +1,7 @@
 name: Semantic evaluation suite
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "data/synthetic/**"

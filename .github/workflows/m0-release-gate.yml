@@ -1,0 +1,140 @@
+name: M0 release gate
+
+# Do not add path filters here. This workflow is the stable required-check fan-in,
+# so every pull request must create a terminal aggregate result.
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m0-release-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core_contracts:
+    name: Core contracts and schemas
+    uses: ./.github/workflows/ci.yml
+
+  reference_evals:
+    name: Synthetic fixtures and reference evaluation
+    uses: ./.github/workflows/evals.yml
+
+  databricks_resolver:
+    name: Databricks resolver
+    uses: ./.github/workflows/databricks-resolver.yml
+
+  semantic_api:
+    name: Semantic initializer and compiler
+    uses: ./.github/workflows/semantic-api.yml
+
+  query_runtime:
+    name: Query runtime
+    uses: ./.github/workflows/query-runtime.yml
+
+  semantic_backend:
+    name: Integrated backend and artifact evaluation
+    uses: ./.github/workflows/semantic-backend.yml
+
+  control_api:
+    name: Control API
+    uses: ./.github/workflows/control-api.yml
+
+  web:
+    name: Web unit and browser suites
+    uses: ./.github/workflows/web.yml
+
+  infrastructure:
+    name: Bicep static validation
+    uses: ./.github/workflows/infra-bicep.yml
+
+  full_stack:
+    name: Compose real API and browser smoke
+    uses: ./.github/workflows/full-stack.yml
+
+  clean_room:
+    name: Clean-room and private-demo scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan tracked content
+        run: >-
+          python scripts/clean_room_scan.py
+          --report "${{ runner.temp }}/m0-clean-room-report.json"
+
+      - name: Upload value-free scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m0-clean-room-report
+          path: ${{ runner.temp }}/m0-clean-room-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release_gate:
+    name: M0 release gate
+    if: always()
+    needs:
+      - core_contracts
+      - reference_evals
+      - databricks_resolver
+      - semantic_api
+      - query_runtime
+      - semantic_backend
+      - control_api
+      - web
+      - infrastructure
+      - full_stack
+      - clean_room
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every M0 gate
+        env:
+          CORE_CONTRACTS: ${{ needs.core_contracts.result }}
+          REFERENCE_EVALS: ${{ needs.reference_evals.result }}
+          DATABRICKS_RESOLVER: ${{ needs.databricks_resolver.result }}
+          SEMANTIC_API: ${{ needs.semantic_api.result }}
+          QUERY_RUNTIME: ${{ needs.query_runtime.result }}
+          SEMANTIC_BACKEND: ${{ needs.semantic_backend.result }}
+          CONTROL_API: ${{ needs.control_api.result }}
+          WEB: ${{ needs.web.result }}
+          INFRASTRUCTURE: ${{ needs.infrastructure.result }}
+          FULL_STACK: ${{ needs.full_stack.result }}
+          CLEAN_ROOM: ${{ needs.clean_room.result }}
+        run: |
+          status=0
+          for gate in \
+            "core_contracts=$CORE_CONTRACTS" \
+            "reference_evals=$REFERENCE_EVALS" \
+            "databricks_resolver=$DATABRICKS_RESOLVER" \
+            "semantic_api=$SEMANTIC_API" \
+            "query_runtime=$QUERY_RUNTIME" \
+            "semantic_backend=$SEMANTIC_BACKEND" \
+            "control_api=$CONTROL_API" \
+            "web=$WEB" \
+            "infrastructure=$INFRASTRUCTURE" \
+            "full_stack=$FULL_STACK" \
+            "clean_room=$CLEAN_ROOM"
+          do
+            name="${gate%%=*}"
+            result="${gate#*=}"
+            if [ "$result" != "success" ]; then
+              echo "::error::$name finished with result '$result'"
+              status=1
+            fi
+          done
+          exit "$status"
