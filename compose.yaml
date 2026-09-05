@@ -10,6 +10,8 @@ services:
       SEMANTIC_NEXUS_DATA_DIR: /app/data/synthetic/generated
       SEMANTIC_NEXUS_FAKE_DELAY_MS: "${SEMANTIC_NEXUS_FAKE_DELAY_MS:-750}"
       SEMANTIC_NEXUS_RESOLVER: fake
+      SEMANTIC_NEXUS_AUTH_MODE: legacy-development
+      SEMANTIC_NEXUS_ENVIRONMENT: Development
     init: true
     stop_grace_period: 60s
     read_only: true

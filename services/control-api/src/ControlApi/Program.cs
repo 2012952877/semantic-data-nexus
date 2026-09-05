@@ -22,6 +22,11 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
+if (args.Contains("--identity-maintenance", StringComparer.Ordinal))
+{
+    await IdentityMaintenance.ExecuteAsync(builder.Configuration, CancellationToken.None);
+    return;
+}
 
 builder.Logging.Configure(options =>
     options.ActivityTrackingOptions =
@@ -170,13 +175,17 @@ else
             "Production requires an HTTPS SemanticBackend:BaseUri.");
     }
 
-    builder.Services.AddHttpClient<ISemanticBackendClient, HttpSemanticBackendClient>(client =>
+    var backendClient = builder.Services.AddHttpClient<ISemanticBackendClient, HttpSemanticBackendClient>(client =>
     {
         client.BaseAddress = semanticBaseUri;
         client.Timeout = TimeSpan.FromSeconds(semanticOptions.TimeoutSeconds);
         client.MaxResponseContentBufferSize =
             SemanticBackendOptions.MaximumResponseContentBytes;
     });
+    if (!localAuthOptions.Enabled)
+    {
+        backendClient.AddHttpMessageHandler<ServiceContextHandler>();
+    }
 }
 
 builder.Services.AddHealthChecks()
@@ -271,6 +280,7 @@ if (app.Environment.IsProduction())
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseExceptionHandler();
 app.UseAuthentication();
+app.UseMiddleware<WorkspaceMiddleware>();
 app.UseRateLimiter();
 app.UseAuthorization();
 app.UseMiddleware<JsonUnicodeValidationMiddleware>();
@@ -291,6 +301,7 @@ app.MapHealthChecks("/health/ready", new()
     Predicate = check => check.Tags.Contains("ready")
 });
 app.MapControlApi();
+app.MapIdentityEndpoints();
 
 app.Run();
 

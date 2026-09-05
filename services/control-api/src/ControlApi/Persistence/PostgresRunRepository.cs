@@ -1,4 +1,4 @@
-using System.Data;
+using ControlApi.Authentication;
 using ControlApi.Contracts;
 using ControlApi.Domain;
 using ControlApi.Semantic;
@@ -14,21 +14,23 @@ public interface IDurableStartDispatch
     Task<StartDispatchClaim> ClaimStartAsync(RunId id, CancellationToken cancellationToken);
 }
 
-public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvider timeProvider)
+public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvider timeProvider, RunAccess access)
     : IRunRepository, IDurableStartDispatch
 {
     public async Task<CreateRunResult> CreateAsync(
         CreateRunRequest request, string subject, CancellationToken cancellationToken)
     {
+        subject = access.Context?.Principal.PrincipalId ?? subject;
         var run = RunTransitions.Create(request, subject, timeProvider.GetUtcNow());
         var json = StoredRunCodec.Encode(run);
         _ = StoredRunCodec.Run(json);
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await Authorize(connection, transaction, Policies.Contributor, cancellationToken);
         await using var insert = new NpgsqlCommand("""
-            INSERT INTO control_runs (run_id, subject, client_request_id, version, created_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (subject, client_request_id) DO NOTHING
+            INSERT INTO control_runs (run_id, subject, client_request_id, version, created_at, metadata, tenant_id, workspace_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (tenant_id, workspace_id, subject, client_request_id) DO NOTHING
             """, connection, transaction);
         insert.Parameters.AddWithValue(run.Id.Value);
         insert.Parameters.AddWithValue(subject);
@@ -36,6 +38,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
         insert.Parameters.AddWithValue(run.Version);
         insert.Parameters.AddWithValue(run.CreatedAt.ToUniversalTime());
         insert.Parameters.AddWithValue(NpgsqlDbType.Jsonb, json);
+        AddScope(insert);
         var created = await insert.ExecuteNonQueryAsync(cancellationToken) == 1;
         CreateRunResult result;
         if (created)
@@ -46,10 +49,12 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
         {
             await using var query = new NpgsqlCommand("""
                 SELECT metadata::text FROM control_runs
-                WHERE subject = $1 AND client_request_id = $2 FOR UPDATE
+                WHERE subject = $1 AND client_request_id = $2
+                  AND tenant_id IS NOT DISTINCT FROM $3 AND workspace_id IS NOT DISTINCT FROM $4 FOR UPDATE
                 """, connection, transaction);
             query.Parameters.AddWithValue(subject);
             query.Parameters.AddWithValue(request.ClientRequestId);
+            AddScope(query);
             result = RunTransitions.Duplicate(
                 StoredRunCodec.Run((string)(await query.ExecuteScalarAsync(cancellationToken))!), request);
         }
@@ -59,10 +64,17 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
 
     public async Task<RunMetadata?> GetAsync(RunId id, CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand(
-            "SELECT metadata::text FROM control_runs WHERE run_id = $1");
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await Authorize(connection, transaction, Policies.Reader, cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT metadata::text FROM control_runs WHERE run_id = $1
+              AND tenant_id IS NOT DISTINCT FROM $2 AND workspace_id IS NOT DISTINCT FROM $3
+            """, connection, transaction);
         command.Parameters.AddWithValue(id.Value);
+        AddScope(command);
         var json = (string?)await command.ExecuteScalarAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return json is null ? null : ReadRun(json, id);
     }
 
@@ -76,28 +88,43 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 100);
-        await using var command = dataSource.CreateCommand(
-            "SELECT metadata::text FROM control_runs ORDER BY created_at DESC, run_id LIMIT $1");
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await Authorize(connection, transaction, Policies.Reader, cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT metadata::text FROM control_runs
+            WHERE tenant_id IS NOT DISTINCT FROM $2 AND workspace_id IS NOT DISTINCT FROM $3
+            ORDER BY created_at DESC, run_id LIMIT $1
+            """, connection, transaction);
         command.Parameters.AddWithValue(limit);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        AddScope(command);
         var runs = new List<RunMetadata>();
-        while (await reader.ReadAsync(cancellationToken))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            runs.Add(StoredRunCodec.Run(reader.GetString(0)));
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                runs.Add(StoredRunCodec.Run(reader.GetString(0)));
+            }
         }
+        await transaction.CommitAsync(cancellationToken);
         return runs;
     }
 
     private async Task<T> WithRun<T>(
         RunId id,
         Func<NpgsqlConnection, NpgsqlTransaction, RunMetadata, Task<(RunMetadata Run, T Result)>> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string permission = Policies.Reader)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await using var query = new NpgsqlCommand(
-            "SELECT metadata::text FROM control_runs WHERE run_id = $1 FOR UPDATE", connection, transaction);
+        await Authorize(connection, transaction, permission, cancellationToken);
+        await using var query = new NpgsqlCommand("""
+            SELECT metadata::text FROM control_runs WHERE run_id = $1
+              AND tenant_id IS NOT DISTINCT FROM $2 AND workspace_id IS NOT DISTINCT FROM $3 FOR UPDATE
+            """, connection, transaction);
         query.Parameters.AddWithValue(id.Value);
+        AddScope(query);
         var json = (string?)await query.ExecuteScalarAsync(cancellationToken);
         var current = json is null ? throw new RunNotFoundException(id) : ReadRun(json, id);
         var result = await action(connection, transaction, current);
@@ -150,7 +177,7 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
         {
             var result = RunTransitions.Cancel(current, expectedVersion, timeProvider.GetUtcNow());
             return Task.FromResult((result.Run, result));
-        }, cancellationToken);
+        }, cancellationToken, Policies.Contributor);
 
     public Task<RunMetadata> MarkCancellationDeliveredAsync(
         RunId id, long expectedGeneration, CancellationToken cancellationToken) =>
@@ -195,12 +222,14 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
             var updated = RunTransitions.DispatchUnknown(
                 current, "durable_start_dispatch_claimed", timeProvider.GetUtcNow());
             return (updated, new StartDispatchClaim(updated, acquired));
-        }, cancellationToken);
+        }, cancellationToken, Policies.Contributor);
 
     public Task<RunFeedback> SubmitFeedbackAsync(
         RunId id, SubmitFeedbackRequest request, string subject, CancellationToken cancellationToken) =>
         WithRun(id, async (connection, transaction, current) =>
         {
+            await Authorize(connection, transaction, Policies.Contributor, cancellationToken);
+            subject = access.Context?.Principal.PrincipalId ?? subject;
             await using var query = new NpgsqlCommand("""
                 SELECT feedback::text FROM control_feedback WHERE run_id = $1 AND submission_id = $2
                 """, connection, transaction);
@@ -226,48 +255,79 @@ public sealed class PostgresRunRepository(NpgsqlDataSource dataSource, TimeProvi
 
     public async Task<IReadOnlyList<RunFeedback>> GetFeedbackAsync(RunId id, CancellationToken cancellationToken)
     {
-        _ = await GetAsync(id, cancellationToken) ?? throw new RunNotFoundException(id);
-        await using var command = dataSource.CreateCommand(
-            "SELECT feedback::text FROM control_feedback WHERE run_id = $1");
-        command.Parameters.AddWithValue(id.Value);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var items = new List<RunFeedback>();
-        while (await reader.ReadAsync(cancellationToken))
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await Authorize(connection, transaction, Policies.Reader, cancellationToken);
+        await using var runQuery = new NpgsqlCommand("""
+            SELECT 1 FROM control_runs WHERE run_id = $1
+              AND tenant_id IS NOT DISTINCT FROM $2 AND workspace_id IS NOT DISTINCT FROM $3
+            """, connection, transaction);
+        runQuery.Parameters.AddWithValue(id.Value);
+        AddScope(runQuery);
+        if (await runQuery.ExecuteScalarAsync(cancellationToken) is null)
         {
-            var item = StoredRunCodec.Feedback(reader.GetString(0));
-            if (item.RunId != id)
-            {
-                throw new StorageCorruptionException();
-            }
-            items.Add(item);
+            throw new RunNotFoundException(id);
         }
+        await using var command = new NpgsqlCommand(
+            "SELECT feedback::text FROM control_feedback WHERE run_id = $1", connection, transaction);
+        command.Parameters.AddWithValue(id.Value);
+        var items = new List<RunFeedback>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var item = StoredRunCodec.Feedback(reader.GetString(0));
+                if (item.RunId != id)
+                {
+                    throw new StorageCorruptionException();
+                }
+                items.Add(item);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken);
         return items.OrderBy(item => item.SubmittedAt).ToArray();
     }
 
     public async Task<RunStatistics> GetStatisticsAsync(CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken);
-        await using var command = new NpgsqlCommand("SELECT metadata::text FROM control_runs", connection, transaction);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await Authorize(connection, transaction, Policies.Admin, cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT metadata::text, ARRAY(
+                SELECT feedback::text FROM control_feedback f WHERE f.run_id = control_runs.run_id
+            ) FROM control_runs
+            WHERE tenant_id IS NOT DISTINCT FROM $1 AND workspace_id IS NOT DISTINCT FROM $2
+            """, connection, transaction);
+        AddScope(command);
         var statistics = new RunStatisticsAccumulator();
+        long count = 0;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             while (await reader.ReadAsync(cancellationToken))
             {
                 statistics.Add(StoredRunCodec.Run(reader.GetString(0)));
-            }
-        }
-        await using var feedback = new NpgsqlCommand("SELECT feedback::text FROM control_feedback", connection, transaction);
-        long count = 0;
-        await using (var reader = await feedback.ExecuteReaderAsync(cancellationToken))
-        {
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                _ = StoredRunCodec.Feedback(reader.GetString(0));
-                count++;
+                foreach (var json in reader.GetFieldValue<string[]>(1))
+                {
+                    _ = StoredRunCodec.Feedback(json);
+                    count++;
+                }
             }
         }
         await transaction.CommitAsync(cancellationToken);
         return statistics.Finish(count);
     }
+
+    private void AddScope(NpgsqlCommand command)
+    {
+        var scope = access.Scope;
+        command.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)scope?.TenantId ?? DBNull.Value);
+        command.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)scope?.WorkspaceId ?? DBNull.Value);
+    }
+
+    private Task Authorize(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        string permission, CancellationToken cancellationToken) =>
+        access.Context is { } context
+            ? IdentityStore.ReauthorizeAsync(connection, transaction, context, permission, cancellationToken)
+            : Task.CompletedTask;
 }

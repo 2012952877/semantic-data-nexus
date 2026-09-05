@@ -9,6 +9,7 @@ from query_runtime.coordinator import QueryCoordinator
 from query_runtime.domain import PhysicalPlan
 from semantic_api.models import CompileResponse
 
+from semantic_backend.auth_context import TrustedContext, get_trusted_context, legacy_development
 from semantic_backend.models import (
     LineageDetail,
     RunDetail,
@@ -35,6 +36,7 @@ class RunRecord:
     request: StartRunRequest
     status: RunStatus
     detail: RunDetail
+    trusted_context: TrustedContext | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task[None] | None = None
     coordinator: QueryCoordinator | None = None
@@ -74,9 +76,14 @@ class InMemoryRunRepository:
         status: RunStatus,
     ) -> tuple[RunRecord, bool]:
         async with self._lock:
+            context = None if legacy_development() else get_trusted_context()
             self._prune_locked()
             existing = self._records.get(request.run_id)
             if existing is not None:
+                if (existing.trusted_context.scope if existing.trusted_context else None) != (
+                    context.scope if context else None
+                ):
+                    raise RunNotFoundError(request.run_id)
                 if existing.request != request:
                     raise RunConflictError("run_id is already bound to a different request")
                 return existing, False
@@ -93,7 +100,9 @@ class InMemoryRunRepository:
                 ),
                 lineage=LineageDetail(run_id=request.run_id),
             )
-            record = RunRecord(request=request, status=status, detail=detail)
+            record = RunRecord(
+                request=request, status=status, detail=detail, trusted_context=context
+            )
             self._records[request.run_id] = record
             return record, True
 
@@ -101,14 +110,26 @@ class InMemoryRunRepository:
         async with self._lock:
             self._prune_locked()
             try:
-                return self._records[run_id]
+                record = self._records[run_id]
             except KeyError as exc:
                 raise RunNotFoundError(run_id) from exc
+            context = None if legacy_development() else get_trusted_context()
+            if (record.trusted_context.scope if record.trusted_context else None) != (
+                context.scope if context else None
+            ):
+                raise RunNotFoundError(run_id)
+            return record
 
     async def list_records(self) -> tuple[RunRecord, ...]:
         async with self._lock:
             self._prune_locked()
-            return tuple(self._records.values())
+            context = None if legacy_development() else get_trusted_context()
+            return tuple(
+                record
+                for record in self._records.values()
+                if (record.trusted_context.scope if record.trusted_context else None)
+                == (context.scope if context else None)
+            )
 
     def _prune_locked(self) -> None:
         cutoff = datetime.now(UTC) - self._retention

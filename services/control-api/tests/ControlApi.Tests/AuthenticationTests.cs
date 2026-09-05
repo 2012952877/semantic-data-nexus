@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
 using ControlApi.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -34,15 +35,20 @@ public sealed class AuthenticationTests
     }
 
     [Fact]
-    public async Task EntraBearerKeepsRawScopeClaimsAndPoliciesAuthorizeThem()
+    public async Task TokenRolesNeverAuthorizeWorkspacePoliciesWithoutServerMembership()
     {
+        using var key = RSA.Create(2048);
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["LocalDevelopmentAuth:Enabled"] = "false",
-                ["AzureAd:Instance"] = "https://login.microsoftonline.com/",
-                ["AzureAd:TenantId"] = Guid.NewGuid().ToString(),
-                ["AzureAd:ClientId"] = Guid.NewGuid().ToString()
+                ["Identity:Providers:0:Name"] = "local",
+                ["Identity:Providers:0:Authority"] = "https://identity.example.test/realms/nexus",
+                ["Identity:Providers:0:ClientId"] = "nexus-browser",
+                ["Identity:Providers:0:ClientSecret"] = "synthetic-test-only",
+                ["Identity:Providers:0:Audience"] = "nexus-api",
+                ["Identity:ServiceSigningKey"] = key.ExportPkcs8PrivateKeyPem(),
+                ["RunStorage:Provider"] = "Postgres"
             })
             .Build();
         var services = new ServiceCollection();
@@ -50,12 +56,12 @@ public sealed class AuthenticationTests
         services.AddSingleton<IConfiguration>(configuration);
         services.AddControlApiAuthentication(
             configuration,
-            new TestHostEnvironment(Environments.Staging));
+            new TestHostEnvironment(Environments.Development));
         await using var provider = services.BuildServiceProvider();
 
         var bearer = provider
             .GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
-            .Get(JwtBearerDefaults.AuthenticationScheme);
+            .Get("access-local");
         Assert.False(bearer.MapInboundClaims);
 
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
@@ -70,7 +76,11 @@ public sealed class AuthenticationTests
             resource: null,
             Policies.Contributor);
 
-        Assert.True(result.Succeeded);
+        Assert.False(result.Succeeded);
+        Assert.True(bearer.TokenValidationParameters.ValidateIssuer);
+        Assert.True(bearer.TokenValidationParameters.ValidateAudience);
+        Assert.True(bearer.TokenValidationParameters.ValidateLifetime);
+        Assert.True(bearer.TokenValidationParameters.RequireSignedTokens);
     }
 
     private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment

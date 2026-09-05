@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse
 
+from semantic_backend.auth_context import AccessDenied, get_trusted_context, legacy_development
+from semantic_backend.auth_middleware import ServiceAuthentication
+from semantic_backend.authorization import PostgresAuthorization
 from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
 from semantic_backend.repository import (
     RunCapacityError,
@@ -30,6 +35,16 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.orchestrator = orchestrator
+    legacy = legacy_development()
+    if not legacy:
+        authority = PostgresAuthorization(os.environ.get("SEMANTIC_NEXUS_IDENTITY_POSTGRES", ""))
+        # Validate key/configuration at construction, not on the first user's request.
+        ServiceAuthentication(app, authority=authority)
+        app.add_middleware(ServiceAuthentication, authority=authority)
+
+    @app.exception_handler(AccessDenied)
+    async def denied(_request: object, _exception: AccessDenied) -> JSONResponse:
+        return JSONResponse({"detail": "Service authorization denied"}, status_code=403)
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
@@ -46,6 +61,8 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
 
     @app.post("/v1/runs", response_model=RunStatus, status_code=status.HTTP_202_ACCEPTED)
     async def start_run(request: StartRunRequest) -> RunStatus:
+        if not legacy and request.requested_by != get_trusted_context().principal.principal_id:
+            raise AccessDenied("Requested principal does not match the authenticated context.")
         try:
             return await orchestrator.start(request)
         except RunConflictError as exc:

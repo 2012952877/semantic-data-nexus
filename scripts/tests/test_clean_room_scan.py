@@ -14,6 +14,24 @@ def _dashed_identifier(*parts: str) -> str:
 
 
 class CleanRoomScanTests(unittest.TestCase):
+    def test_reviewed_identity_migration_is_ddl_only(self) -> None:
+        path = "services/control-api/src/ControlApi/Persistence/Migrations/002_identity_workspace.sql"
+        content = (Path(__file__).resolve().parents[2] / path).read_bytes()
+        self.assertEqual(scan_blob(path, content), [])
+        sql = re.sub(r"--[^\n]*", "", content.decode())
+        statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
+        self.assertTrue(all(re.match(r"(CREATE\s+(TABLE|INDEX|VIEW)|ALTER\s+TABLE)\s", s) for s in statements))
+        self.assertIsNone(re.search(r"\b(INSERT|COPY|IMPORT|MERGE|UPDATE|DELETE)\b", sql, re.IGNORECASE))
+        for suffix in ["../002_identity_workspace.sql", "./002_identity_workspace.sql", "nested/002_identity_workspace.sql"]:
+            self.assertIn("unapproved-raw-data", [
+                finding.rule for finding in scan_blob(path.rsplit("/", 1)[0] + "/" + suffix, content)
+            ])
+        key = "API_" + "KEY"
+        host = "adb-" + "1234567890123456.7.azuredatabricks.net"
+        for content, rule in [(f"-- {key}=shortKey7", "credential-assignment"),
+                              (f"-- https://{host}", "private-demo-host")]:
+            self.assertIn(rule, [f.rule for f in scan_blob(path, content.encode())])
+
     def test_reviewed_control_migration_is_ddl_only(self) -> None:
         path = "services/control-api/src/ControlApi/Persistence/Migrations/001_control_plane.sql"
         content = (Path(__file__).resolve().parents[2] / path).read_bytes()
