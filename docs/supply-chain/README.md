@@ -174,11 +174,23 @@ obligations, source offers, trademark/patent terms, vulnerability analysis,
 signing, reproducible independent builds and long-term evidence retention remain
 outside this foundation.
 
-New psycopg/libpq/OpenSSL and Keycloak distributions are **future integration
-cases**, not shipped dependencies inferred from memory. When such artifacts land
-on the selected revision, collect their actual runtime and binary/distribution
-metadata, extend targeted coverage if necessary, and obtain exact evidence-bound
-reviews. This work does not approve those licenses in advance.
+The identity baseline declares `psycopg[binary]` and `PyJWT[crypto]`. Their exact
+resolved versions enter this inventory only when found in the built runtime
+environment. Inspect the actual binary-wheel payload, bundled native libraries
+and upstream license/NOTICE evidence; a Python package's declaration does not
+automatically clear bundled libpq/OpenSSL or other native code.
+
+Artifact scope is the four **default Dockerfile builds**, not every container used
+by development/test compositions. `compose.identity.yaml` separately declares
+Keycloak 26.7.3 and PostgreSQL service images, runtime fixture mounts and an
+OIDC-specific Web build argument. Those separately composed images/configurations
+are not inventoried here, not asserted to ship inside the application images,
+and not approved by this policy. Broader platform-release evidence must include
+those subjects when they are selected for distribution.
+
+Likewise, the plugin SDK's presence in source does not put it in the runtime BOM:
+inclusion comes from installed metadata and the saved image, never merely from a
+`pyproject.toml` found in the checkout.
 
 ## Tool provenance and maintenance
 

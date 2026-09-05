@@ -116,6 +116,11 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                     args += ["--target", "build"]
                 run(args + [str(ROOT / context)])
                 snapshot = snapshot_image(tag, name, work, tools, output, revision)
+                snapshot[3]["build"] = {
+                    "context": context, "dockerfile": dockerfile,
+                    "target": "build" if stage == "build" else "final-default",
+                    "arguments": {},
+                }
                 snapshots[stage] = (*snapshot, tag)
                 images.callback(snapshot[2].close)
             runtime_raw, runtime_cdx, runtime_files, runtime_subject, runtime_tag = snapshots["runtime"]
