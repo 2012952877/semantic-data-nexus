@@ -119,12 +119,17 @@ class CatalogCompiler:
             )
             async with self.clarifications.lock(stored.id, owner) as transaction:
                 record = transaction.record
+                refreshed_owner, initialized, identity = await self._context(request, context)
                 if (
-                    record.request != request
+                    record.owner != refreshed_owner
+                    or record.request != request
                     or record.context != initialized
                     or record.authority_fingerprint != identity
                 ):
                     raise CompilerFailure("CLARIFICATION_CONTEXT_CHANGED")
+                if await transaction.now() >= record.expires_at:
+                    raise CompilerFailure("CLARIFICATION_EXPIRED")
+                owner_for(context, request.catalog)
                 response = record.current
                 if response is None:
                     if initialized.ambiguities:

@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import gc
+import logging
 from decimal import Decimal
 
 import pyarrow as pa
 import pytest
 from query_runtime.operators import ResourceLimits
+from query_runtime.result_store import InlineResultStore
 from semantic_api.catalog_v1.catalog import fingerprint, pin_for
 from semantic_api.catalog_v1.compiler import CompilerLimits
 from semantic_api.catalog_v1.models import CatalogDocument, CompilerFailure
 from test_catalog_compilation import CASES, setup, wire
 
+import semantic_backend.catalog_compilation as catalog_module
 from semantic_backend.catalog_compilation import execute_catalog
 
 
@@ -284,3 +288,102 @@ async def test_empty_numeric_dimension_is_a_valid_unique_key_set():
             limits=ResourceLimits(max_rows=100, max_bytes=1_000_000),
         )
         assert result.table.to_pylist() == [{"energy": None}]
+
+
+@pytest.mark.parametrize("timeout_kind", ["node", "whole"])
+@pytest.mark.parametrize("late_failure", [False, True])
+async def test_resistant_source_is_bounded_owned_observed_and_never_published(
+    timeout_kind, late_failure, monkeypatch, caplog
+):
+    case = CASES[1]
+    async with wire(case["candidate"]) as (provider, _):
+        compiler, request, context, bindings, resolver, _ = setup(case, provider)
+        compilation = await compiler.compile(
+            request, context=context, deadline=asyncio.get_running_loop().time() + 15
+        )
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def resistant(execution_context, fragment, cancel_event):
+            resolver.executions[execution_context.cancellation_handle] = execution_context
+            entered.set()
+            try:
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                if late_failure:
+                    raise RuntimeError("synthetic-private-late-details")
+                return resolver._tables[fragment.source.alias].select(
+                    fragment.operations[0].columns
+                )
+            finally:
+                finished.set()
+
+        resolver.execute = resistant
+        store = InlineResultStore()
+        monkeypatch.setattr(catalog_module, "InlineResultStore", lambda: store)
+        loop = asyncio.get_running_loop()
+        unhandled = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _, error: unhandled.append(error))
+        baseline = set(catalog_module._DEFERRED_CATALOG_WORK)
+        start = loop.time()
+        task = asyncio.create_task(
+            execute_catalog(
+                request,
+                compilation,
+                compiler=compiler,
+                context=context,
+                bindings=bindings,
+                resolver=resolver,
+                run_id="synthetic-resistant",
+                deadline=start + 0.2,
+                limits=ResourceLimits(
+                    max_rows=100,
+                    max_bytes=1_000_000,
+                    node_timeout_seconds=0.02 if timeout_kind == "node" else 1,
+                ),
+            )
+        )
+        owned = set()
+        try:
+            with caplog.at_level(logging.WARNING, logger=catalog_module.__name__):
+                await asyncio.wait_for(entered.wait(), 1)
+                done, _ = await asyncio.wait({task}, timeout=0.35)
+                assert task in done, "Request waited for a cancellation-resistant resolver"
+                assert loop.time() - start < 0.35
+                if timeout_kind == "node":
+                    with pytest.raises(CompilerFailure, match="NODE_TIMEOUT"):
+                        task.result()
+                else:
+                    with pytest.raises(TimeoutError):
+                        task.result()
+                assert cancelled.is_set() and not finished.is_set()
+                assert not store._manifests
+                owned = catalog_module._DEFERRED_CATALOG_WORK - baseline
+                assert owned and any(not work.done() for work in owned)
+                gc.collect()
+                assert owned <= catalog_module._DEFERRED_CATALOG_WORK
+                release.set()
+                await asyncio.wait_for(asyncio.gather(*owned, return_exceptions=True), 2)
+                assert finished.is_set()
+                assert not owned & catalog_module._DEFERRED_CATALOG_WORK
+                assert not store._manifests
+                gc.collect()
+                assert not unhandled
+                messages = [record.getMessage() for record in caplog.records]
+                assert ("CATALOG_SOURCE_LATE_FAILURE" in messages) == late_failure
+                assert "synthetic-private-late-details" not in caplog.text
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            remaining = (catalog_module._DEFERRED_CATALOG_WORK - baseline) | owned
+            if remaining:
+                await asyncio.wait_for(asyncio.gather(*remaining, return_exceptions=True), 2)
+            loop.set_exception_handler(previous_handler)

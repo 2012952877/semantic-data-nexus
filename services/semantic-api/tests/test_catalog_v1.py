@@ -181,7 +181,7 @@ async def test_heldout_actual_wire_candidates(case):
         assert result.calls[0].phase == "compile"
         assert result.calls[0].provider == "openai_compatible"
         assert result.calls[0].deployment is None
-        assert authority.calls == 2
+        assert authority.calls == 3
         body = mock.requests[0][2]
         assert body["response_format"]["json_schema"]["name"] == "catalog_candidate_v1"
         assert "regional_quarterly_profit" not in body["messages"][0]["content"]

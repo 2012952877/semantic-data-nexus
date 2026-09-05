@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC
-from typing import Literal
+from typing import Any, Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -76,6 +77,26 @@ TYPES: dict[Scalar, ScalarType] = {
     "boolean": ScalarType.BOOLEAN,
     "datetime": ScalarType.TIMESTAMP,
 }
+
+_LOGGER = logging.getLogger(__name__)
+# The coordinator still owns node settlement and deferred manifest/memory cleanup.
+# Keep late source futures and their enclosing executions reachable until it settles them.
+_DEFERRED_CATALOG_WORK: set[asyncio.Task[Any]] = set()
+
+
+def _observe_catalog_work(task: asyncio.Task[Any], *, report_failure: bool) -> None:
+    _DEFERRED_CATALOG_WORK.discard(task)
+    if not task.cancelled() and task.exception() is not None and report_failure:
+        _LOGGER.warning("CATALOG_SOURCE_LATE_FAILURE")
+
+
+def _retain_catalog_work(task: asyncio.Task[Any], *, report_failure: bool) -> None:
+    if task in _DEFERRED_CATALOG_WORK:
+        return
+    _DEFERRED_CATALOG_WORK.add(task)
+    task.add_done_callback(
+        lambda completed: _observe_catalog_work(completed, report_failure=report_failure)
+    )
 
 
 class FieldBinding(BaseModel):
@@ -371,6 +392,7 @@ class _CatalogResolver:
         self.limits = limits
         self._key_executor = DuckDBOperatorExecutor(limits)
         self._pending_work: set[asyncio.Task[pa.Table]] = set()
+        self._pending_calls: set[asyncio.Task[Any]] = set()
         self._closed = False
         relations = {r.id: r for r in context.semantic_catalog.relations}
         fields = {
@@ -392,12 +414,26 @@ class _CatalogResolver:
     async def execute(
         self, context: ExecutionContext, fragment: SourceFragment, cancel_event: asyncio.Event
     ) -> pa.Table:
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Source execution requires an asyncio task")
+        self._pending_calls.add(task)
+        try:
+            return await self._execute(context, fragment, cancel_event)
+        finally:
+            self._pending_calls.discard(task)
+
+    async def _execute(
+        self, context: ExecutionContext, fragment: SourceFragment, cancel_event: asyncio.Event
+    ) -> pa.Table:
         if self._closed:
             raise asyncio.CancelledError
         source_work = asyncio.create_task(self.resolver.execute(context, fragment, cancel_event))
         self._pending_work.add(source_work)
         source_work.add_done_callback(self._pending_work.discard)
         table = await source_work
+        if self._closed or cancel_event.is_set():
+            raise asyncio.CancelledError
         if table.num_rows > self.limits.max_rows or table.nbytes > self.limits.max_bytes:
             raise RuntimeFailure("SOURCE_RESULT_LIMIT", "Source exceeded the configured budget.")
         mapping = {f.column_name: f for f in self.assets[fragment.source.alias].fields}
@@ -469,25 +505,39 @@ class _CatalogResolver:
             self._pending_work.add(key_work)
             key_work.add_done_callback(self._pending_work.discard)
             grouped = await key_work
+            if self._closed or cancel_event.is_set():
+                raise asyncio.CancelledError
             if grouped.num_rows != table.num_rows:
                 raise RuntimeFailure(
                     "JOIN_CARDINALITY_VIOLATION", "Source violates the governed unique join key."
                 )
         return table
 
-    async def aclose(self) -> None:
+    async def aclose(self, *, deadline: float) -> None:
         self._closed = True
-        tasks = [task for task in self._pending_work if not task.done()]
-        for task in tasks:
+        work = {task for task in self._pending_work if not task.done()}
+        calls = {task for task in self._pending_calls if not task.done()}
+        for task in work:
             task.cancel()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        if any(
-            isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
-            for result in results
-        ):
-            raise RuntimeFailure(
-                "CATALOG_SOURCE_CLEANUP_FAILED", "Source validation did not clean up safely."
+        tasks = work | calls
+        if not tasks:
+            return
+        try:
+            budget = max(
+                0.0,
+                min(
+                    0.05,
+                    self.limits.node_timeout_seconds,
+                    deadline - asyncio.get_running_loop().time(),
+                ),
             )
+            await asyncio.wait(tasks, timeout=budget)
+        finally:
+            for task in tasks:
+                if task.done():
+                    _observe_catalog_work(task, report_failure=task in work)
+                else:
+                    _retain_catalog_work(task, report_failure=task in work)
 
     async def cancel(self, cancellation_handle: str) -> None:
         await self.resolver.cancel(cancellation_handle)
@@ -552,7 +602,7 @@ async def execute_catalog(
         try:
             outcome = await coordinator.run(plan, run_id=run_id)
         finally:
-            await source_resolver.aclose()
+            await source_resolver.aclose(deadline=deadline)
         if outcome.summary.state is not ExecutionState.SUCCEEDED or outcome.manifest is None:
             raise CompilerFailure(outcome.summary.diagnostic_code or "RUNTIME_FAILED")
         await compiler._unchanged(request, context, identity, compilation.resolutions)

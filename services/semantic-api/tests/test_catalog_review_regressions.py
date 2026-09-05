@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 
 import pytest
 from pydantic import ValidationError
-from test_catalog_v1 import CASES, Authority, InjectedProvider, deadline, setup
+from test_catalog_v1 import (
+    CASES,
+    Authority,
+    InjectedProvider,
+    MemoryClarifications,
+    deadline,
+    setup,
+)
 
 from semantic_api.catalog_v1.catalog import authorized_view, pin_for
-from semantic_api.catalog_v1.models import CatalogDocument
+from semantic_api.catalog_v1.models import CatalogDocument, CompilerFailure
 
 
 @pytest.mark.parametrize(
@@ -261,3 +269,62 @@ async def test_direct_request_same_hash_replays_without_another_provider_call():
     second = await compiler.compile(request, context=context, deadline=deadline())
     assert first == second and first.status == "compiled"
     assert len(compiler.provider.calls) == 1
+
+
+async def assert_queued_compile_refreshes_authority(
+    first, second, request, context, authority, change
+):
+    first.provider.pause = asyncio.Event()
+    second.authorization = authority
+    queued_authorized = asyncio.Event()
+    original_require = authority.require
+    second_task = None
+
+    async def observed_require(current_context, pin, permission):
+        access = await original_require(current_context, pin, permission)
+        if asyncio.current_task() is second_task:
+            queued_authorized.set()
+        return access
+
+    authority.require = observed_require
+    first_task = asyncio.create_task(first.compile(request, context=context, deadline=deadline()))
+    await asyncio.wait_for(first.provider.entered.wait(), 2)
+    second_task = asyncio.create_task(second.compile(request, context=context, deadline=deadline()))
+    try:
+        await asyncio.wait_for(queued_authorized.wait(), 2)
+        assert not second_task.done()
+        if change == "none":
+            first.provider.pause.set()
+            first_result, second_result = await asyncio.wait_for(
+                asyncio.gather(first_task, second_task), 5
+            )
+            assert first_result == second_result and first_result.status == "compiled"
+        else:
+            if change == "membership":
+                authority.revoked = True
+                code = "MEMBERSHIP_REVOKED"
+            else:
+                authority.access = authority.access.model_copy(update={"member_ids": frozenset()})
+                code = "CLARIFICATION_CONTEXT_CHANGED"
+            first_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_task
+            with pytest.raises(CompilerFailure, match=code):
+                await asyncio.wait_for(second_task, 5)
+        assert not second.provider.calls
+    finally:
+        first.provider.pause.set()
+        for task in (first_task, second_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("change", ["membership", "grants", "none"])
+async def test_memory_queued_direct_request_refreshes_authorization(change):
+    store = MemoryClarifications()
+    first, request, context, authority = setup(store=store)
+    second, _, _, _ = setup(store=store)
+    await assert_queued_compile_refreshes_authority(
+        first, second, request, context, authority, change
+    )

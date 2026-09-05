@@ -9,6 +9,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 import pytest_asyncio
+from test_catalog_review_regressions import assert_queued_compile_refreshes_authority
 from test_catalog_v1 import CASES, InjectedProvider, deadline, setup
 
 from semantic_api.catalog_v1.catalog import pin_for
@@ -259,3 +260,13 @@ async def test_cancelled_direct_request_keeps_hash_reservation_and_can_retry(pg_
     assert not second.provider.calls
     result = await second.compile(request, context=context, deadline=deadline())
     assert result.status == "compiled" and len(second.provider.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["membership", "grants", "none"])
+async def test_postgres_queued_direct_request_refreshes_authorization(pg_store, change):
+    first, request, context, authority = setup(store=pg_store[0])
+    request = request.model_copy(update={"request_id": pg_store[1]})
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    await assert_queued_compile_refreshes_authority(
+        first, second, request, context, authority, change
+    )

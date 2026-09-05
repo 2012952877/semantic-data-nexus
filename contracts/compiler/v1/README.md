@@ -124,6 +124,12 @@ value), capability forms and compiler limits. Treat persisted questions as
 sensitive application data; deployment encryption, access control and retention
 remain operational requirements.
 
+After acquiring the request row lock, compile rebuilds authorization and catalog
+context and compares the current owner, resource pin and access fingerprint with
+the reservation before generating or replaying. Authorization captured before a
+reservation/lock wait is never used to dispatch a newly acquired pending request.
+Expiry is checked again at this post-lock boundary.
+
 | Transition | Result |
 | --- | --- |
 | Same owner + request ID + same request | Same persisted clarification/result |
@@ -147,7 +153,8 @@ not exactly-once paid inference: a crash after a provider returns but before the
 database commits may require another inference on retry. Runtime execution
 idempotency/recovery is a separate concern, not implied by answer replay.
 
-Authorization is rechecked before publication. The callback must use live
+Authorization is also rechecked before publication. These queue-boundary checks
+are not a database-linearized authorization/commit guarantee. The callback must use live
 membership/resource authority, not an old `authorized_at`. Integrating a strict
 database-linearized authorization/commit boundary requires the identity
 composition root; this internal library does not claim that unconnected API
@@ -178,7 +185,16 @@ DuckDB GROUP BY using the same execution engine as JOIN, not Arrow distinct or a
 Python set. Signed zero therefore cannot double a matched fact. Floating join
 keys must be finite; decimal bindings remain unsupported; lossy sub-microsecond
 timestamp conversion is rejected. Empty dimension tables remain valid. Source
-and key-check tasks are retained and cancelled/drained before the invocation exits.
+and key-check cancellation waits use at most 50 ms, capped further by the node
+timeout and remaining whole-request deadline. Cancellation-resistant work cannot
+extend the request indefinitely: unfinished source futures and their enclosing
+node executions remain strongly owned and observed after the bounded wait.
+The existing coordinator retains node/manifest/memory settlement responsibility.
+The closed adapter rejects late successful data before validation or publication;
+late failures are consumed and reported as the value-free
+`CATALOG_SOURCE_LATE_FAILURE` warning. A resistant source may continue until its
+underlying operation terminates; bounded request return is not a claim that an
+uncooperative connector has already released its resources.
 
 `execute_catalog` requires the same absolute deadline used by compile/resume,
 rechecks current authorization and pin, applies runtime row/byte/memory limits,
@@ -200,6 +216,8 @@ is not added here.
 | Empty-member grants, transitive fanout, order-independent predicates with duplicate rejection | `services/semantic-api/tests/test_catalog_review_regressions.py` |
 | Signed zero, non-finite/decimal/time boundaries, denied raw member access, safe one-to-one metric results | `services/semantic-backend/tests/test_catalog_review_regressions.py` |
 | Direct/clarification request-ID conflicts, two-client direct replay and cancelled reservations | New direct-request cases in `services/semantic-api/tests/test_catalog_postgres.py` |
+| Queued direct request refresh after lock: revocation, changed grants and legitimate cached replay | `test_postgres_queued_direct_request_refreshes_authorization` and `test_memory_queued_direct_request_refreshes_authorization` |
+| Bounded node/whole timeout despite resistant cancellation, retained late tasks, late error observation and no late manifest | Backend `test_resistant_source_is_bounded_owned_observed_and_never_published` |
 
 `examples.json` contains clean-room synthetic acceptance data, not runtime query
 templates. Model responses are mocked at a real HTTP socket; no model was called
