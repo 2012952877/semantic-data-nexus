@@ -19,6 +19,7 @@ from query_runtime.domain import (
     OperatorSpec,
     OperatorSpecV1,
     TypedExpression,
+    validate_operator_v1,
 )
 from query_runtime.errors import OperatorFailure, ResourceLimitFailure, RuntimeFailure
 from query_runtime.expressions import RenderedExpression, quote_identifier, render_expression
@@ -68,6 +69,13 @@ class DuckDBOperatorExecutor:
     ) -> pa.Table:
         if cancel_event.is_set():
             raise asyncio.CancelledError
+        if isinstance(spec, OperatorSpecV1):
+            try:
+                validate_operator_v1(spec)
+            except ValueError as exc:
+                raise OperatorFailure(
+                    "OPERATOR_INVALID", "Invalid v1 operator form or value"
+                ) from exc
         for table in inputs:
             self.enforce_limits(table)
         if sum(retained_table_size(table) for table in inputs) > self.limits.max_in_flight_bytes:
@@ -130,15 +138,28 @@ class DuckDBOperatorExecutor:
         try:
             sql, parameters = self._build_query(spec, inputs)
             reader = connection.execute(sql, parameters).to_arrow_reader(batch_size=2048)
+            result_schema = reader.schema
             if isinstance(spec, OperatorSpecV1) and spec.kind is OperatorKind.IMPUTE:
-                if not reader.schema.equals(inputs[0].schema, check_metadata=False):
+                original = inputs[0].schema
+                if reader.schema.names != original.names or any(
+                    actual.type != expected.type
+                    for actual, expected in zip(reader.schema, original, strict=True)
+                ):
                     raise OperatorFailure(
                         "OPERATOR_TYPE_MISMATCH", "IMPUTE cannot change input types"
                     )
+                result_schema = original
             batches: list[pa.RecordBatch] = []
             rows = 0
             size = 0
             for batch in reader:
+                if any(
+                    not field.nullable and batch.column(index).null_count
+                    for index, field in enumerate(result_schema)
+                ):
+                    raise OperatorFailure(
+                        "OPERATOR_NULLABILITY", "Operator output violates a non-nullable field"
+                    )
                 rows += batch.num_rows
                 size += retained_table_size(pa.Table.from_batches([batch]))
                 if rows > self.limits.max_rows:
@@ -148,7 +169,8 @@ class DuckDBOperatorExecutor:
                         "LIMIT_BYTES_EXCEEDED", "Compute byte limit exceeded"
                     )
                 batches.append(batch)
-            return pa.Table.from_batches(batches, schema=reader.schema)
+            table = pa.Table.from_batches(batches, schema=reader.schema)
+            return pa.Table.from_arrays(table.columns, schema=result_schema)
         except RuntimeFailure:
             raise
         except duckdb.Error as exc:
@@ -174,12 +196,15 @@ class DuckDBOperatorExecutor:
             if extended is not None:
                 return extended
         if spec.kind in {OperatorKind.SELECT, OperatorKind.PROJECT}:
-            return self._select_query(spec, columns)
+            return self._select_query(spec, columns, schema=inputs[0].schema)
         if spec.kind is OperatorKind.FILTER:
             if spec.predicate is None:
                 raise OperatorFailure("OPERATOR_INVALID", "FILTER requires a predicate")
             rendered = self.render(
-                spec.predicate.expression, columns, exact=isinstance(spec, OperatorSpecV1)
+                spec.predicate.expression,
+                columns,
+                exact=isinstance(spec, OperatorSpecV1),
+                schema=inputs[0].schema,
             )
             return f"SELECT * FROM input_0 WHERE {rendered.sql}", list(rendered.parameters)
         if spec.kind is OperatorKind.AGGREGATE:
@@ -188,11 +213,11 @@ class DuckDBOperatorExecutor:
                     "OPERATOR_TIME_GRAIN_UNSUPPORTED",
                     "Local time-grain aggregation requires an explicit bucket expression",
                 )
-            return self._aggregate_query(spec, columns)
+            return self._aggregate_query(spec, columns, schema=inputs[0].schema)
         if spec.kind is OperatorKind.PIVOT:
             return self._pivot_query(spec, columns)
         if spec.kind is OperatorKind.DERIVE:
-            return self._derive_query(spec, columns)
+            return self._derive_query(spec, columns, schema=inputs[0].schema)
         if spec.kind is OperatorKind.SORT:
             if not spec.sort:
                 raise OperatorFailure("OPERATOR_INVALID", "SORT requires sort keys")
@@ -213,7 +238,13 @@ class DuckDBOperatorExecutor:
             "OPERATOR_UNSUPPORTED", f"Local operator '{spec.kind}' is not supported"
         )
 
-    def _select_query(self, spec: OperatorSpec, columns: set[str]) -> tuple[str, list[Any]]:
+    def _select_query(
+        self,
+        spec: OperatorSpec,
+        columns: set[str],
+        *,
+        schema: pa.Schema | None = None,
+    ) -> tuple[str, list[Any]]:
         names: set[str] = set()
         projections: list[str] = []
         parameters: list[Any] = []
@@ -222,7 +253,9 @@ class DuckDBOperatorExecutor:
             projections.append(quote_identifier(column, columns))
         for item in spec.expressions:
             _add_output_name(names, item.name)
-            rendered = self.render(item.expression, columns, exact=isinstance(spec, OperatorSpecV1))
+            rendered = self.render(
+                item.expression, columns, exact=isinstance(spec, OperatorSpecV1), schema=schema
+            )
             projections.append(f"{rendered.sql} AS {quote_identifier(item.name)}")
             parameters.extend(rendered.parameters)
         if not projections:
@@ -235,6 +268,7 @@ class DuckDBOperatorExecutor:
         columns: set[str],
         *,
         source: str = "input_0",
+        schema: pa.Schema | None = None,
     ) -> tuple[str, list[Any]]:
         projections = [quote_identifier(column, columns) for column in spec.group_by]
         parameters: list[Any] = []
@@ -252,7 +286,10 @@ class DuckDBOperatorExecutor:
                 )
             else:
                 rendered = self.render(
-                    aggregate.expression, columns, exact=isinstance(spec, OperatorSpecV1)
+                    aggregate.expression,
+                    columns,
+                    exact=isinstance(spec, OperatorSpecV1),
+                    schema=schema,
                 )
                 expression_sql = rendered.sql
                 parameters.extend(rendered.parameters)
@@ -296,7 +333,13 @@ class DuckDBOperatorExecutor:
             parameters,
         )
 
-    def _derive_query(self, spec: OperatorSpec, columns: set[str]) -> tuple[str, list[Any]]:
+    def _derive_query(
+        self,
+        spec: OperatorSpec,
+        columns: set[str],
+        *,
+        schema: pa.Schema | None = None,
+    ) -> tuple[str, list[Any]]:
         projections = ["*"]
         parameters: list[Any] = []
         names = {_normalize_identifier(column) for column in columns}
@@ -307,7 +350,9 @@ class DuckDBOperatorExecutor:
                     "COLUMN_COLLISION", f"Derived column '{item.name}' already exists"
                 )
             names.add(normalized)
-            rendered = self.render(item.expression, columns, exact=isinstance(spec, OperatorSpecV1))
+            rendered = self.render(
+                item.expression, columns, exact=isinstance(spec, OperatorSpecV1), schema=schema
+            )
             projections.append(f"{rendered.sql} AS {quote_identifier(item.name)}")
             parameters.extend(rendered.parameters)
         if not spec.expressions:
@@ -362,9 +407,20 @@ class DuckDBOperatorExecutor:
 
     @staticmethod
     def render(
-        expression: TypedExpression, columns: set[str], *, exact: bool
+        expression: TypedExpression,
+        columns: set[str],
+        *,
+        exact: bool,
+        schema: pa.Schema | None = None,
     ) -> RenderedExpression:
-        return render_expression(expression, columns, exact_literals=exact)
+        return render_expression(
+            expression,
+            columns,
+            exact_literals=exact,
+            column_types={field.name: field.type for field in schema}
+            if schema is not None
+            else None,
+        )
 
 
 def _normalize_identifier(name: str) -> str:

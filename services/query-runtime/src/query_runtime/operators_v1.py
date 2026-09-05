@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date as date_value
-from datetime import datetime
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -12,6 +9,7 @@ import pyarrow as pa
 from query_runtime.domain import OperatorKind, OperatorSpecV1, ScalarType
 from query_runtime.errors import OperatorFailure
 from query_runtime.expressions import quote_identifier
+from query_runtime.scalar_values import scalar_value
 
 if TYPE_CHECKING:
     from query_runtime.operators import DuckDBOperatorExecutor
@@ -36,14 +34,29 @@ def _new_name(name: str, columns: set[str]) -> str:
     return quote_identifier(name)
 
 
-def _order(spec: OperatorSpecV1, columns: set[str], *, tie_break: bool = True) -> str:
+def _row_json(columns: list[str]) -> str:
+    if not columns:
+        raise _invalid("Row identity requires named columns")
+    fields = ", ".join(
+        f"{quote_identifier(column)} := {quote_identifier(column)}" for column in columns
+    )
+    return f"to_json(struct_pack({fields}))"
+
+
+def _order(
+    spec: OperatorSpecV1,
+    columns: set[str],
+    row_json: str,
+    *,
+    tie_break: bool = True,
+) -> str:
     terms = [
         f"{quote_identifier(item.column, columns)} {item.direction.value.upper()} "
         f"NULLS {'FIRST' if item.nulls_first else 'LAST'}"
         for item in spec.sort
     ]
     if tie_break:
-        terms.append("to_json(input_0)")
+        terms.append(row_json)
     return ", ".join(terms)
 
 
@@ -68,7 +81,8 @@ def build_extension_query(
     if kind in {OperatorKind.DEDUPLICATE, OperatorKind.PICK, OperatorKind.WINDOW}:
         partition = ", ".join(quote_identifier(c, columns) for c in spec.partition_by)
         prefix = f"PARTITION BY {partition} " if partition else ""
-        order = _order(spec, columns)
+        row_json = _row_json(inputs[0].column_names)
+        order = _order(spec, columns, row_json)
         if kind in {OperatorKind.DEDUPLICATE, OperatorKind.PICK}:
             count = 1 if kind is OperatorKind.DEDUPLICATE else (spec.limit or 1)
             if spec.limit == 0:
@@ -82,7 +96,7 @@ def build_extension_query(
         window = spec.window
         output = _new_name(window.output, columns)
         if window.function in {"rank", "dense_rank"}:
-            order = _order(spec, columns, tie_break=False)
+            order = _order(spec, columns, row_json, tie_break=False)
         expression = quote_identifier(window.column, columns) if window.column is not None else ""
         frame = (
             f" ROWS BETWEEN {window.preceding} PRECEDING AND CURRENT ROW"
@@ -96,9 +110,10 @@ def build_extension_query(
             [],
         )
     if kind is OperatorKind.SAMPLE:
+        row_json = _row_json(inputs[0].column_names)
         return (
             "SELECT * FROM input_0 ORDER BY "
-            "md5(CAST(? AS VARCHAR) || ':' || to_json(input_0)), to_json(input_0) LIMIT ?",
+            f"md5(CAST(? AS VARCHAR) || ':' || {row_json}), {row_json} LIMIT ?",
             [spec.sample_seed, spec.limit],
         )
     if kind in {OperatorKind.DATE, OperatorKind.RESAMPLE}:
@@ -125,14 +140,17 @@ def build_extension_query(
             }
         )
         sql, parameters = executor._aggregate_query(
-            aggregate, columns | {date.output}, source="bucketed"
+            aggregate,
+            columns | {date.output},
+            source="bucketed",
+            schema=inputs[0].schema,
         )
         return (
             f"WITH bucketed AS ({inner}) {sql}",
             [date.grain.value, *parameters],
         )
     if kind is OperatorKind.SUMMARIZE:
-        return executor._aggregate_query(spec, columns)
+        return executor._aggregate_query(spec, columns, schema=inputs[0].schema)
     if kind is OperatorKind.EXPLODE:
         assert spec.explode is not None
         column = quote_identifier(spec.explode.column, columns)
@@ -178,13 +196,7 @@ def build_extension_query(
         if not matches[literal.data_type](target_type):
             raise _invalid("IMPUTE literal must match the target type")
         executor.render(literal, columns, exact=True)
-        replacement: Any = literal.value
-        if literal.data_type is ScalarType.DECIMAL:
-            replacement = Decimal(str(literal.value))
-        elif literal.data_type is ScalarType.DATE:
-            replacement = date_value.fromisoformat(str(literal.value))
-        elif literal.data_type is ScalarType.TIMESTAMP:
-            replacement = datetime.fromisoformat(str(literal.value))
+        replacement = scalar_value(literal.data_type.value, literal.value)
         try:
             replacement = pa.scalar(replacement, type=target_type).as_py()
         except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:

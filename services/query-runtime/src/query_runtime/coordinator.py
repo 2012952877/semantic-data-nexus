@@ -20,10 +20,12 @@ from query_runtime.domain import (
     DiagnosticEvent,
     ExecutionState,
     LineageGraph,
+    OperatorSpecV1,
     PhysicalNode,
     PhysicalNodeKind,
     PhysicalPlan,
     ResultSummary,
+    validate_operator_v1,
 )
 from query_runtime.errors import (
     DeferredCleanupCancellation,
@@ -1278,6 +1280,18 @@ def validate_physical_plan(plan: PhysicalPlan) -> None:
     if plan.output_node_id not in by_id:
         raise PlanFailure("PLAN_OUTPUT_MISSING", "Physical plan output node does not exist")
     for node in plan.nodes:
+        if plan.version == "query-runtime/v1" or isinstance(node.operator, OperatorSpecV1):
+            operations = (
+                node.source_fragment.operations if node.source_fragment is not None
+                else (node.operator,) if node.operator is not None else ()
+            )
+            for operation in operations:
+                try:
+                    validate_operator_v1(operation)
+                except ValueError as exc:
+                    raise PlanFailure(
+                        "PLAN_OPERATOR_INVALID", "Invalid v1 operator form or value"
+                    ) from exc
         if node.operation in BLOCKED_OPERATOR_KINDS:
             raise PlanFailure(
                 "OPERATOR_UNSUPPORTED", f"{node.operation} requires a governed backend"

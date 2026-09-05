@@ -21,7 +21,8 @@ The local command deliberately **deselects** PostgreSQL tests: it is not databas
 evidence. `.github/workflows/plugin-conformance.yml` runs the complete suite against
 an ephemeral PostgreSQL 16 service and fails if database configuration is absent.
 Windows without symlink privilege skips the real symlink test; Linux CI runs it.
-The separate M0 release gate continues to run the existing service/UI regressions.
+The unfiltered M0 release gate calls this workflow as a mandatory job, including
+main and compiler-only changes, alongside every existing service/UI regression.
 No deployed endpoints, environment auth files or real Databricks credentials are used.
 
 ## Integration boundary
@@ -126,14 +127,24 @@ Registration or an empty result is never evidence for an unsupported capability.
 
 Typed results retain decimal, date, microsecond timestamp and null values. Exact v1
 decimal literals use strings with at most 38 digits; floating AVG/division are explicitly
-not exact-decimal arithmetic. Set operators require identical ordered Arrow schemas.
+not exact-decimal arithmetic. Literal casts reserve only the required precision.
+Decimal COALESCE computes a lossless common type from input Arrow schemas and literal
+values; null/zero defaults do not reserve unused integer digits or reduce fractional
+scale. A common type requiring more than 38 digits is rejected rather than rounded.
+Required operator payloads and literal value/type agreement are validated before source
+execution, including copied models; the legacy v0 deserialization contract is unchanged.
+Set operators require identical ordered Arrow schemas.
 JOIN inputs require disjoint column names. UNPIVOT requires homogeneous types.
-IMPUTE rejects changes to the input type. DATE/RESAMPLE accept date or naive timestamp;
+IMPUTE rejects changes to the input type, rejects fractional integer replacements,
+and restores original nullability after checking non-nullable result fields.
+DATE/RESAMPLE accept date or naive timestamp;
 RESAMPLE aggregates observed buckets only, with no fabricated empty intervals.
 
 Relational outputs are unordered unless a form specifies ordering. SORT ties are
-unspecified unless a unique key is supplied. PICK/DEDUPLICATE use row JSON to break
-ties deterministically. SAMPLE uses a supplied seed and stable MD5 of typed row JSON;
+unspecified unless a unique key is supplied. PICK/DEDUPLICATE use JSON of an explicitly
+constructed, quoted-column row struct to break ties deterministically, even when an
+input column shares the relation's name. SAMPLE uses a supplied seed and stable MD5
+of the same typed row JSON;
 it is a deterministic fixed-size sample, not a statistically certified sampler.
 WINDOW rank/dense_rank retain peer semantics; ROWS aggregates have a bounded
 preceding frame, and row-value tie breaking orders peers for ROWS evaluation.

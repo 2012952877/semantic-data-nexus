@@ -25,6 +25,7 @@ from query_runtime.domain import (
     PlanVersion,
     SourceFragment,
     TypedExpression,
+    validate_operator_v1,
 )
 from query_runtime.errors import BindingFailure, PlanFailure
 
@@ -56,6 +57,9 @@ class ValidatedLogicalGraph(BaseModel):
             isinstance(node.operation, OperatorSpecV1) for node in self.nodes
         ):
             raise ValueError("v1 operators require a query-runtime/v1 graph")
+        if self.version == "query-runtime/v1":
+            for node in self.nodes:
+                validate_operator_v1(node.operation)
         return self
 
 
@@ -139,6 +143,13 @@ class CapabilityPlanner:
     def plan(self, graph: ValidatedLogicalGraph) -> PhysicalPlan:
         ordered = topological_order(graph.nodes)
         for node in ordered:
+            if graph.version == "query-runtime/v1" or isinstance(node.operation, OperatorSpecV1):
+                try:
+                    validate_operator_v1(node.operation)
+                except ValueError as exc:
+                    raise PlanFailure(
+                        "PLAN_OPERATOR_INVALID", "Invalid v1 operator form or value"
+                    ) from exc
             if node.operation.kind in BLOCKED_OPERATOR_KINDS:
                 raise PlanFailure(
                     "OPERATOR_UNSUPPORTED",

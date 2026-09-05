@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import math
-from datetime import date, datetime
 from decimal import Decimal
 
 import pyarrow as pa
 from query_runtime.domain import ExpressionKind, ScalarType, TypedExpression
 from query_runtime.errors import ResolverFailure
+from query_runtime.scalar_values import decimal_shape, scalar_value
 
 PREDICATE_KINDS = frozenset(
     {
@@ -45,15 +44,13 @@ def scalar_arrow_type(
     value: str | int | float | bool | None = None,
 ) -> pa.DataType:
     if kind is ScalarType.DECIMAL:
-        if value is not None and not isinstance(value, str):
-            raise ResolverFailure("SOURCE_TYPE_MISMATCH", "Decimal literals require strings")
-        decimal = Decimal(value or "0")
-        if not decimal.is_finite():
-            raise ResolverFailure("SOURCE_TYPE_MISMATCH", "Decimal must be finite")
-        scale = max(0, -int(decimal.as_tuple().exponent))
-        if max(scale, decimal.adjusted() + scale + 1) > 38:
-            raise ResolverFailure("SOURCE_TYPE_MISMATCH", "Decimal exceeds precision 38")
-        return pa.decimal128(38, scale)
+        try:
+            native = scalar_value(kind.value, value)
+        except ValueError as exc:
+            raise ResolverFailure("SOURCE_TYPE_MISMATCH", str(exc)) from exc
+        assert isinstance(native, Decimal) or native is None
+        integer_digits, scale = decimal_shape(native) if native is not None else (0, 0)
+        return pa.decimal128(max(1, integer_digits + scale), scale)
     return {
         ScalarType.STRING: pa.string(),
         ScalarType.INTEGER: pa.int64(),
@@ -87,30 +84,10 @@ def validate_predicate(expression: TypedExpression, schema: pa.Schema) -> None:
             ):
                 raise ResolverFailure("PREDICATE_TYPE", "Column does not match its declared type")
         elif node.kind is ExpressionKind.LITERAL:
-            value = node.value
-            if value is not None:
-                valid = {
-                    ScalarType.STRING: isinstance(value, str),
-                    ScalarType.INTEGER: type(value) is int and -(2**63) <= value < 2**63,
-                    ScalarType.FLOAT: type(value) in {int, float},
-                    ScalarType.BOOLEAN: type(value) is bool,
-                    ScalarType.DECIMAL: isinstance(value, str),
-                    ScalarType.DATE: isinstance(value, str),
-                    ScalarType.TIMESTAMP: isinstance(value, str),
-                }[node.data_type]
-                if not valid:
-                    raise ResolverFailure(
-                        "PREDICATE_TYPE", "Literal does not match its declared type"
-                    )
-                if node.data_type is ScalarType.DECIMAL:
-                    scalar_arrow_type(node.data_type, value)
-                if node.data_type is ScalarType.DATE:
-                    date.fromisoformat(str(value))
-                if node.data_type is ScalarType.TIMESTAMP:
-                    if datetime.fromisoformat(str(value)).tzinfo is not None:
-                        raise ResolverFailure("PREDICATE_TYPE", "Timestamp literals must be naive")
-                if node.data_type is ScalarType.FLOAT and not math.isfinite(float(value)):
-                    raise ResolverFailure("PREDICATE_TYPE", "Float must be finite")
+            try:
+                scalar_value(node.data_type.value, node.value)
+            except ValueError as exc:
+                raise ResolverFailure("PREDICATE_TYPE", str(exc)) from exc
         else:
             unary = node.kind in {ExpressionKind.NOT, ExpressionKind.IS_NULL}
             if len(node.args) != (1 if unary else 2) or node.data_type is not ScalarType.BOOLEAN:

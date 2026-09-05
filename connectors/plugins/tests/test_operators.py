@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pyarrow as pa
 import pytest
+from pydantic import ValidationError
 from query_runtime.domain import (
     AggregateSpec,
     DateSpec,
@@ -91,7 +92,7 @@ async def test_decimal_sum_and_exact_literals() -> None:
         table.slice(0, 1),
     )
     assert derived["exact"][0].as_py() == Decimal("0.123456789012345678")
-    with pytest.raises(OperatorFailure, match="strings"):
+    with pytest.raises(ValidationError, match="strings"):
         await execute(
             spec(
                 "PROJECT",
