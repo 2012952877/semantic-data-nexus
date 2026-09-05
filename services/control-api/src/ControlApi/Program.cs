@@ -108,8 +108,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     SemanticJsonContractOptions.Configure(options.SerializerOptions);
 });
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<IRunRepository, InMemoryRunRepository>();
-builder.Services.AddSingleton<IRunDispatchCoordinator, RunDispatchCoordinator>();
+builder.Services.AddRunStorage(builder.Configuration);
 
 var localAuthOptions = builder.Configuration
     .GetSection(LocalDevelopmentAuthOptions.SectionName)

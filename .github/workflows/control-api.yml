@@ -21,6 +21,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: control_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: control_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U control_test -d control_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CONTROL_API_TEST_POSTGRES: "Host=localhost;Port=5432;Database=control_test;Username=control_test;Password=synthetic-ci-only"
     defaults:
       run:
         working-directory: services/control-api
@@ -31,7 +47,23 @@ jobs:
           dotnet-version: "8.0.x"
       - run: dotnet restore SemanticDataNexus.ControlApi.sln
       - run: dotnet format SemanticDataNexus.ControlApi.sln --verify-no-changes --no-restore
-      - run: dotnet test SemanticDataNexus.ControlApi.sln --configuration Release --no-restore
+      - run: dotnet test SemanticDataNexus.ControlApi.sln --configuration Release --no-restore --logger "trx;LogFileName=control-api.trx" --results-directory TestResults
+      - name: Require executed PostgreSQL integration tests
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          root = ET.parse("TestResults/control-api.trx").getroot()
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          results = [r for r in root.findall(".//t:UnitTestResult", ns)
+                     if "PostgresRepositoryTests" in r.attrib["testName"]]
+          assert len(results) >= 20, f"Expected PostgreSQL tests, got {len(results)}"
+          assert all(r.attrib["outcome"] == "Passed" for r in results), "PostgreSQL test failed/skipped"
+          print(f"Real PostgreSQL tests passed: {len(results)}")
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: control-api-test-results
+          path: services/control-api/TestResults/*.trx
       - run: dotnet publish src/ControlApi/ControlApi.csproj --configuration Release --no-restore
       - run: docker build --tag semantic-data-nexus-control-api:test --file Dockerfile .
       - run: >-
