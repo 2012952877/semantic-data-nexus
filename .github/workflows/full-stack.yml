@@ -1,6 +1,7 @@
 name: Full stack Compose
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "apps/web/**"

@@ -1,6 +1,7 @@
 name: Databricks resolver
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "connectors/databricks/**"

@@ -90,7 +90,14 @@ flowchart LR
 
 LLM、用户输入和外部值永远位于守门边界之外。凭据只在 Runtime / Resolver 的最小权限范围内解析；Compiler 看不到数据源密钥。
 
-## v0 范围
+## M0 已交付范围
 
-当前只提供 Ontology/SQG 的语言无关 Schema、Pydantic 模型、确定性验证、CLI 和结果/运行契约。Compiler、Optimizer、Runtime、Resolver 和所有 UI 均为文档化边界，尚无可执行实现。
+M0 在 v0 契约基础上交付了两条确定性合成场景的可执行纵向链路：
+Vue Web、Nginx、本地开发身份边界、ASP.NET Core BFF、Initializer、
+Compiler、SQG 验证、能力感知 Physical Planner、Runtime、DuckDB 本地算子、
+默认 fake Resolver、显式 opt-in 的 Databricks Resolver，以及 committed
+result、manifest、diagnostics 和 lineage。根目录 Compose 是当前可复现的
+集成拓扑，详见 [M0 sequence](m0-sequence.md)。
 
+M0 不包含 LLM 调用、任意问题编译、持久化 Run/Result Store、已验证的 Azure
+部署或生产网络边界。Azure Bicep 仅有静态构建与回归断言证据。

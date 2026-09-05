@@ -1,6 +1,9 @@
 # Azure 参考架构（MVP）
 
-本文定义保守、可演进的 Azure Well-Architected 拓扑，不包含可部署 IaC。第一里程碑优先 Azure Container Apps，而不是提前引入 AKS。
+本文定义保守、可演进的 Azure Well-Architected 目标拓扑。`infra/bicep`
+现已提供可部署的 Container Apps 基线，但仓库只记录静态构建和回归断言，
+没有已部署环境或部署后 smoke 证据。第一里程碑优先 Azure Container Apps，
+而不是提前引入 AKS。
 
 ## 推荐拓扑
 
@@ -94,7 +97,12 @@ MVP 可以先采用受限公网端点以降低交付复杂度，但代码和资�
 
 ## 部署边界
 
-本阶段不创建订阅、资源组、Bicep、Terraform、容器镜像或流水线凭据。后续 IaC PR 必须单独评审命名、区域、SKU、网络、Private DNS、RBAC、预算、诊断设置和销毁策略，详见 [`infra/README.md`](../../infra/README.md)。
+当前 Bicep 基线不会自行创建订阅或流水线凭据，也不证明任何资源已部署。
+部署前必须替换占位镜像/命令，并单独评审命名、区域、SKU、网络、Private
+DNS、RBAC、预算、诊断设置和销毁策略。先运行静态验证与 stack-aware
+what-if，再用获批的 federated identity 部署开发环境并收集部署后证据。
+详见 [`infra/README.md`](../../infra/README.md) 和
+[`docs/operations/azure-deployment.md`](../operations/azure-deployment.md)。
 
 ## 官方参考
 
@@ -103,4 +111,3 @@ MVP 可以先采用受限公网端点以降低交付复杂度，但代码和资�
 - [Azure OpenAI network and access configuration](https://learn.microsoft.com/azure/ai-foundry/openai/how-to/network)
 - [Azure Well-Architected Framework](https://learn.microsoft.com/azure/well-architected/)
 - [OpenTelemetry with Azure Monitor](https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable)
-
