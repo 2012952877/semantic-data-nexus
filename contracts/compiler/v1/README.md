@@ -30,6 +30,9 @@ is an immutable in-process publication adapter, not a management database.
 Its lookup uses `(tenant_id, workspace_id, resource_id, revision)` **and** verifies
 the digest. A repository implementation must never replace content at an existing
 revision. The compiler independently recomputes the digest after lookup.
+The catalog also pins `bindings_sha256`: changing a physical mapping or timestamp
+interpretation requires a new catalog revision, including across clarification
+resume. The provider sees this digest but never the physical binding contents.
 
 The required `TrustedContext` protocol mirrors `contracts/product/v1/trusted-context`.
 It describes server-verified input; constructing an object with those fields is
@@ -145,6 +148,12 @@ snapshot pinned to the catalog and a server-selected resolver. Physical fields
 and source objects are never model output. Each SELECT is bound exactly, then a
 local typed projection renames physical columns to semantic IDs, preventing
 cross-source name collisions without scenario-specific mapping.
+The binding-content digest is canonical JSON of
+`{"contract_version":"catalog-binding-content/v1","entities":[...]}`. Each ordered
+entity entry has `entity_id`, `alias`, `source_type`, `object_name`, a semantic-ID
+to physical-name `columns` object, and ordered `utc_naive_fields`. The catalog
+pins that digest before its own content digest is computed; the adapter checks
+both. Logical field types are pinned in the catalog and must match each binding.
 
 The adapter uses the existing `query-runtime/v0` typed core, pushes down SELECT
 only after source capability admission, and executes remaining supported forms

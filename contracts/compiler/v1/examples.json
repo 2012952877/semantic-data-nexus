@@ -99,7 +99,8 @@
             "start": "2026-06-01T00:00:00Z",
             "end_exclusive": "2026-07-01T00:00:00Z"
           }
-        ]
+        ],
+        "bindings_sha256": "5f20e672bba5219e2cb14ec370962b8a5ea00703d526c817a899f5fe50e484d7"
       },
       "candidate": {
         "contract_version": "compiler-candidate/v1",
@@ -116,7 +117,7 @@
             "resource_kind": "ontology",
             "resource_id": "energy-catalog",
             "revision": 1,
-            "content_sha256": "a4e18eb81856d60b34ad2ef4a47d7fc54448d964c925b3fa2aeff47de135746b"
+            "content_sha256": "9196fe142e3b4b8195b733976f97541accefcbe538130a19de9d1268b3e06169"
           },
           "nodes": [
             {
@@ -272,7 +273,9 @@
             "grid.reading.site": "site_key",
             "grid.reading.kwh": "quantity",
             "grid.reading.observed": "at"
-          }
+          },
+          "source_type": "synthetic",
+          "utc_naive_fields": []
         },
         {
           "entity_id": "grid.site",
@@ -282,7 +285,9 @@
             "grid.site.id": "site_key",
             "grid.site.name": "name",
             "grid.site.status": "state"
-          }
+          },
+          "source_type": "synthetic",
+          "utc_naive_fields": []
         }
       ],
       "rows": {
@@ -406,7 +411,8 @@
             "field_id": "lab.assay.score",
             "function": "sum"
           }
-        ]
+        ],
+        "bindings_sha256": "a6d995df01dc4277fb7f23c6292b5a7135334d715ffae6ac001f1d7986349669"
       },
       "candidate": {
         "contract_version": "compiler-candidate/v1",
@@ -423,7 +429,7 @@
             "resource_kind": "ontology",
             "resource_id": "laboratory-catalog",
             "revision": 4,
-            "content_sha256": "53ca3925ebf7b73d12e6bcd7b9c9e16994e023987913d9961c5be4a50ff27f49"
+            "content_sha256": "07ef8533ddd78aec9cc849ed6d06c9dbd3aa70ed9f3c894a5caa2242cf1e4d4c"
           },
           "nodes": [
             {
@@ -518,7 +524,9 @@
           "columns": {
             "lab.assay.batch": "lot_code",
             "lab.assay.score": "response"
-          }
+          },
+          "source_type": "synthetic",
+          "utc_naive_fields": []
         }
       ],
       "rows": {

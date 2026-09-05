@@ -251,6 +251,16 @@ async def test_binding_capability_pin_and_runtime_budget_fail_closed():
         )
         with pytest.raises(CompilerFailure, match="BINDING_PIN_MISMATCH"):
             adapt_catalog(compilation.graph, initialized, bad, {}, run_id="synthetic")
+        remapped = bindings.entities[0].model_copy(
+            update={
+                "source": bindings.entities[0].source.model_copy(
+                    update={"object_name": "synthetic-rebound-asset"}
+                ),
+            }
+        )
+        bad = bindings.model_copy(update={"entities": (remapped, *bindings.entities[1:])})
+        with pytest.raises(CompilerFailure, match="BINDING_PIN_MISMATCH"):
+            adapt_catalog(compilation.graph, initialized, bad, {}, run_id="synthetic")
         with pytest.raises(CompilerFailure):
             await execute_catalog(
                 request,

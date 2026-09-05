@@ -238,7 +238,9 @@ class CatalogCompiler:
                 metadata = error.metadata
                 calls.append(
                     CallMetadata(
+                        provider=metadata.provider if metadata else None,
                         model=metadata.model if metadata else "unknown",
+                        deployment=metadata.deployment if metadata else None,
                         phase=phase,
                         outcome=error.code,
                         input_tokens=metadata.input_tokens if metadata else None,
@@ -249,7 +251,9 @@ class CatalogCompiler:
             metadata = result.metadata
             calls.append(
                 CallMetadata(
+                    provider=metadata.provider if metadata else None,
                     model=metadata.model if metadata else "injected-test-provider",
+                    deployment=metadata.deployment if metadata else None,
                     phase=phase,
                     outcome=metadata.outcome if metadata else "succeeded",
                     input_tokens=result.input_tokens,

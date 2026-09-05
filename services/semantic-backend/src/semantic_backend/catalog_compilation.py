@@ -101,7 +101,24 @@ class CatalogBindings(BaseModel):
 
     @property
     def content_sha256(self) -> str:
-        return fingerprint(self.model_dump(mode="json"))
+        return fingerprint(
+            {
+                "contract_version": "catalog-binding-content/v1",
+                "entities": [
+                    {
+                        "entity_id": asset.entity_id,
+                        "alias": asset.source.alias,
+                        "source_type": asset.source.source_type,
+                        "object_name": asset.source.object_name,
+                        "columns": {f.field_id: f.column_name for f in asset.fields},
+                        "utc_naive_fields": [
+                            f.field_id for f in asset.fields if f.naive_timestamp_timezone == "UTC"
+                        ],
+                    }
+                    for asset in self.entities
+                ],
+            }
+        )
 
 
 def adapt_catalog(
@@ -113,7 +130,10 @@ def adapt_catalog(
     run_id: str,
 ) -> AdaptedExecution:
     validate(graph, context)
-    if bindings.catalog != graph.catalog:
+    if (
+        bindings.catalog != graph.catalog
+        or bindings.content_sha256 != context.semantic_catalog.bindings_sha256
+    ):
         raise CompilerFailure("BINDING_PIN_MISMATCH")
     entities = {item.entity_id: item for item in bindings.entities}
     if len(entities) != len(bindings.entities) or len(

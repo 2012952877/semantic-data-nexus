@@ -105,6 +105,7 @@ class CatalogDocument(Frozen):
     scope: Scope
     resource_id: Id
     revision: Annotated[int, Field(strict=True, ge=1)]
+    bindings_sha256: Digest
     entities: Annotated[tuple[Entity, ...], Field(min_length=1, max_length=64)]
     fields: Annotated[tuple[FieldDefinition, ...], Field(min_length=1, max_length=256)]
     metrics: Annotated[tuple[Metric, ...], Field(max_length=64)] = ()
@@ -234,7 +235,9 @@ class CompilerContext(Frozen):
 
 
 class CallMetadata(Frozen):
+    provider: str | None = None
     model: str
+    deployment: str | None = None
     phase: Literal["compile", "repair"]
     outcome: str
     input_tokens: int | None

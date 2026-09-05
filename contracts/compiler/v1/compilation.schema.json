@@ -74,9 +74,33 @@
     "CallMetadata": {
       "additionalProperties": false,
       "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
         "model": {
           "title": "Model",
           "type": "string"
+        },
+        "deployment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deployment"
         },
         "phase": {
           "enum": [

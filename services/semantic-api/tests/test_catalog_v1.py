@@ -179,13 +179,16 @@ async def test_heldout_actual_wire_candidates(case):
         assert result.graph.model_dump(mode="json") == case["candidate"]["graph"]
         assert result.input_tokens == 150 and result.output_tokens == 250
         assert result.calls[0].phase == "compile"
+        assert result.calls[0].provider == "openai_compatible"
+        assert result.calls[0].deployment is None
         assert authority.calls == 2
         body = mock.requests[0][2]
         assert body["response_format"]["json_schema"]["name"] == "catalog_candidate_v1"
         assert "regional_quarterly_profit" not in body["messages"][0]["content"]
         user = json.loads(body["messages"][1]["content"])
         assert user["context"]["catalog"] == pin_for(document).model_dump(mode="json")
-        assert "bindings" not in json.dumps(user)
+        assert '"bindings"' not in json.dumps(user)
+        assert user["context"]["semantic_catalog"]["bindings_sha256"] == document.bindings_sha256
         assert "object_name" not in json.dumps(user)
         await provider.aclose()
 

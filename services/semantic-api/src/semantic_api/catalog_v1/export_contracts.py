@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from semantic_api.catalog_v1.catalog import pin_for
+from semantic_api.catalog_v1.catalog import fingerprint, pin_for
 from semantic_api.catalog_v1.models import (
     SQGV1,
     CatalogCompileRequest,
@@ -31,6 +31,15 @@ def export(directory: Path) -> None:
     path = directory / "examples.json"
     examples = json.loads(path.read_text(encoding="utf-8"))
     for case in examples["cases"]:
+        for binding in case["bindings"]:
+            binding.setdefault("source_type", "synthetic")
+            binding.setdefault("utc_naive_fields", [])
+        case["catalog"]["bindings_sha256"] = fingerprint(
+            {
+                "contract_version": "catalog-binding-content/v1",
+                "entities": case["bindings"],
+            }
+        )
         catalog = CatalogDocument.model_validate(case["catalog"])
         case["candidate"]["graph"]["catalog"] = pin_for(catalog).model_dump(mode="json")
     path.write_text(json.dumps(examples, indent=2) + "\n", encoding="utf-8")

@@ -570,6 +570,11 @@
       "title": "Revision",
       "type": "integer"
     },
+    "bindings_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Bindings Sha256",
+      "type": "string"
+    },
     "entities": {
       "items": {
         "$ref": "#/$defs/Entity"
@@ -621,6 +626,7 @@
     "scope",
     "resource_id",
     "revision",
+    "bindings_sha256",
     "entities",
     "fields"
   ],
