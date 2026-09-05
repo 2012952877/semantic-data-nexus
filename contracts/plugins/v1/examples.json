@@ -1,0 +1,29 @@
+[
+  {
+    "contract":"plugin",
+    "value":{
+      "version":"nexus-plugins/v1","id":"postgresql","kind":"resolver",
+      "runtime_versions":["query-runtime/v0","query-runtime/v1"],
+      "interchange":["arrow"],"credential_ref":{"id":"credential:synthetic-reader"}
+    }
+  },
+  {
+    "contract":"operator",
+    "value":{
+      "version":"query-runtime/v1","kind":"WINDOW","partition_by":["team"],
+      "sort":[{"column":"sequence"}],
+      "window":{"function":"sum","column":"amount","output":"rolling_amount","preceding":2}
+    }
+  },
+  {
+    "contract":"logical-graph",
+    "value":{
+      "version":"query-runtime/v1","id":"synthetic-distinct","output_node_id":"distinct",
+      "nodes":[
+        {"id":"source","source_alias":"orders","operation":{"kind":"SOURCE"}},
+        {"id":"distinct","dependencies":["source"],
+         "operation":{"version":"query-runtime/v1","kind":"DISTINCT","columns":["team"]}}
+      ]
+    }
+  }
+]

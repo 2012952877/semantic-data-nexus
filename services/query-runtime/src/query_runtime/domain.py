@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from query_runtime.scalar_values import scalar_value
 
 DomainVersion = Literal["query-runtime/v0"]
 DOMAIN_VERSION: DomainVersion = "query-runtime/v0"
@@ -31,6 +33,42 @@ class OperatorKind(StrEnum):
     SORT = "SORT"
     LIMIT = "LIMIT"
     JOIN = "JOIN"
+    ACT = "ACT"
+    ASK = "ASK"
+    DATE = "DATE"
+    DEDUPLICATE = "DEDUPLICATE"
+    DISTINCT = "DISTINCT"
+    EXCEPT = "EXCEPT"
+    EXPLODE = "EXPLODE"
+    IMPUTE = "IMPUTE"
+    INTERSECT = "INTERSECT"
+    PICK = "PICK"
+    RESAMPLE = "RESAMPLE"
+    SAMPLE = "SAMPLE"
+    SEARCH = "SEARCH"
+    SUMMARIZE = "SUMMARIZE"
+    UNION_ALL = "UNION_ALL"
+    UNION_DISTINCT = "UNION_DISTINCT"
+    UNPIVOT = "UNPIVOT"
+    WINDOW = "WINDOW"
+
+
+V0_OPERATOR_KINDS = frozenset(
+    {
+        OperatorKind.SOURCE,
+        OperatorKind.SELECT,
+        OperatorKind.FILTER,
+        OperatorKind.AGGREGATE,
+        OperatorKind.PIVOT,
+        OperatorKind.DERIVE,
+        OperatorKind.PROJECT,
+        OperatorKind.SORT,
+        OperatorKind.LIMIT,
+        OperatorKind.JOIN,
+    }
+)
+BLOCKED_OPERATOR_KINDS = frozenset({OperatorKind.ACT, OperatorKind.ASK, OperatorKind.SEARCH})
+PlanVersion = Literal["query-runtime/v0", "query-runtime/v1"]
 
 
 class PhysicalNodeKind(StrEnum):
@@ -107,6 +145,12 @@ class CapabilityCatalog(FrozenModel):
     spill_supported: bool = False
     max_rows: int | None = Field(default=None, gt=0)
     max_bytes: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def legacy_capabilities(self) -> CapabilityCatalog:
+        if not self.operator_kinds <= V0_OPERATOR_KINDS:
+            raise ValueError("v0 source capabilities cannot advertise v1 operators")
+        return self
 
     def supports(self, kind: OperatorKind) -> bool:
         if kind is OperatorKind.JOIN:
@@ -190,6 +234,7 @@ class JoinKey(FrozenModel):
 
 
 class OperatorSpec(FrozenModel):
+    contract_version: ClassVar[str] = "query-runtime/v0"
     kind: OperatorKind
     columns: tuple[str, ...] = ()
     predicate: BoundPredicate | None = None
@@ -205,6 +250,229 @@ class OperatorSpec(FrozenModel):
     pivot_value: str | None = None
     pivot_values: tuple[str, ...] = ()
     time_grain: TimeGrain | None = None
+
+    @model_validator(mode="after")
+    def legacy_operator(self) -> OperatorSpec:
+        if self.contract_version == "query-runtime/v0" and self.kind not in V0_OPERATOR_KINDS:
+            raise ValueError("operator requires query-runtime/v1")
+        return self
+
+
+class WindowSpec(FrozenModel):
+    function: Literal["row_number", "rank", "dense_rank", "sum", "min", "max", "count"]
+    output: str = Field(min_length=1, max_length=128)
+    column: str | None = None
+    preceding: int = Field(default=0, strict=True, ge=0, le=100_000)
+
+    @model_validator(mode="after")
+    def window_shape(self) -> WindowSpec:
+        ranking = self.function in {"row_number", "rank", "dense_rank"}
+        if ranking and (self.column is not None or self.preceding != 0):
+            raise ValueError("ranking windows do not take a column or frame")
+        if not ranking and not self.column:
+            raise ValueError("aggregate windows require a column")
+        return self
+
+
+class DateSpec(FrozenModel):
+    column: str = Field(min_length=1, max_length=128)
+    output: str = Field(min_length=1, max_length=128)
+    grain: TimeGrain
+
+
+class UnpivotSpec(FrozenModel):
+    columns: tuple[str, ...] = Field(min_length=1, max_length=128)
+    name_column: str = Field(min_length=1, max_length=128)
+    value_column: str = Field(min_length=1, max_length=128)
+
+
+class ExplodeSpec(FrozenModel):
+    column: str = Field(min_length=1, max_length=128)
+    output: str = Field(min_length=1, max_length=128)
+
+
+class ImputeSpec(FrozenModel):
+    column: str = Field(min_length=1, max_length=128)
+    value: TypedExpression
+
+    @model_validator(mode="after")
+    def literal_only(self) -> ImputeSpec:
+        if self.value.kind is not ExpressionKind.LITERAL or self.value.value is None:
+            raise ValueError("imputation requires a non-null typed literal")
+        scalar_value(self.value.data_type.value, self.value.value)
+        return self
+
+
+class OperatorSpecV1(OperatorSpec):
+    """Opt-in extension; a version is mandatory, never inferred from extra fields."""
+
+    contract_version: ClassVar[str] = "query-runtime/v1"
+    version: Literal["query-runtime/v1"]
+    kind: OperatorKind
+    limit: int | None = Field(default=None, strict=True, ge=0, le=1_000_000)
+    partition_by: tuple[str, ...] = Field(default=(), max_length=128)
+    window: WindowSpec | None = None
+    date: DateSpec | None = None
+    unpivot: UnpivotSpec | None = None
+    explode: ExplodeSpec | None = None
+    impute: ImputeSpec | None = None
+    sample_seed: int | None = Field(default=None, strict=True, ge=0, le=2**32 - 1)
+
+    @model_validator(mode="after")
+    def extension_shape(self) -> OperatorSpecV1:
+        allowed = {
+            OperatorKind.SOURCE: set(),
+            OperatorKind.SELECT: {"columns", "expressions"},
+            OperatorKind.PROJECT: {"columns", "expressions"},
+            OperatorKind.DERIVE: {"expressions"},
+            OperatorKind.FILTER: {"predicate"},
+            OperatorKind.SORT: {"sort"},
+            OperatorKind.LIMIT: {"limit"},
+            OperatorKind.AGGREGATE: {"group_by", "aggregates"},
+            OperatorKind.SUMMARIZE: {"group_by", "aggregates"},
+            OperatorKind.JOIN: {"join_type", "join_keys"},
+            OperatorKind.PIVOT: {"pivot_index", "pivot_column", "pivot_value", "pivot_values"},
+            OperatorKind.DISTINCT: {"columns"},
+            OperatorKind.DEDUPLICATE: {"partition_by", "sort"},
+            OperatorKind.PICK: {"partition_by", "sort", "limit"},
+            OperatorKind.SAMPLE: {"sample_seed", "limit"},
+            OperatorKind.WINDOW: {"partition_by", "sort", "window"},
+            OperatorKind.DATE: {"date"},
+            OperatorKind.RESAMPLE: {"date", "group_by", "aggregates"},
+            OperatorKind.UNPIVOT: {"unpivot"},
+            OperatorKind.EXPLODE: {"explode"},
+            OperatorKind.IMPUTE: {"impute"},
+        }.get(self.kind, set())
+        if set(self.model_dump(exclude_defaults=True)) - allowed - {"kind", "version"}:
+            raise ValueError("operator contains parameters that its form does not support")
+        required = {
+            OperatorKind.FILTER: self.predicate is not None,
+            OperatorKind.LIMIT: self.limit is not None,
+            OperatorKind.SELECT: bool(self.columns or self.expressions),
+            OperatorKind.PROJECT: bool(self.columns or self.expressions),
+            OperatorKind.DERIVE: bool(self.expressions),
+            OperatorKind.AGGREGATE: bool(self.aggregates),
+            OperatorKind.SUMMARIZE: bool(self.aggregates),
+            OperatorKind.RESAMPLE: bool(self.aggregates),
+            OperatorKind.JOIN: self.join_type is not None and bool(self.join_keys),
+            OperatorKind.SORT: bool(self.sort),
+            OperatorKind.PIVOT: bool(self.pivot_column and self.pivot_value and self.pivot_values),
+        }
+        if not required.get(self.kind, True):
+            raise ValueError(f"{self.kind} requires its supported form payload")
+        for aggregate in self.aggregates:
+            if aggregate.function is not AggregateFunction.COUNT and aggregate.expression is None:
+                raise ValueError("non-COUNT aggregates require an expression")
+        identifiers = [
+            *self.columns,
+            *self.group_by,
+            *self.partition_by,
+            *self.pivot_index,
+            *self.pivot_values,
+            *(item.name for item in self.expressions),
+            *(item.name for item in self.aggregates),
+            *(item.column for item in self.sort),
+            *(key.left for key in self.join_keys),
+            *(key.right for key in self.join_keys),
+        ]
+        identifiers.extend(
+            name for name in (self.pivot_column, self.pivot_value) if name is not None
+        )
+        if self.window is not None:
+            identifiers.append(self.window.output)
+            if self.window.column is not None:
+                identifiers.append(self.window.column)
+        if self.date is not None:
+            identifiers.extend((self.date.column, self.date.output))
+        if self.unpivot is not None:
+            identifiers.extend(
+                (
+                    *self.unpivot.columns,
+                    self.unpivot.name_column,
+                    self.unpivot.value_column,
+                )
+            )
+        if self.explode is not None:
+            identifiers.extend((self.explode.column, self.explode.output))
+        if self.impute is not None:
+            identifiers.append(self.impute.column)
+        if any(not name or "\x00" in name for name in identifiers):
+            raise ValueError("operator identifiers cannot be empty or contain null bytes")
+        expressions = [item.expression for item in self.expressions]
+        expressions.extend(
+            item.expression for item in self.aggregates if item.expression is not None
+        )
+        if self.predicate is not None:
+            expressions.append(self.predicate.expression)
+        if self.impute is not None:
+            expressions.append(self.impute.value)
+        for expression in expressions:
+            validate_expression_v1(expression)
+        for specs in (self.sort, self.aggregates, self.expressions, self.join_keys):
+            if len(specs) > 128:
+                raise ValueError("operator lists are limited to 128 entries")
+        payloads = {
+            "window": {OperatorKind.WINDOW},
+            "date": {OperatorKind.DATE, OperatorKind.RESAMPLE},
+            "unpivot": {OperatorKind.UNPIVOT},
+            "explode": {OperatorKind.EXPLODE},
+            "impute": {OperatorKind.IMPUTE},
+            "sample_seed": {OperatorKind.SAMPLE},
+        }
+        for field, kinds in payloads.items():
+            present = getattr(self, field) is not None
+            if present != (self.kind in kinds):
+                raise ValueError(f"{field} is required only for {sorted(kinds)}")
+        if self.kind in {OperatorKind.PICK, OperatorKind.DEDUPLICATE, OperatorKind.WINDOW}:
+            if not self.sort:
+                raise ValueError("ordered selection/window requires explicit sort keys")
+        elif self.partition_by:
+            raise ValueError("partition_by requires PICK, DEDUPLICATE or WINDOW")
+        if self.kind is OperatorKind.SAMPLE and self.limit is None:
+            raise ValueError("SAMPLE requires a limit")
+        if self.kind is OperatorKind.RESAMPLE and not self.aggregates:
+            raise ValueError("RESAMPLE requires aggregates")
+        if self.kind in {OperatorKind.DISTINCT, OperatorKind.DEDUPLICATE} and self.limit:
+            raise ValueError("deduplication does not take a limit")
+        for values in (self.partition_by, self.columns, self.group_by, self.pivot_values):
+            if len(values) > 128 or len(set(values)) != len(values):
+                raise ValueError("column/value lists must be unique and at most 128 items")
+        return self
+
+
+def validate_expression_v1(expression: TypedExpression) -> None:
+    pending = [(expression, 0)]
+    count = 0
+    while pending:
+        node, depth = pending.pop()
+        count += 1
+        if depth > 16 or count > 128:
+            raise ValueError("expression exceeds depth/node limits")
+        if node.kind is ExpressionKind.LITERAL:
+            if node.args or node.column:
+                raise ValueError("literal expression cannot have arguments or a column")
+            scalar_value(node.data_type.value, node.value)
+        elif node.kind is ExpressionKind.COLUMN:
+            if not node.column or "\x00" in node.column or node.args:
+                raise ValueError("column expression requires a valid column only")
+        else:
+            if node.column:
+                raise ValueError("operator expression cannot have a column")
+            if node.kind is ExpressionKind.COALESCE:
+                if not node.args or any(arg.data_type is not node.data_type for arg in node.args):
+                    raise ValueError("COALESCE requires arguments with matching declared types")
+            else:
+                arity = 1 if node.kind in {ExpressionKind.NOT, ExpressionKind.IS_NULL} else 2
+                if len(node.args) != arity:
+                    raise ValueError("expression has invalid arity")
+        pending.extend((arg, depth + 1) for arg in node.args)
+
+
+def validate_operator_v1(operation: OperatorSpec) -> None:
+    """Revalidate copied/constructed models at the planner and execution boundaries."""
+    payload = operation.model_dump()
+    payload.setdefault("version", "query-runtime/v1")
+    OperatorSpecV1.model_validate(payload)
 
 
 class BoundParameter(FrozenModel):
@@ -222,6 +490,12 @@ class SourceFragment(FrozenModel):
     parameters: tuple[BoundParameter, ...] = ()
     bound_columns: tuple[BoundColumn, ...] = ()
 
+    @model_validator(mode="after")
+    def legacy_fragment(self) -> SourceFragment:
+        if any(isinstance(item, OperatorSpecV1) for item in self.operations):
+            raise ValueError("v0 source fragments cannot contain v1 payloads")
+        return self
+
 
 class LogicalOperationRef(FrozenModel):
     logical_node_id: str
@@ -237,15 +511,17 @@ class PhysicalNode(FrozenModel):
     logical_node_ids: tuple[str, ...]
     logical_operations: tuple[LogicalOperationRef, ...] = ()
     source_fragment: SourceFragment | None = None
-    operator: OperatorSpec | None = None
+    operator: OperatorSpecV1 | OperatorSpec | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> PhysicalNode:
         if len(self.logical_node_ids) > 1 and not self.logical_operations:
             raise ValueError("fused nodes require logical operation metadata")
-        if self.logical_operations and tuple(
-            item.logical_node_id for item in self.logical_operations
-        ) != self.logical_node_ids:
+        if (
+            self.logical_operations
+            and tuple(item.logical_node_id for item in self.logical_operations)
+            != self.logical_node_ids
+        ):
             raise ValueError("logical operation metadata must match logical node IDs")
         if self.kind is PhysicalNodeKind.SOURCE_FRAGMENT:
             if self.source_fragment is None or self.operator is not None:
@@ -262,10 +538,28 @@ class PhysicalNode(FrozenModel):
 
 
 class PhysicalPlan(FrozenModel):
-    version: DomainVersion = DOMAIN_VERSION
+    version: PlanVersion = DOMAIN_VERSION
     id: str
     nodes: tuple[PhysicalNode, ...]
     output_node_id: str
+
+    @model_validator(mode="after")
+    def version_boundary(self) -> PhysicalPlan:
+        if self.version == DOMAIN_VERSION and any(
+            isinstance(node.operator, OperatorSpecV1)
+            or node.operation not in V0_OPERATOR_KINDS
+            or any(ref.operation not in V0_OPERATOR_KINDS for ref in node.logical_operations)
+            for node in self.nodes
+        ):
+            raise ValueError("v1 operators require a query-runtime/v1 plan")
+        if self.version == "query-runtime/v1":
+            for node in self.nodes:
+                if node.operator is not None:
+                    validate_operator_v1(node.operator)
+                if node.source_fragment is not None:
+                    for operation in node.source_fragment.operations:
+                        validate_operator_v1(operation)
+        return self
 
 
 class ExecutionState(StrEnum):

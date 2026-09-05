@@ -1,0 +1,91 @@
+{
+  "$defs": {
+    "CredentialReference": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^credential:[a-z][a-z0-9-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "CredentialReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "nexus-plugins/v1",
+      "title": "Version",
+      "type": "string"
+    },
+    "id": {
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "resolver",
+        "compute",
+        "result-store"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "runtime_versions": {
+      "items": {
+        "enum": [
+          "query-runtime/v0",
+          "query-runtime/v1"
+        ],
+        "type": "string"
+      },
+      "title": "Runtime Versions",
+      "type": "array"
+    },
+    "interchange": {
+      "items": {
+        "enum": [
+          "arrow",
+          "parquet"
+        ],
+        "type": "string"
+      },
+      "title": "Interchange",
+      "type": "array"
+    },
+    "credential_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CredentialReference"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "read_only": {
+      "const": true,
+      "default": true,
+      "title": "Read Only",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "kind",
+    "runtime_versions",
+    "interchange"
+  ],
+  "title": "PluginDescriptor",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-data-nexus.example.invalid/contracts/plugins/v1/plugin.schema.json"
+}
