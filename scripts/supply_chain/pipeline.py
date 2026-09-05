@@ -96,6 +96,12 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
     blobs = Blobs(output / "blobs")
     write(output / "source.json", source)
     collect_tools(output, tools)
+    toolchain = load(output / "toolchain.json")
+    toolchain["build_engine"] = {
+        "docker_client_server": run(["docker", "version", "--format", "{{.Client.Version}}/{{.Server.Version}}"]).strip(),
+        "buildx": run(["docker", "buildx", "version"]).strip(),
+    }
+    write(output / "toolchain.json", toolchain)
     with ExitStack() as cleanup:
         temporary = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="nexus-supply-chain-"))
         with ExitStack() as images:
@@ -134,9 +140,9 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                     "'python_version':'.'.join(platform.python_version_tuple()[:2]),"
                     "'sys_platform':'linux'}))"
                 )
-                environment = json.loads(run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "python", runtime_tag, "-c", code]))
+                environment = json.loads(run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "python", runtime_tag, "-I", "-S", "-c", code]))
                 extras = {"semantic-backend": ["databricks"]} if target == "semantic-backend" else {}
-                resolution_context = {"marker_environment": environment, "extras": extras}
+                resolution_context = {"marker_environment": environment, "extras": extras, "introspection": "python -I -S"}
                 runtime_edges = python_edges(records, environment, extras)
                 upstream_wheels(records, runtime_files, blobs, local_python_names())
                 for record in records:

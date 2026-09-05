@@ -34,6 +34,8 @@ the host or executed. Container filesystem export is deliberately not used: Dock
 mount handling changes `/etc/hosts` and `/etc/hostname` relative to image bytes.
 The only post-build
 container commands read interpreter facts and `pnpm list`; they have no network.
+Python introspection uses `-I -S` so site initialization and installed `.pth`
+startup code cannot run.
 Public PyPI/npm archive retrieval executes no downloaded code.
 
 ## Run it
