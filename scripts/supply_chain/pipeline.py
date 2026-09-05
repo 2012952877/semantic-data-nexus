@@ -10,6 +10,7 @@ import tempfile
 import tomllib
 import tarfile
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 
 from scripts.supply_chain.adapters import (
@@ -53,14 +54,7 @@ def snapshot_image(tag: str, name: str, work: Path, tools: Path, output: Path, r
     image_id = run(["docker", "image", "inspect", tag, "--format", "{{.Id}}"]).strip()
     require(re.fullmatch("sha256:[0-9a-f]{64}", image_id), "invalid-image-identity")
     archive = work / (name + ".image.tar")
-    filesystem = work / (name + ".rootfs.tar")
     run(["docker", "save", "--output", str(archive), image_id])
-    container = run(["docker", "create", image_id]).strip()
-    require(re.fullmatch("[0-9a-f]{64}", container), "invalid-container-identity")
-    try:
-        run(["docker", "export", "--output", str(filesystem), container])
-    finally:
-        run(["docker", "rm", container])
     syft = tools / ("syft.exe" if os.name == "nt" else "syft")
     raw_path, cdx_path = work / (name + ".syft.json"), work / (name + ".raw.cdx.json")
     args = [
@@ -87,12 +81,11 @@ def snapshot_image(tag: str, name: str, work: Path, tools: Path, output: Path, r
     validate_cyclonedx(cdx, tools)
     subject = {
         "name": name, "image_id": image_id, "platform": "linux/amd64",
-        "image_archive_sha256": sha_file(archive), "filesystem_archive_sha256": sha_file(filesystem),
+        "image_archive_sha256": sha_file(archive), "filesystem_view": "saved-image-layer-overlay",
         "syft_sha256": digest(canonical(raw)),
         "syft_executable_sha256": sha_file(syft),
     }
-    archive.unlink()
-    return raw, cdx, ImageFiles(filesystem), subject
+    return raw, cdx, ImageFiles.from_docker_archive(archive), subject
 
 
 def collect(target: str, output: Path, tools: Path, revision: str) -> None:
@@ -103,9 +96,9 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
     blobs = Blobs(output / "blobs")
     write(output / "source.json", source)
     collect_tools(output, tools)
-    opened = []
-    try:
-        with tempfile.TemporaryDirectory(prefix="nexus-supply-chain-") as temporary:
+    with ExitStack() as cleanup:
+        temporary = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="nexus-supply-chain-"))
+        with ExitStack() as images:
             work = Path(temporary)
             snapshots = {}
             for stage in (["build", "runtime"] if has_build else ["runtime"]):
@@ -117,7 +110,7 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                 run(args + [str(ROOT / context)])
                 snapshot = snapshot_image(tag, name, work, tools, output, revision)
                 snapshots[stage] = (*snapshot, tag)
-                opened.append(snapshot[2])
+                images.callback(snapshot[2].close)
             runtime_raw, runtime_cdx, runtime_files, runtime_subject, runtime_tag = snapshots["runtime"]
             runtime_records = os_inventory(runtime_files, blobs)
             runtime_edges, runtime_gaps = [], []
@@ -223,9 +216,6 @@ def collect(target: str, output: Path, tools: Path, revision: str) -> None:
                 "source_revision": revision, "subjects": subjects, "target": target,
                 "files": {p.relative_to(output).as_posix(): sha_file(p) for p in sorted(output.rglob("*")) if p.is_file()},
             })
-    finally:
-        for files in opened:
-            files.close()
 
 
 def accept(output: Path, tools: Path, revision: str, policy_path: Path) -> bool:

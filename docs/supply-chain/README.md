@@ -28,8 +28,11 @@ closed rather than silently merging potentially different dependency edges.
 
 The product Dockerfiles are used unchanged, using their existing installation and
 build-script policy. No additional package lifecycle scripts run during scanning.
-Syft enrichment/network and Go-tool execution are disabled. Image exports are
-read as archives, not extracted onto the host or executed. The only post-build
+Syft enrichment/network and Go-tool execution are disabled. Saved image layers are
+read as archives with OCI whiteout/opaque-directory semantics, not extracted onto
+the host or executed. Container filesystem export is deliberately not used: Docker
+mount handling changes `/etc/hosts` and `/etc/hostname` relative to image bytes.
+The only post-build
 container commands read interpreter facts and `pnpm list`; they have no network.
 Public PyPI/npm archive retrieval executes no downloaded code.
 
@@ -204,6 +207,8 @@ replace pins with `latest` or pipe remote installer scripts into a shell.
    `https://github.com/CycloneDX/specification/tree/b29bae660048e0ad2fbc5f2972927b442ce951c4/schema`
 5. Exact Python tool upstream metadata URLs and wheel digests:
    `scripts/supply_chain/python-tools.json`
+6. OCI image-layer replacement, hardlink and whiteout semantics:
+   `https://github.com/opencontainers/image-spec/blob/v1.1.1/layer.md`
 
 The focused pytest suite exercises actual pinned generator output, offline
 official-schema validation, deterministic normalization, named transitive

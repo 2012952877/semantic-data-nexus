@@ -3,15 +3,19 @@ from __future__ import annotations
 import base64
 import csv
 import email
+import gzip
 import hashlib
 import io
 import json
 import posixpath
 import re
+import shutil
 import tarfile
+import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -27,15 +31,99 @@ def image_path(path: str) -> str:
 
 
 class ImageFiles:
-    """Read an exported filesystem without extracting or following host symlinks."""
+    """Read image layers without extraction, container mounts, or host symlinks."""
 
     def __init__(self, path: Path):
         self.archive = tarfile.open(path)
         self.members = {image_path(m.name): m for m in self.archive.getmembers()}
+        self.owners = {p: self.archive for p in self.members}
+        self.layers: list[tarfile.TarFile] = []
+        self.streams: list[io.BufferedIOBase] = []
+        self.expanded: tempfile.TemporaryDirectory | None = None
         self.facts: dict[str, dict] = {}
 
+    @classmethod
+    def from_docker_archive(cls, path: Path) -> ImageFiles:
+        with ExitStack() as cleanup:
+            image = cls(path)
+            cleanup.callback(image.close)
+            manifest = json.loads(image.read("/manifest.json"))
+            require(isinstance(manifest, list) and len(manifest) == 1, "ambiguous-image-manifest")
+            layer_names = manifest[0]["Layers"]
+            require(isinstance(layer_names, list) and layer_names, "missing-image-layers")
+            image.members.clear()
+            image.owners.clear()
+            image.expanded = tempfile.TemporaryDirectory(prefix="image-layers-", dir=path.parent)
+            for index, name in enumerate(layer_names):
+                require(isinstance(name, str) and not name.startswith("/") and ".." not in name.split("/"), "invalid-image-layer-path")
+                stream = image.archive.extractfile(name)
+                require(stream is not None, "missing-image-layer")
+                image.streams.append(stream)
+                signature = stream.read(2)
+                stream.seek(0)
+                if signature == b"\x1f\x8b":
+                    expanded = Path(image.expanded.name) / f"{index}.tar"
+                    with gzip.GzipFile(fileobj=stream) as source, expanded.open("wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                    layer = tarfile.open(expanded)
+                else:
+                    layer = tarfile.open(fileobj=stream, mode="r:*")
+                image.layers.append(layer)
+                image.apply_layer(layer)
+            cleanup.pop_all()
+            return image
+
+    def remove(self, path: str, *, children_only: bool = False) -> None:
+        for existing in list(self.members):
+            if (existing != path and existing.startswith(path.rstrip("/") + "/")) or (existing == path and not children_only):
+                del self.members[existing]
+                del self.owners[existing]
+
+    def apply_layer(self, layer: tarfile.TarFile) -> None:
+        self.facts.clear()
+        entries = layer.getmembers()
+        require(all(not m.name.startswith("/") and ".." not in m.name.split("/") for m in entries), "unsafe-image-layer-entry")
+        names = [image_path(m.name) for m in entries]
+        require(len(names) == len(set(names)), "duplicate-image-layer-entry")
+        # OCI whiteouts affect lower layers only, independent of tar entry order.
+        for path in names:
+            name = posixpath.basename(path)
+            parent = self.resolve(posixpath.dirname(path))
+            if name == ".wh..wh..opq":
+                self.remove(parent, children_only=True)
+            elif name.startswith(".wh."):
+                self.remove(image_path(posixpath.join(parent, name[4:])))
+        pending = []
+        for member, path in zip(entries, names, strict=True):
+            if posixpath.basename(path).startswith(".wh."):
+                continue
+            target = image_path(posixpath.join(self.resolve(posixpath.dirname(path)), posixpath.basename(path)))
+            existing = self.members.get(target)
+            if existing and not (existing.isdir() and member.isdir()):
+                self.remove(target)
+            self.members[target] = member
+            self.owners[target] = layer
+            if member.islnk():
+                destination = self.resolve(image_path(member.linkname))
+                if destination in self.members and self.members[destination].isfile():
+                    self.members[target] = self.members[destination]
+                    self.owners[target] = self.owners[destination]
+                else:
+                    pending.append(target)
+        for path in pending:
+            target = self.resolve(path)
+            require(target in self.members and self.members[target].isfile(), "unresolved-image-hardlink")
+            self.members[path] = self.members[target]
+            self.owners[path] = self.owners[target]
+
     def close(self) -> None:
+        for layer in reversed(self.layers):
+            layer.close()
+        for stream in reversed(self.streams):
+            stream.close()
         self.archive.close()
+        if self.expanded is not None:
+            self.expanded.cleanup()
 
     def resolve(self, path: str) -> str:
         path = image_path(path)
@@ -58,9 +146,10 @@ class ImageFiles:
         return self.resolve(path) in self.members
 
     def read(self, path: str) -> bytes:
-        member = self.members.get(self.resolve(path))
+        path = self.resolve(path)
+        member = self.members.get(path)
         require(member is not None and member.isfile(), "missing-artifact-file")
-        stream = self.archive.extractfile(member)
+        stream = self.owners[path].extractfile(member)
         require(stream is not None, "missing-artifact-file")
         with stream:
             return stream.read()
