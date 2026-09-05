@@ -153,9 +153,9 @@ _HOST_ASSIGNMENT = re.compile(
 )
 _IDENTIFIER_ASSIGNMENT = re.compile(
     r"""
-    (?<![A-Za-z0-9_$])
+    (?<![A-Za-z0-9_${])
     ["']?
-    (?P<key>[A-Za-z][A-Za-z0-9_-]{1,100})
+    (?P<key>[A-Za-z][A-Za-z0-9_.-]{1,100})
     ["']?
     \s*[:=]\s*
     (?P<value>
@@ -168,13 +168,30 @@ _IDENTIFIER_ASSIGNMENT = re.compile(
 )
 _DECLARED_ASSIGNMENT = re.compile(
     r"""
-    (?<![A-Za-z0-9_$])
+    (?<![A-Za-z0-9_${])
     (?:(?:const|let|var|param)\s+)?
-    (?P<key>[A-Za-z][A-Za-z0-9_-]{1,100})
+    (?P<key>[A-Za-z][A-Za-z0-9_.-]{1,100})
     (?:
         \s*:\s*[A-Za-z_][A-Za-z0-9_<>,.\[\]|? ]*
         | \s+[A-Za-z_][A-Za-z0-9_<>,.\[\]|?]*
     )?
+    \s*=\s*
+    (?P<value>
+        "(?:[^"\\]|\\.)*"
+        | '(?:[^'\\]|\\.)*'
+        | [^,\s#;]+
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_POWERSHELL_ASSIGNMENT = re.compile(
+    r"""
+    (?<![A-Za-z0-9_$])
+    \$
+    (?:
+        \{(?P<braced_key>[A-Za-z][A-Za-z0-9_-]{1,100})\}
+        | (?P<plain_key>[A-Za-z][A-Za-z0-9_-]{1,100})
+    )
     \s*=\s*
     (?P<value>
         "(?:[^"\\]|\\.)*"
@@ -220,16 +237,17 @@ _PRIVATE_IDENTIFIER_KEY_SUFFIXES = (
     "warehouseid",
     "workspaceid",
 )
-_CREDENTIAL_KEY_SUFFIXES = (
-    "accountkey",
-    "accesstoken",
-    "apikey",
-    "clientsecret",
-    "connectionstring",
-    "databrickstoken",
-    "password",
-    "privatekey",
-    "sastoken",
+_CREDENTIAL_KEY_SEQUENCES = (
+    ("account", "key"),
+    ("access", "token"),
+    ("api", "key"),
+    ("api", "keys"),
+    ("client", "secret"),
+    ("connection", "string"),
+    ("connection", "strings"),
+    ("databricks", "token"),
+    ("private", "key"),
+    ("sas", "token"),
 )
 _UUID_LITERAL = re.compile(
     r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -244,7 +262,7 @@ _CONCRETE_DATABRICKS_HOST = re.compile(
         adb-\d{5,}\.\d+\.azuredatabricks\.net
         | dbc-[a-z0-9]{8,}\.cloud\.databricks\.com
     )
-    (?=$|[^A-Za-z0-9.:-])
+    (?=$|[^A-Za-z0-9.:-]|[.](?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -258,7 +276,7 @@ _PRIVATE_NETWORK_URL = re.compile(
         | [a-z0-9.-]+\.(?:corp|internal|lan)
     )
     (?::\d+)?
-    (?=$|[^A-Za-z0-9.:-])
+    (?=$|[^A-Za-z0-9.:-]|[.](?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -268,7 +286,7 @@ _AZURE_APP_SERVICE_URL = re.compile(
     (?P<host>[a-z0-9][a-z0-9-]{0,58}[a-z0-9])
     [.]azurewebsites[.]net
     (?::\d+)?
-    (?=$|[^A-Za-z0-9.:-])
+    (?=$|[^A-Za-z0-9.:-]|[.](?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -279,7 +297,7 @@ _ONMICROSOFT_IDENTITY = re.compile(
     @
     (?P<tenant>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)
     [.]onmicrosoft[.]com
-    (?![A-Za-z0-9.-])
+    (?=$|[^A-Za-z0-9.-]|[.](?=$|[\s/"'`),;!?\]}>]))
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -471,7 +489,10 @@ def _is_safe_literal(raw_value: str | None, path: str) -> bool:
     if quoted:
         return False
     return PurePosixPath(path).suffix.lower() in _SOURCE_CODE_SUFFIXES and bool(
-        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value)
+        re.fullmatch(
+            r"[A-Za-z_$][A-Za-z0-9_$.\[\]():\"'-]*",
+            value,
+        )
     )
 
 
@@ -480,9 +501,25 @@ def _is_private_identifier_key(key: str) -> bool:
     return normalized.endswith(_PRIVATE_IDENTIFIER_KEY_SUFFIXES)
 
 
+def _key_tokens(key: str) -> tuple[str, ...]:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    return tuple(
+        token for token in re.split(r"[^A-Za-z0-9]+", separated.lower()) if token
+    )
+
+
 def _is_credential_key(key: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
-    return normalized.endswith(_CREDENTIAL_KEY_SUFFIXES)
+    tokens = _key_tokens(key)
+    if "password" in tokens and not any(
+        tokens[index : index + 2] == ("password", "auth")
+        for index in range(len(tokens) - 1)
+    ):
+        return True
+    return any(
+        tokens[index : index + len(sequence)] == sequence
+        for sequence in _CREDENTIAL_KEY_SEQUENCES
+        for index in range(len(tokens) - len(sequence) + 1)
+    )
 
 
 def _is_private_identifier_literal(key: str, raw_value: str | None) -> bool:
@@ -526,11 +563,39 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
             )
 
     for match in _IDENTIFIER_ASSIGNMENT.finditer(line):
-        if _is_private_identifier_key(
-            match.group("key")
-        ) and _is_private_identifier_literal(
-            match.group("key"),
-            match.group("value"),
+        key = match.group("key")
+        value = match.group("value")
+        if _is_credential_key(key) and not _is_safe_literal(value, path):
+            yield Finding(
+                path,
+                line_number,
+                "credential-assignment",
+                "a non-placeholder credential assignment is prohibited",
+            )
+        if _is_private_identifier_key(key) and _is_private_identifier_literal(
+            key,
+            value,
+        ):
+            yield Finding(
+                path,
+                line_number,
+                "private-account-identifier",
+                "a concrete account, tenant, subscription, workspace, warehouse, client, principal, or object ID is prohibited",
+            )
+
+    for match in _POWERSHELL_ASSIGNMENT.finditer(line):
+        key = match.group("braced_key") or match.group("plain_key")
+        value = match.group("value")
+        if _is_credential_key(key) and not _is_safe_literal(value, path):
+            yield Finding(
+                path,
+                line_number,
+                "credential-assignment",
+                "a non-placeholder credential assignment is prohibited",
+            )
+        if _is_private_identifier_key(key) and _is_private_identifier_literal(
+            key,
+            value,
         ):
             yield Finding(
                 path,
@@ -615,11 +680,67 @@ def _line_findings(path: str, line_number: int, line: str) -> Iterable[Finding]:
             )
 
 
+def _decode_blob(content: bytes) -> str | None:
+    try:
+        if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+            text = content.decode("utf-16")
+        elif content.startswith(b"\xef\xbb\xbf"):
+            text = content.decode("utf-8-sig")
+        elif b"\x00" in content:
+            if len(content) % 2:
+                return None
+            even_zeros = content[0::2].count(0)
+            odd_zeros = content[1::2].count(0)
+            threshold = max(1, len(content) // 8)
+            if odd_zeros >= threshold and odd_zeros > even_zeros * 2:
+                text = content.decode("utf-16-le")
+            elif even_zeros >= threshold and even_zeros > odd_zeros * 2:
+                text = content.decode("utf-16-be")
+            else:
+                return None
+        else:
+            text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return None if "\x00" in text else text.lstrip("\ufeff")
+
+
+def _logical_assignment_lines(path: str, lines: list[str]) -> Iterable[tuple[int, str]]:
+    source_code = PurePosixPath(path).suffix.lower() in _SOURCE_CODE_SUFFIXES
+    for index, line in enumerate(lines):
+        stripped_line = line.rstrip()
+        if not (
+            stripped_line.endswith(":") or (source_code and stripped_line.endswith("="))
+        ):
+            continue
+        for continuation in lines[index + 1 : index + 5]:
+            stripped = continuation.strip()
+            if not stripped or stripped.startswith(("#", "//")):
+                continue
+            yield index + 1, f"{line.rstrip()} {stripped}"
+            break
+
+
 def scan_blob(path: str, content: bytes) -> list[Finding]:
     findings = list(_path_findings(path))
-    text = content.decode("utf-8", errors="replace")
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    text = _decode_blob(content)
+    if text is None:
+        if not findings:
+            findings.append(
+                Finding(
+                    path,
+                    0,
+                    "unsupported-text-encoding",
+                    "tracked text must use UTF-8 or recognizable UTF-16 encoding",
+                )
+            )
+        return sorted(set(findings))
+
+    lines = text.splitlines()
+    for line_number, line in enumerate(lines, start=1):
         findings.extend(_line_findings(path, line_number, line))
+    for line_number, logical_line in _logical_assignment_lines(path, lines):
+        findings.extend(_line_findings(path, line_number, logical_line))
     return sorted(set(findings))
 
 

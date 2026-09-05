@@ -78,9 +78,27 @@ class CleanRoomScanTests(unittest.TestCase):
                     ["credential-assignment"],
                 )
 
+    def test_reports_credentials_in_nonterminal_namespace_segments(self) -> None:
+        keys = [
+            "ConnectionStrings__DefaultConnection",
+            "Auth__ApiKey__Primary",
+            "auth.apiKey.primary",
+        ]
+
+        for key in keys:
+            with self.subTest(key=key):
+                findings = scan_blob(
+                    "service.env",
+                    f"{key}=shortKey7\n".encode(),
+                )
+                self.assertEqual(
+                    [finding.rule for finding in findings],
+                    ["credential-assignment"],
+                )
+
     def test_reports_typed_source_and_bicep_assignments(self) -> None:
-        credential_key = "AZURE_OPENAI_" + "API_KEY"
-        password_key = "DATABASE_" + "PASSWORD"
+        first_name = "AZURE_OPENAI_" + "API_KEY"
+        second_name = "DATABASE_" + "PASSWORD"
         object_key = "postgresEntraAdministrator" + "ObjectId"
         object_value = _dashed_identifier(
             "12345678", "9abc", "4def", "8123", "456789abcdef"
@@ -88,12 +106,12 @@ class CleanRoomScanTests(unittest.TestCase):
         cases = [
             (
                 "settings.py",
-                f'{credential_key}: str = "shortKey7"',
+                f'{first_name}: str = "shortKey7"',
                 "credential-assignment",
             ),
             (
                 "settings.ts",
-                f'const {password_key}: string = "shortKey7";',
+                f'const {second_name}: string = "shortKey7";',
                 "credential-assignment",
             ),
             (
@@ -110,6 +128,47 @@ class CleanRoomScanTests(unittest.TestCase):
                     [finding.rule for finding in findings],
                     [expected_rule],
                 )
+
+    def test_reports_multiline_json_and_typescript_credentials(self) -> None:
+        key = "API_" + "KEY"
+        cases = [
+            ("settings.json", f'"{key}":\n"shortKey7"'),
+            ("settings.ts", f'const {key}: string =\n"shortKey7";'),
+        ]
+
+        for path, content in cases:
+            with self.subTest(path=path):
+                findings = scan_blob(path, content.encode())
+                self.assertEqual(
+                    [finding.rule for finding in findings],
+                    ["credential-assignment"],
+                )
+
+    def test_reports_powershell_credentials_and_identifiers(self) -> None:
+        credential_name = "api" + "Key"
+        object_key = "object" + "Id"
+        principal_key = "principal" + "Id"
+        object_value = _dashed_identifier(
+            "12345678", "9abc", "4def", "8123", "456789abcdef"
+        )
+        content = "\n".join(
+            [
+                f'${credential_name} = "shortKey7"',
+                f"${object_key} = '{object_value}'",
+                f"${{{principal_key}}} = '{object_value}'",
+            ]
+        ).encode()
+
+        findings = scan_blob("settings.ps1", content)
+
+        self.assertEqual(
+            [finding.rule for finding in findings],
+            [
+                "credential-assignment",
+                "private-account-identifier",
+                "private-account-identifier",
+            ],
+        )
 
     def test_allows_only_explicit_nonliteral_credential_references(self) -> None:
         key = "DATABRICKS_" + "TOKEN"
@@ -137,9 +196,9 @@ class CleanRoomScanTests(unittest.TestCase):
         )
 
     def test_reports_private_key_and_concrete_workspace_without_values(self) -> None:
-        private_key_header = ("-" * 5) + "BEGIN PRIVATE KEY" + ("-" * 5)
+        header_value = ("-" * 5) + "BEGIN PRIVATE KEY" + ("-" * 5)
         workspace = "https://adb-" + "123456789" + ".987654.azuredatabricks.net"
-        content = f"{private_key_header}\nendpoint={workspace}\n".encode()
+        content = f"{header_value}\nendpoint={workspace}\n".encode()
 
         findings = scan_blob("settings.txt", content)
 
@@ -208,6 +267,28 @@ class CleanRoomScanTests(unittest.TestCase):
             self.assertNotIn(app_host, rendered)
         for tenant_identity in tenant_identities:
             self.assertNotIn(tenant_identity, rendered)
+
+    def test_reports_private_hosts_and_identities_before_terminal_periods(self) -> None:
+        private_ip = "http://" + "10" + ".1.2.3"
+        private_dns = "https://" + "service" + ".internal"
+        app_host = "https://" + "ab" + "." + "azurewebsites" + ".net"
+        tenant_identity = "user#EXT#@" + "ab" + "." + "onmicrosoft" + ".com"
+        content = "\n".join(
+            f"{value}."
+            for value in (private_ip, private_dns, app_host, tenant_identity)
+        ).encode()
+
+        findings = scan_blob("notes.md", content)
+
+        self.assertEqual(
+            [finding.rule for finding in findings],
+            [
+                "private-network-host",
+                "private-network-host",
+                "private-app-service-host",
+                "private-tenant-identity",
+            ],
+        )
 
     def test_reports_keyed_private_identity_and_warehouse_ids(self) -> None:
         object_key = "postgresEntraAdministrator" + "ObjectId"
@@ -407,6 +488,27 @@ class CleanRoomScanTests(unittest.TestCase):
         self.assertNotIn(json_url, rendered)
         self.assertNotIn(yaml_url, rendered)
         self.assertNotIn(markdown_url, rendered)
+
+    def test_scans_utf16_powershell_content_with_and_without_bom(self) -> None:
+        key = "API_" + "KEY"
+        private_url = "http://" + "192" + ".168.10.5"
+        text = f'${key} = "shortKey7"\n$endpoint = "{private_url}"'
+
+        for encoding in ("utf-16", "utf-16-le", "utf-16-be"):
+            with self.subTest(encoding=encoding):
+                findings = scan_blob("settings.ps1", text.encode(encoding))
+                self.assertEqual(
+                    {finding.rule for finding in findings},
+                    {"credential-assignment", "private-network-host"},
+                )
+
+    def test_fails_closed_for_unrecognized_nul_text(self) -> None:
+        findings = scan_blob("settings.txt", b"a\x00b")
+
+        self.assertEqual(
+            [finding.rule for finding in findings],
+            ["unsupported-text-encoding"],
+        )
 
     def test_reports_unapproved_data_and_screenshot_paths(self) -> None:
         data_findings = scan_blob("exports/customer.csv", b"id,value\n")
