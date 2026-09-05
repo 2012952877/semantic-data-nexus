@@ -62,6 +62,10 @@ jobs:
     name: Compose real API and browser smoke
     uses: ./.github/workflows/full-stack.yml
 
+  enterprise_identity:
+    name: Enterprise identity and workspace isolation
+    uses: ./.github/workflows/identity.yml
+
   clean_room:
     name: Clean-room and private-demo scan
     runs-on: ubuntu-latest
@@ -104,6 +108,7 @@ jobs:
       - web
       - infrastructure
       - full_stack
+      - enterprise_identity
       - clean_room
     runs-on: ubuntu-latest
     steps:
@@ -120,6 +125,7 @@ jobs:
           WEB: ${{ needs.web.result }}
           INFRASTRUCTURE: ${{ needs.infrastructure.result }}
           FULL_STACK: ${{ needs.full_stack.result }}
+          ENTERPRISE_IDENTITY: ${{ needs.enterprise_identity.result }}
           CLEAN_ROOM: ${{ needs.clean_room.result }}
         run: |
           status=0
@@ -135,6 +141,7 @@ jobs:
             "web=$WEB" \
             "infrastructure=$INFRASTRUCTURE" \
             "full_stack=$FULL_STACK" \
+            "enterprise_identity=$ENTERPRISE_IDENTITY" \
             "clean_room=$CLEAN_ROOM"
           do
             name="${gate%%=*}"

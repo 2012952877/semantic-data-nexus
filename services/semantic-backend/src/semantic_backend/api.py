@@ -4,7 +4,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse
 
+from semantic_backend.auth_context import AccessDenied, get_trusted_context, legacy_development
+from semantic_backend.auth_middleware import ServiceAuthentication
+from semantic_backend.authorization import PostgresAuthorization
 from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
 from semantic_backend.repository import (
     RunCapacityError,
@@ -30,6 +34,18 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.orchestrator = orchestrator
+    legacy = legacy_development()
+    if not legacy:
+        authority = orchestrator.authority
+        if not isinstance(authority, PostgresAuthorization):
+            raise ValueError("The HTTP service requires the shared PostgreSQL authority")
+        # Validate key/configuration at construction, not on the first user's request.
+        ServiceAuthentication(app, authority=authority)
+        app.add_middleware(ServiceAuthentication, authority=authority)
+
+    @app.exception_handler(AccessDenied)
+    async def denied(_request: object, _exception: AccessDenied) -> JSONResponse:
+        return JSONResponse({"detail": "Service authorization denied"}, status_code=403)
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
@@ -46,8 +62,14 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
 
     @app.post("/v1/runs", response_model=RunStatus, status_code=status.HTTP_202_ACCEPTED)
     async def start_run(request: StartRunRequest) -> RunStatus:
+        if not legacy and request.requested_by != get_trusted_context().principal.principal_id:
+            raise AccessDenied("Requested principal does not match the authenticated context.")
         try:
-            return await orchestrator.start(request)
+            return await orchestrator.start(
+                request, context=None if legacy else get_trusted_context()
+            )
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
         except RunConflictError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except RunCapacityError as exc:
@@ -59,7 +81,9 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
     @app.get("/v1/runs/{run_id}", response_model=RunStatus)
     async def get_run(run_id: str) -> RunStatus:
         try:
-            return await orchestrator.get_status(run_id)
+            return await orchestrator.get_status(
+                run_id, context=None if legacy else get_trusted_context()
+            )
         except RunNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="run not found"
@@ -68,7 +92,9 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
     @app.post("/v1/runs/{run_id}/cancel", response_model=RunStatus)
     async def cancel_run(run_id: str) -> RunStatus:
         try:
-            return await orchestrator.cancel(run_id)
+            return await orchestrator.cancel(
+                run_id, context=None if legacy else get_trusted_context()
+            )
         except RunNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="run not found"
@@ -77,7 +103,9 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
     @app.get("/v1/runs/{run_id}/detail", response_model=RunDetail)
     async def get_detail(run_id: str) -> RunDetail:
         try:
-            return await orchestrator.get_detail(run_id)
+            return await orchestrator.get_detail(
+                run_id, context=None if legacy else get_trusted_context()
+            )
         except RunNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="run not found"

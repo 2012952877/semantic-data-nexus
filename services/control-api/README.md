@@ -25,11 +25,14 @@ X-Dev-Roles: reader,contributor,admin
 Local header authentication is accepted only when the host environment is
 exactly `Development`; enabling it in Staging, QA, Test, Production, or any
 custom environment fails startup. The fake backend also fails in `Production`.
-Production requires a configured Entra authority, tenant, client ID, and an
-HTTPS semantic-backend base URI. JWT inbound claim mapping is disabled so Entra
-`scp` and `roles` claims retain their protocol names. No client secret is
-accepted or modeled. Future service-to-service credentials should use managed
-identity.
+Outside this explicit compatibility mode, enterprise identity requires registered
+HTTPS OIDC issuers, PostgreSQL memberships and scoped run storage, and a service
+signing key. Production also requires a persistent protected cookie key ring and
+an HTTPS semantic-backend base URI. The browser uses confidential authorization
+code + PKCE and server-stored sessions; identity credentials are injected via
+deployment secret references, never supplied by the browser. See
+[enterprise identity operations](../../docs/operations/enterprise-identity.md)
+for the runnable Keycloak alternative, exact Entra configuration and migration policy.
 
 ## API contract
 
@@ -50,15 +53,18 @@ All business endpoints are under `/api/v1`.
 | GET | `/health/live` | anonymous | Process liveness |
 | GET | `/health/ready` | anonymous | Semantic-backend readiness |
 
-Roles or delegated scopes named `reader`, `contributor`, and `admin` satisfy the
-matching policies. Contributor and admin permissions are cumulative.
+Enterprise policies use current server-stored membership/group permissions, never
+token roles or caller headers. `X-Workspace-Id` selects a membership to resolve; it
+does not authorize it. Only explicit Development compatibility uses caller roles.
+Contributor and admin permissions are cumulative within one authorized workspace.
 
 `RunId` is serialized as `run_` followed by 32 lowercase hexadecimal characters.
 Enums are serialized as strings. Errors use RFC 7807 Problem Details with a
 stable `code`, distributed `traceId`, and `correlationId`. Callers may supply a
 safe `X-Correlation-ID` containing up to 64 letters, digits, `.`, `_`, or `-`.
 
-Create idempotency is scoped to principal plus `clientRequestId`. A run begins
+Create idempotency is scoped to tenant/workspace/stable principal plus
+`clientRequestId` (legacy rows remain in a separate null scope). A run begins
 in `StartPending`; timeout, transport loss, invalid success payload, or caller
 cancellation moves it to retryable `DispatchUnknown`, never terminal `Failed`.
 A duplicate create re-reads state after acquiring the per-`RunId` dispatch
@@ -122,7 +128,9 @@ avoid an unrestricted text/prompt field. `submissionId`, `rating`, `outcome`,
 credential values. Prefer deployment-time configuration and managed platform
 identity. Do not place tokens, connection strings, or credentials in files.
 
-- `AzureAd`: Microsoft.Identity.Web JWT bearer settings.
+- `Identity:Providers`: registered OIDC authorities with browser client and
+  distinct API audience. This replaces the old unscoped `AzureAd` configuration;
+  there is no implicit migration or token-role authorization.
 - `SemanticBackend`: base URI and a bounded 1-30 second timeout. Create calls
   have no transport-level retry. Control-plane reconciliation uses the stable
   `RunId` before an explicit repeat dispatch. Responses are rejected before
@@ -176,16 +184,18 @@ Never put connection strings in source, command history, PRs, or log messages.
 | Durable object | Concurrency and scope |
 | --- | --- |
 | Run metadata | JSONB preserves creation payload, stages/nodes, diagnostics, timestamps, usage, cancellation delivery/generation and version; row lock plus version-checked update |
-| Create identity | Database unique `(subject, client_request_id)`; payload comparison happens after conflict serialization |
+| Create identity | Database unique `(tenant_id, workspace_id, subject, client_request_id)` with `NULLS NOT DISTINCT` for legacy rows; subject is the stored enterprise principal ID |
 | Feedback | Unique `(run_id, submission_id)` under the current v1 contract, not subject-scoped; insertion and run version increment commit together |
 | Start intent | Unique run ID and permanent generation 1, committed with `DispatchUnknown` before calling the backend |
-| Statistics | Repeatable-read snapshot of validated runs and feedback, never a second volatile counter |
+| Statistics | One SQL statement snapshots validated scoped runs and feedback after a transactionally fenced live authorization check |
 
-Public role authorization and DTOs remain unchanged. Subject-scoped create
-identity is **not workspace isolation**: trusted workspace membership and
-workspace-qualified keys belong to #32, guided by #29. A later additive migration
-can introduce workspace keys and backfill existing data under an explicit mapping;
-there is no fictitious tenant column or membership inference here.
+Migration `001_control_plane.sql` remains immutable and checksummed.
+`002_identity_workspace.sql` adds identity, memberships, groups, grants and nullable
+scope columns without assigning any legacy row. Explicit operator-only, audited
+adoption requires an exact run ID, expected legacy owner and authorized target
+principal/workspace. Legacy compatibility sees only null-scoped rows. Enterprise
+requests cannot see them before adoption. Adoption moves control metadata only;
+old process-local runtime artifacts are not migrated or falsely recovered.
 
 ### Dispatch ambiguity and recovery
 

@@ -66,6 +66,9 @@ jobs:
       - name: Build package
         run: python -m build services/semantic-backend
       - name: Run offline demos
+        env:
+          SEMANTIC_NEXUS_AUTH_MODE: legacy-development
+          SEMANTIC_NEXUS_ENVIRONMENT: Development
         run: |
           python -m semantic_backend.demo --scenario simple
           python -m semantic_backend.demo --scenario complex

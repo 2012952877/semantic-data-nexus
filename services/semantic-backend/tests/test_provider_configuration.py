@@ -174,7 +174,7 @@ async def test_static_default_is_explicit_and_offline():
 
 
 @asynccontextmanager
-async def deadline_server(monkeypatch, phase):
+async def deadline_server(monkeypatch, phase, entered=None):
     calls = []
     disconnected = asyncio.Event()
     tasks = set()
@@ -192,6 +192,8 @@ async def deadline_server(monkeypatch, phase):
             payload = json.loads(await reader.readexactly(length))
             envelope = json.loads(payload["messages"][1]["content"])
             calls.append(envelope)
+            if entered is not None:
+                entered.set()
             if phase == "compile" or (phase == "repair" and len(calls) == 2):
                 await reader.read()
                 disconnected.set()

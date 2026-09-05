@@ -65,8 +65,13 @@ public static class ControlApiEndpoints
         return endpoints;
     }
 
-    private static Ok<CurrentPrincipalResponse> GetCurrentPrincipal(ClaimsPrincipal principal)
+    private static Ok<CurrentPrincipalResponse> GetCurrentPrincipal(ClaimsPrincipal principal, RunAccess access)
     {
+        if (access.Context is { } trusted)
+        {
+            return TypedResults.Ok(new CurrentPrincipalResponse(trusted.Principal.PrincipalId,
+                principal.Identity?.Name, [], trusted.Membership.Permissions.ToArray()));
+        }
         var subject = GetSubject(principal);
         var roles = principal.FindAll("roles")
             .Concat(principal.FindAll(ClaimTypes.Role))
@@ -216,7 +221,7 @@ public static class ControlApiEndpoints
                 run.CompilationMode,
                 run.ExecutionMode,
                 run.OutputMode,
-                subject,
+                run.CreatedBy,
                 Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier),
             cancellationToken);
 

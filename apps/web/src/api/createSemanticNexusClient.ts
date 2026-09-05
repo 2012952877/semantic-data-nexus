@@ -2,6 +2,7 @@ import { HttpSemanticNexusClient } from './httpSemanticNexusClient'
 import type { NexusTokenProvider } from './httpSemanticNexusClient'
 import { MockSemanticNexusClient } from './mockSemanticNexusClient'
 import type { SemanticNexusClient } from './semanticNexusClient'
+import type { BrowserSession } from './browserSession'
 
 export type NexusClientMode = 'mock' | 'http'
 
@@ -31,6 +32,7 @@ const readTokenProvider = () =>
 export const createSemanticNexusClient = (
   environment: NexusEnvironment = readEnvironment(),
   tokenProvider: NexusTokenProvider | undefined = readTokenProvider(),
+  session?: BrowserSession,
 ): SemanticNexusClient => {
   const mode = environment.VITE_NEXUS_CLIENT ?? 'mock'
   if (mode === 'mock') return new MockSemanticNexusClient()
@@ -43,6 +45,7 @@ export const createSemanticNexusClient = (
   return new HttpSemanticNexusClient({
     baseUrl: environment.VITE_NEXUS_BASE_URL,
     tokenProvider,
+    session,
     localDevelopment: {
       subject: environment.VITE_NEXUS_DEV_SUBJECT,
       roles: environment.VITE_NEXUS_DEV_ROLES,
