@@ -4,6 +4,12 @@ This directory defines a clean-room, resource group-scoped Azure baseline for a 
 
 The baseline was delivered independently from the P0 semantic contract foundation. The semantic core does not depend on Azure, and the architecture remains locally runnable. See the [Azure reference architecture](../docs/architecture/azure-reference.md) for ownership boundaries and local equivalents.
 
+For a small synthetic M0 HTTPS test, use the separate
+[authenticated test runbook](../docs/operations/m0-azure-test.md) and
+`m0-aca-foundation.bicep` / `m0-aca.bicep`, not `main.bicep`. That path uses one
+scale-to-zero Consumption replica, a private Basic registry, and a dedicated
+temporary login; it does not create the databases/search/model baseline.
+
 ## Topology
 
 The deployment creates:
