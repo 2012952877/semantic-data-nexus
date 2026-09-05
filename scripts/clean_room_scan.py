@@ -176,12 +176,11 @@ _PROSE_IDENTIFIER = re.compile(
     )
     ["']?
     \s*
-    (?:(?:[:=]|\bis\b)\s*)?
-    (?P<value>
-        "[A-Za-z0-9-]{10,}"
-        | '[A-Za-z0-9-]{10,}'
-        | [A-Za-z0-9-]{10,}
-    )
+    (?:(?:[:=]|\bis\b|[-\u2013\u2014])\s*)?
+    (?:["'`(<\[]\s*)?
+    (?P<value>[A-Za-z0-9-]{10,})
+    \s*
+    (?:["'`)>\]])?
     """,
     re.IGNORECASE | re.VERBOSE,
 )

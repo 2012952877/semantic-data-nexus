@@ -281,6 +281,33 @@ class CleanRoomScanTests(unittest.TestCase):
 
         self.assertEqual(scan_blob("notes.md", content), [])
 
+    def test_reports_wrapped_and_dash_separated_prose_ids(self) -> None:
+        tenant_label = "Tenant " + "ID"
+        tenant_value = _dashed_identifier(
+            "12345678", "9abc", "4def", "8123", "456789abcdef"
+        )
+        en_dash = chr(0x2013)
+        em_dash = chr(0x2014)
+        content = "\n".join(
+            [
+                f"{tenant_label} - {tenant_value}",
+                f"{tenant_label} {en_dash} {tenant_value}",
+                f"{tenant_label} {em_dash} {tenant_value}",
+                f"{tenant_label} ({tenant_value})",
+                f"{tenant_label}: <{tenant_value}>",
+                f"{tenant_label}: `{tenant_value}`",
+            ]
+        ).encode()
+
+        findings = scan_blob("notes.md", content)
+
+        self.assertEqual(
+            [finding.rule for finding in findings],
+            ["private-account-identifier"] * 6,
+        )
+        rendered = json.dumps([finding.__dict__ for finding in findings])
+        self.assertNotIn(tenant_value, rendered)
+
     def test_allows_invalid_and_explicit_cloud_placeholders(self) -> None:
         content = "\n".join(
             [
