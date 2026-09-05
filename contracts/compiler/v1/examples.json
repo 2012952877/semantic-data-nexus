@@ -116,7 +116,7 @@
             "resource_kind": "ontology",
             "resource_id": "energy-catalog",
             "revision": 1,
-            "content_sha256": "97a6b323007dbd66e959169d5312dbb9226375e16cda175157ea88bc0cb969d4"
+            "content_sha256": "a4e18eb81856d60b34ad2ef4a47d7fc54448d964c925b3fa2aeff47de135746b"
           },
           "nodes": [
             {
@@ -423,7 +423,7 @@
             "resource_kind": "ontology",
             "resource_id": "laboratory-catalog",
             "revision": 4,
-            "content_sha256": "a08d7f53de584704c39baf4d9f953f768129cb2425ca7454aad90e240f79d666"
+            "content_sha256": "53ca3925ebf7b73d12e6bcd7b9c9e16994e023987913d9961c5be4a50ff27f49"
           },
           "nodes": [
             {

@@ -71,6 +71,12 @@
           "title": "Label",
           "type": "string"
         },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
         "synonyms": {
           "default": [],
           "items": {
@@ -129,6 +135,12 @@
           "maxLength": 200,
           "minLength": 1,
           "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
           "type": "string"
         },
         "synonyms": {
@@ -201,6 +213,12 @@
           "maxLength": 200,
           "minLength": 1,
           "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
           "type": "string"
         },
         "synonyms": {
@@ -291,6 +309,12 @@
           "title": "Label",
           "type": "string"
         },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
         "synonyms": {
           "default": [],
           "items": {
@@ -350,6 +374,12 @@
           "maxLength": 200,
           "minLength": 1,
           "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
           "type": "string"
         },
         "synonyms": {
@@ -480,6 +510,12 @@
           "maxLength": 200,
           "minLength": 1,
           "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
           "type": "string"
         },
         "synonyms": {

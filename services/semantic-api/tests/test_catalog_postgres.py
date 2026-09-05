@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -10,8 +11,9 @@ import pytest
 import pytest_asyncio
 from test_catalog_v1 import CASES, InjectedProvider, deadline, setup
 
+from semantic_api.catalog_v1.catalog import pin_for
 from semantic_api.catalog_v1.clarification import PostgresClarifications
-from semantic_api.catalog_v1.models import CompilerFailure
+from semantic_api.catalog_v1.models import CatalogDocument, CompilerFailure
 
 
 @pytest_asyncio.fixture
@@ -162,3 +164,37 @@ async def test_lock_wait_obeys_overall_deadline(pg_store):
                 revision=1,
                 deadline=asyncio.get_running_loop().time() + 0.05,
             )
+
+
+async def test_multiple_clarification_steps_preserve_expiry_and_each_replay(pg_store):
+    data = copy.deepcopy(CASES[1]["catalog"])
+    data["fields"][0]["members"][1]["synonyms"] = ["alpha"]
+    document = CatalogDocument.model_validate(data)
+    candidate = copy.deepcopy(CASES[1]["candidate"])
+    candidate["graph"]["catalog"] = pin_for(document).model_dump(mode="json")
+    compiler, request, context, _ = setup(
+        store=pg_store[0], document=document, provider=InjectedProvider(candidate)
+    )
+    request = request.model_copy(
+        update={
+            "request_id": pg_store[1],
+            "question": "yield for alpha above score 1",
+        }
+    )
+    first = await compiler.compile(request, context=context, deadline=deadline())
+    kwargs = dict(context=context, pin=request.catalog, deadline=deadline())
+    second = await compiler.resume(first.clarification_id, "lab.mean_yield", revision=1, **kwargs)
+    assert second.status == "clarification" and second.clarification_revision == 2
+    assert second.expires_at == first.expires_at
+    assert second.clarification_id == first.clarification_id
+    assert not compiler.provider.calls
+    final = await compiler.resume(first.clarification_id, "batch.alpha", revision=2, **kwargs)
+    assert final.status == "compiled"
+    assert len(compiler.provider.calls) == 1
+    assert (
+        await compiler.resume(first.clarification_id, "lab.mean_yield", revision=1, **kwargs)
+        == second
+    )
+    assert (
+        await compiler.resume(first.clarification_id, "batch.alpha", revision=2, **kwargs) == final
+    )

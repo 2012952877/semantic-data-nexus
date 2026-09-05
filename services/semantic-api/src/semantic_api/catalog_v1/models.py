@@ -60,6 +60,7 @@ Predicate = Annotated[Comparison | MemberPredicate | TimePredicate, Field(discri
 class NamedTerm(Frozen):
     id: Id
     label: Annotated[str, Field(min_length=1, max_length=200)]
+    description: Annotated[str, Field(max_length=2_000)] = ""
     synonyms: Annotated[tuple[str, ...], Field(max_length=16)] = ()
 
 
