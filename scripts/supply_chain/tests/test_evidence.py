@@ -289,6 +289,7 @@ def test_pnpm_production_transitive_tree_excludes_dev(tmp_path):
     files = image(tmp_path, data)
     records, edges = pnpm_inventory(tree, files, Blobs(tmp_path / "blobs"))
     assert {r["name"] for r in records} == {"web", "direct", "nested"}
+    assert [f["path"] for r in records if r["name"] == "web" for f in r["files"]] == ["/app/package.json"]
     assert ["direct@1.0", "nested@2.0"] in edges
     files.close()
 

@@ -309,7 +309,8 @@ def pnpm_inventory(tree: list[dict], files: ImageFiles, blobs: Blobs) -> tuple[l
             require(records[identity]["location"] == files.resolve(manifest_path), "ambiguous-pnpm-peer-context")
         if identity not in records:
             folder = files.resolve(location)
-            owned = [p for p in files.paths() if p.startswith(folder + "/") and "/node_modules/" not in p[len(folder) + 1:]]
+            owned = [p for p in files.paths() if p.startswith(folder + "/")
+                     and "node_modules" not in p[len(folder) + 1:].split("/")]
             records[identity] = {
                 "ecosystem": "npm", "name": name, "version": version,
                 "location": files.resolve(manifest_path),
