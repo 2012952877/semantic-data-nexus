@@ -10,6 +10,8 @@ COPY index.html tsconfig*.json vite.config.ts viteProxyTarget.ts ./
 COPY public ./public
 COPY src ./src
 
+ARG VITE_NEXUS_AUTH_MODE=legacy-development
+ENV VITE_NEXUS_AUTH_MODE=$VITE_NEXUS_AUTH_MODE
 ENV VITE_NEXUS_CLIENT=http \
     VITE_NEXUS_BASE_URL=/
 RUN pnpm run build

@@ -243,6 +243,10 @@ interface PendingCreateAttempt {
 
 export interface HttpSemanticNexusClientOptions {
   baseUrl: string
+  session?: {
+    headers(): Record<string, string>
+    invalidate(): void
+  }
   tokenProvider?: NexusTokenProvider
   localDevelopment?: {
     subject?: string
@@ -929,6 +933,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
   private readonly baseUrl: string
   private readonly fetch: Fetch
   private readonly tokenProvider?: NexusTokenProvider
+  private readonly session?: HttpSemanticNexusClientOptions['session']
   private readonly localDevelopmentHeaders: Record<string, string>
   private readonly requestTimeoutMs: number
   private readonly initialDelayMs: number
@@ -951,6 +956,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     this.baseUrl = normalizeBaseUrl(options.baseUrl)
     this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
     this.tokenProvider = options.tokenProvider
+    this.session = options.session
     this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000
     this.localDevelopmentHeaders = validateLocalDevelopment(
       this.baseUrl,
@@ -1287,6 +1293,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     const headers = new Headers({
       Accept: 'application/json',
       ...this.localDevelopmentHeaders,
+      ...this.session?.headers(),
     })
     if (init.body !== undefined) headers.set('Content-Type', 'application/json')
     const controller = new AbortController()
@@ -1323,6 +1330,7 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
       response = await this.beforeDeadline(
         this.fetch(`${this.baseUrl}${path}`, {
           ...init,
+          credentials: 'same-origin',
           headers,
           signal: controller.signal,
         }),
@@ -1341,6 +1349,11 @@ export class HttpSemanticNexusClient implements SemanticNexusClient {
     if (response.ok) {
       this.responseDeadlines.set(response, { deadlineAt, controller })
       return response
+    }
+    if (response.status === 401 || response.status === 403) {
+      this.snapshots.clear()
+      this.pendingAttempts.clear()
+      this.session?.invalidate()
     }
     if (allowNotFound && response.status === 404) {
       controller.abort()

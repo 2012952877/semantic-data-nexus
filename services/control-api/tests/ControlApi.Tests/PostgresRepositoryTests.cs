@@ -7,6 +7,7 @@ using ControlApi.Semantic;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using ControlApi.Authentication;
 
 namespace ControlApi.Tests;
 
@@ -18,8 +19,8 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     private NpgsqlDataSource first = null!;
     private NpgsqlDataSource second = null!;
     private string databaseSettings = null!;
-    private PostgresRunRepository A => new(first, TimeProvider.System);
-    private PostgresRunRepository B => new(second, TimeProvider.System);
+    private PostgresRunRepository A => new(first, TimeProvider.System, RunAccess.LegacyDevelopment());
+    private PostgresRunRepository B => new(second, TimeProvider.System, RunAccess.LegacyDevelopment());
 
     public async Task InitializeAsync()
     {
@@ -251,7 +252,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
         await Task.WhenAll(new PostgresMigrations(first).ApplyAsync(default),
             new PostgresMigrations(second).ApplyAsync(default));
         await using var count = first.CreateCommand("SELECT count(*) FROM control_schema_versions");
-        Assert.Equal(1L, await count.ExecuteScalarAsync());
+        Assert.Equal(2L, await count.ExecuteScalarAsync());
         await using var tamper = first.CreateCommand("UPDATE control_schema_versions SET checksum = 'tampered'");
         await tamper.ExecuteNonQueryAsync();
         await Assert.ThrowsAsync<StorageConfigurationException>(() => new PostgresMigrations(second).ApplyAsync(default));
@@ -261,7 +262,10 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     public async Task ConcurrentFirstStartupAppliesOneSchema()
     {
         await using (var drop = first.CreateCommand("""
-            DROP TABLE control_start_dispatch, control_feedback, control_runs, control_schema_versions
+            DROP VIEW identity_access;
+            DROP TABLE identity_assertion_uses, identity_sessions, identity_changes, identity_resource_grants,
+                identity_group_members, identity_groups, identity_memberships,
+                control_start_dispatch, control_feedback, control_runs, identity_workspaces, identity_principals, control_schema_versions
             """))
         {
             await drop.ExecuteNonQueryAsync();
@@ -328,7 +332,10 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     public async Task FailedMigrationRollsBackDdlAndVersionRecord()
     {
         await using (var setup = first.CreateCommand("""
-            DROP TABLE control_start_dispatch, control_feedback, control_runs, control_schema_versions;
+            DROP VIEW identity_access;
+            DROP TABLE identity_assertion_uses, identity_sessions, identity_changes, identity_resource_grants,
+                identity_group_members, identity_groups, identity_memberships,
+                control_start_dispatch, control_feedback, control_runs, identity_workspaces, identity_principals, control_schema_versions;
             CREATE TABLE control_feedback (conflicting_column integer);
             """))
         {
@@ -366,7 +373,7 @@ public sealed class PostgresRepositoryTests : IAsyncLifetime
     {
         await using var unavailable = NpgsqlDataSource.Create(
             "Host=127.0.0.1;Port=1;Database=unavailable;Username=test;Timeout=1");
-        var repository = new PostgresRunRepository(unavailable, TimeProvider.System);
+        var repository = new PostgresRunRepository(unavailable, TimeProvider.System, RunAccess.LegacyDevelopment());
         await Assert.ThrowsAnyAsync<NpgsqlException>(() => repository.CreateAsync(Request(), "subject", default));
         await Assert.ThrowsAnyAsync<NpgsqlException>(() => new PostgresMigrations(unavailable).ApplyAsync(default));
     }

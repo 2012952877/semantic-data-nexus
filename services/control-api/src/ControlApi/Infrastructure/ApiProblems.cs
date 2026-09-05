@@ -59,6 +59,8 @@ public sealed class ApiExceptionHandler(
     {
         var (status, code, title, detail) = exception switch
         {
+            Authentication.IdentityAccessException =>
+                (403, "authorization_denied", "Forbidden", "Current workspace access is not authorized."),
             StorageCorruptionException =>
                 (500, "control_storage_corrupt", "Control storage corruption", exception.Message),
             DispatchRecoveryRequiredException =>

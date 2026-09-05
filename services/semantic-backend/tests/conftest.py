@@ -3,11 +3,18 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
 import pytest_asyncio
 from semantic_api.models import CompilationMode
 
 from semantic_backend.models import ExecutionMode, OutputMode, StartRunRequest
 from semantic_backend.service import OrchestrationService
+
+
+@pytest.fixture(autouse=True)
+def explicit_m0_compatibility(monkeypatch):
+    monkeypatch.setenv("SEMANTIC_NEXUS_AUTH_MODE", "legacy-development")
+    monkeypatch.setenv("SEMANTIC_NEXUS_ENVIRONMENT", "Development")
 
 
 @pytest_asyncio.fixture

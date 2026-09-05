@@ -21,7 +21,13 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-var builder = WebApplication.CreateBuilder(args);
+var maintenance = args.Contains("--identity-maintenance", StringComparer.Ordinal);
+var builder = WebApplication.CreateBuilder(args.Where(arg => arg != "--identity-maintenance").ToArray());
+if (maintenance)
+{
+    await IdentityMaintenance.ExecuteAsync(builder.Configuration, Console.In, CancellationToken.None);
+    return;
+}
 
 builder.Logging.Configure(options =>
     options.ActivityTrackingOptions =
@@ -170,13 +176,17 @@ else
             "Production requires an HTTPS SemanticBackend:BaseUri.");
     }
 
-    builder.Services.AddHttpClient<ISemanticBackendClient, HttpSemanticBackendClient>(client =>
+    var backendClient = builder.Services.AddHttpClient<ISemanticBackendClient, HttpSemanticBackendClient>(client =>
     {
         client.BaseAddress = semanticBaseUri;
         client.Timeout = TimeSpan.FromSeconds(semanticOptions.TimeoutSeconds);
         client.MaxResponseContentBufferSize =
             SemanticBackendOptions.MaximumResponseContentBytes;
     });
+    if (!localAuthOptions.Enabled)
+    {
+        backendClient.AddHttpMessageHandler<ServiceContextHandler>();
+    }
 }
 
 builder.Services.AddHealthChecks()
@@ -196,7 +206,10 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("api", context =>
         RateLimitPartition.GetFixedWindowLimiter(
-            context.User.FindFirst("sub")?.Value ??
+            context.User.FindFirst("sub") is { } subject
+                ? JsonSerializer.Serialize(new[] { context.User.FindFirst("iss")?.Value ?? "legacy-development",
+                    context.User.FindFirst("tid")?.Value ?? "", subject.Value })
+                :
             context.Connection.RemoteIpAddress?.ToString() ??
             "anonymous",
             _ => new FixedWindowRateLimiterOptions
@@ -272,6 +285,7 @@ app.UseMiddleware<CorrelationMiddleware>();
 app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseRateLimiter();
+app.UseMiddleware<WorkspaceMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<JsonUnicodeValidationMiddleware>();
 
@@ -291,6 +305,7 @@ app.MapHealthChecks("/health/ready", new()
     Predicate = check => check.Tags.Contains("ready")
 });
 app.MapControlApi();
+app.MapIdentityEndpoints();
 
 app.Run();
 

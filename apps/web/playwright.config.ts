@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['mock-locks.spec.ts', 'full-stack.spec.ts'],
+  testIgnore: ['mock-locks.spec.ts', 'full-stack.spec.ts', 'identity.spec.ts'],
   fullyParallel: false,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',

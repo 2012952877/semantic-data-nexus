@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
+using ControlApi.Authentication;
 
 namespace ControlApi.Persistence;
 
@@ -18,7 +19,7 @@ public static class StorageRegistration
         services.AddSingleton<IRunRepository>(provider =>
             provider.GetRequiredService<StorageSettings>().IsPostgres
                 ? new PostgresRunRepository(provider.GetRequiredService<NpgsqlDataSource>(),
-                    provider.GetRequiredService<TimeProvider>())
+                    provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<RunAccess>())
                 : new InMemoryRunRepository(provider.GetRequiredService<TimeProvider>()));
         // Lock waiters must not exhaust the pool used by repository operations holding a lock.
         services.AddSingleton<IRunDispatchCoordinator>(provider =>
@@ -112,7 +113,7 @@ internal sealed class StorageReadiness(StorageSettings settings, IServiceProvide
         try
         {
             await using var command = services.GetRequiredService<NpgsqlDataSource>().CreateCommand(
-                "SELECT 1 FROM control_schema_versions WHERE version = 1");
+                "SELECT 1 FROM control_schema_versions WHERE version = 2");
             return await command.ExecuteScalarAsync(cancellationToken) is not null
                 ? HealthCheckResult.Healthy()
                 : HealthCheckResult.Unhealthy("Control storage schema is unavailable.");
