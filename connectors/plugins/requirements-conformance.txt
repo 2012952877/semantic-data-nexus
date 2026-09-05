@@ -1,0 +1,6 @@
+# Tested direct engine/protocol pins. Install all three local packages with -c this file.
+duckdb==1.5.5
+pyarrow==21.0.0
+sqlglot==30.17.0
+psycopg==3.3.4
+psycopg-binary==3.3.4

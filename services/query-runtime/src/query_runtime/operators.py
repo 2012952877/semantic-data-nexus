@@ -12,9 +12,22 @@ import duckdb
 import pyarrow as pa
 
 from query_runtime.arrow_memory import retained_table_size
-from query_runtime.domain import AggregateFunction, OperatorKind, OperatorSpec
+from query_runtime.domain import (
+    BLOCKED_OPERATOR_KINDS,
+    AggregateFunction,
+    OperatorKind,
+    OperatorSpec,
+    OperatorSpecV1,
+    TypedExpression,
+    validate_operator_v1,
+)
 from query_runtime.errors import OperatorFailure, ResourceLimitFailure, RuntimeFailure
-from query_runtime.expressions import quote_identifier, render_expression
+from query_runtime.expressions import RenderedExpression, quote_identifier, render_expression
+from query_runtime.operators_v1 import SET_OPERATORS, build_extension_query
+
+
+def operator_input_count(kind: OperatorKind) -> int:
+    return 2 if kind in SET_OPERATORS | {OperatorKind.JOIN} else 1
 
 
 @dataclass(frozen=True)
@@ -32,10 +45,7 @@ class ResourceLimits:
             self.max_in_flight_bytes,
             self.memory_limit_bytes,
         )
-        if any(
-            isinstance(value, bool) or not isinstance(value, int)
-            for value in integer_limits
-        ):
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in integer_limits):
             raise ValueError("row, byte, and memory limits must be integers")
         if (
             isinstance(self.node_timeout_seconds, bool)
@@ -59,18 +69,40 @@ class DuckDBOperatorExecutor:
     ) -> pa.Table:
         if cancel_event.is_set():
             raise asyncio.CancelledError
+        if isinstance(spec, OperatorSpecV1):
+            try:
+                validate_operator_v1(spec)
+            except ValueError as exc:
+                raise OperatorFailure(
+                    "OPERATOR_INVALID", "Invalid v1 operator form or value"
+                ) from exc
+        for table in inputs:
+            self.enforce_limits(table)
+        if sum(retained_table_size(table) for table in inputs) > self.limits.max_in_flight_bytes:
+            raise ResourceLimitFailure("LIMIT_IN_FLIGHT_BYTES_EXCEEDED", "Inputs exceed budget")
         connection = duckdb.connect(
             ":memory:",
-            config={"memory_limit": f"{self.limits.memory_limit_bytes}B"},
+            config={
+                "memory_limit": f"{self.limits.memory_limit_bytes}B",
+                "threads": "1",
+                "temp_directory": "",
+                "autoinstall_known_extensions": "false",
+                "autoload_known_extensions": "false",
+            },
         )
-        work = asyncio.create_task(
-            asyncio.to_thread(self._execute_sync, connection, spec, inputs)
-        )
+        connection.execute("SET enable_external_access = false")
+        work = asyncio.create_task(asyncio.to_thread(self._execute_sync, connection, spec, inputs))
         cancelled = asyncio.create_task(cancel_event.wait())
         try:
             done, _ = await asyncio.wait(
-                {work, cancelled}, return_when=asyncio.FIRST_COMPLETED
+                {work, cancelled},
+                timeout=self.limits.node_timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            if not done:
+                connection.interrupt()
+                await _await_worker(work)
+                raise ResourceLimitFailure("LIMIT_TIMEOUT_EXCEEDED", "Compute deadline exceeded")
             if cancelled in done and cancel_event.is_set() and not work.done():
                 connection.interrupt()
                 await _await_worker(work)
@@ -95,7 +127,7 @@ class DuckDBOperatorExecutor:
         spec: OperatorSpec,
         inputs: tuple[pa.Table, ...],
     ) -> pa.Table:
-        required_inputs = 2 if spec.kind is OperatorKind.JOIN else 1
+        required_inputs = operator_input_count(spec.kind)
         if len(inputs) != required_inputs:
             raise OperatorFailure(
                 "OPERATOR_INPUT_COUNT",
@@ -105,7 +137,40 @@ class DuckDBOperatorExecutor:
             connection.register(f"input_{index}", table)
         try:
             sql, parameters = self._build_query(spec, inputs)
-            return connection.execute(sql, parameters).to_arrow_table()
+            reader = connection.execute(sql, parameters).to_arrow_reader(batch_size=2048)
+            result_schema = reader.schema
+            if isinstance(spec, OperatorSpecV1) and spec.kind is OperatorKind.IMPUTE:
+                original = inputs[0].schema
+                if reader.schema.names != original.names or any(
+                    actual.type != expected.type
+                    for actual, expected in zip(reader.schema, original, strict=True)
+                ):
+                    raise OperatorFailure(
+                        "OPERATOR_TYPE_MISMATCH", "IMPUTE cannot change input types"
+                    )
+                result_schema = original
+            batches: list[pa.RecordBatch] = []
+            rows = 0
+            size = 0
+            for batch in reader:
+                if any(
+                    not field.nullable and batch.column(index).null_count
+                    for index, field in enumerate(result_schema)
+                ):
+                    raise OperatorFailure(
+                        "OPERATOR_NULLABILITY", "Operator output violates a non-nullable field"
+                    )
+                rows += batch.num_rows
+                size += retained_table_size(pa.Table.from_batches([batch]))
+                if rows > self.limits.max_rows:
+                    raise ResourceLimitFailure("LIMIT_ROWS_EXCEEDED", "Compute row limit exceeded")
+                if size > self.limits.max_bytes:
+                    raise ResourceLimitFailure(
+                        "LIMIT_BYTES_EXCEEDED", "Compute byte limit exceeded"
+                    )
+                batches.append(batch)
+            table = pa.Table.from_batches(batches, schema=reader.schema)
+            return pa.Table.from_arrays(table.columns, schema=result_schema)
         except RuntimeFailure:
             raise
         except duckdb.Error as exc:
@@ -124,12 +189,23 @@ class DuckDBOperatorExecutor:
                 table.column_names, "Input contains colliding column names"
             )
         columns = set(inputs[0].column_names)
+        if spec.kind in BLOCKED_OPERATOR_KINDS:
+            raise OperatorFailure("OPERATOR_UNSUPPORTED", "A governed backend is required")
+        if isinstance(spec, OperatorSpecV1):
+            extended = build_extension_query(self, spec, inputs)
+            if extended is not None:
+                return extended
         if spec.kind in {OperatorKind.SELECT, OperatorKind.PROJECT}:
-            return self._select_query(spec, columns)
+            return self._select_query(spec, columns, schema=inputs[0].schema)
         if spec.kind is OperatorKind.FILTER:
             if spec.predicate is None:
                 raise OperatorFailure("OPERATOR_INVALID", "FILTER requires a predicate")
-            rendered = render_expression(spec.predicate.expression, columns)
+            rendered = self.render(
+                spec.predicate.expression,
+                columns,
+                exact=isinstance(spec, OperatorSpecV1),
+                schema=inputs[0].schema,
+            )
             return f"SELECT * FROM input_0 WHERE {rendered.sql}", list(rendered.parameters)
         if spec.kind is OperatorKind.AGGREGATE:
             if spec.time_grain is not None:
@@ -137,11 +213,11 @@ class DuckDBOperatorExecutor:
                     "OPERATOR_TIME_GRAIN_UNSUPPORTED",
                     "Local time-grain aggregation requires an explicit bucket expression",
                 )
-            return self._aggregate_query(spec, columns)
+            return self._aggregate_query(spec, columns, schema=inputs[0].schema)
         if spec.kind is OperatorKind.PIVOT:
             return self._pivot_query(spec, columns)
         if spec.kind is OperatorKind.DERIVE:
-            return self._derive_query(spec, columns)
+            return self._derive_query(spec, columns, schema=inputs[0].schema)
         if spec.kind is OperatorKind.SORT:
             if not spec.sort:
                 raise OperatorFailure("OPERATOR_INVALID", "SORT requires sort keys")
@@ -163,7 +239,11 @@ class DuckDBOperatorExecutor:
         )
 
     def _select_query(
-        self, spec: OperatorSpec, columns: set[str]
+        self,
+        spec: OperatorSpec,
+        columns: set[str],
+        *,
+        schema: pa.Schema | None = None,
     ) -> tuple[str, list[Any]]:
         names: set[str] = set()
         projections: list[str] = []
@@ -173,7 +253,9 @@ class DuckDBOperatorExecutor:
             projections.append(quote_identifier(column, columns))
         for item in spec.expressions:
             _add_output_name(names, item.name)
-            rendered = render_expression(item.expression, columns)
+            rendered = self.render(
+                item.expression, columns, exact=isinstance(spec, OperatorSpecV1), schema=schema
+            )
             projections.append(f"{rendered.sql} AS {quote_identifier(item.name)}")
             parameters.extend(rendered.parameters)
         if not projections:
@@ -181,7 +263,12 @@ class DuckDBOperatorExecutor:
         return f"SELECT {', '.join(projections)} FROM input_0", parameters
 
     def _aggregate_query(
-        self, spec: OperatorSpec, columns: set[str]
+        self,
+        spec: OperatorSpec,
+        columns: set[str],
+        *,
+        source: str = "input_0",
+        schema: pa.Schema | None = None,
     ) -> tuple[str, list[Any]]:
         projections = [quote_identifier(column, columns) for column in spec.group_by]
         parameters: list[Any] = []
@@ -198,7 +285,12 @@ class DuckDBOperatorExecutor:
                     f"{aggregate.function} requires an expression",
                 )
             else:
-                rendered = render_expression(aggregate.expression, columns)
+                rendered = self.render(
+                    aggregate.expression,
+                    columns,
+                    exact=isinstance(spec, OperatorSpecV1),
+                    schema=schema,
+                )
                 expression_sql = rendered.sql
                 parameters.extend(rendered.parameters)
             projections.append(
@@ -208,16 +300,13 @@ class DuckDBOperatorExecutor:
         if not spec.aggregates:
             raise OperatorFailure("OPERATOR_INVALID", "AGGREGATE requires aggregates")
         group = (
-            " GROUP BY "
-            + ", ".join(quote_identifier(column, columns) for column in spec.group_by)
+            " GROUP BY " + ", ".join(quote_identifier(column, columns) for column in spec.group_by)
             if spec.group_by
             else ""
         )
-        return f"SELECT {', '.join(projections)} FROM input_0{group}", parameters
+        return f"SELECT {', '.join(projections)} FROM {quote_identifier(source)}{group}", parameters
 
-    def _pivot_query(
-        self, spec: OperatorSpec, columns: set[str]
-    ) -> tuple[str, list[Any]]:
+    def _pivot_query(self, spec: OperatorSpec, columns: set[str]) -> tuple[str, list[Any]]:
         if not spec.pivot_column or not spec.pivot_value or not spec.pivot_values:
             raise OperatorFailure(
                 "OPERATOR_INVALID", "PIVOT requires column, value, and fixed values"
@@ -236,19 +325,20 @@ class DuckDBOperatorExecutor:
                 f"AS {quote_identifier(value)}"
             )
             parameters.append(value)
-        group = ", ".join(
-            quote_identifier(column, columns) for column in spec.pivot_index
-        )
+        group = ", ".join(quote_identifier(column, columns) for column in spec.pivot_index)
         group_clause = f" GROUP BY {group}" if group else ""
         order_clause = f" ORDER BY {group}" if group else ""
         return (
-            f"SELECT {', '.join(projections)} FROM input_0"
-            f"{group_clause}{order_clause}",
+            f"SELECT {', '.join(projections)} FROM input_0{group_clause}{order_clause}",
             parameters,
         )
 
     def _derive_query(
-        self, spec: OperatorSpec, columns: set[str]
+        self,
+        spec: OperatorSpec,
+        columns: set[str],
+        *,
+        schema: pa.Schema | None = None,
     ) -> tuple[str, list[Any]]:
         projections = ["*"]
         parameters: list[Any] = []
@@ -260,7 +350,9 @@ class DuckDBOperatorExecutor:
                     "COLUMN_COLLISION", f"Derived column '{item.name}' already exists"
                 )
             names.add(normalized)
-            rendered = render_expression(item.expression, columns)
+            rendered = self.render(
+                item.expression, columns, exact=isinstance(spec, OperatorSpecV1), schema=schema
+            )
             projections.append(f"{rendered.sql} AS {quote_identifier(item.name)}")
             parameters.extend(rendered.parameters)
         if not spec.expressions:
@@ -274,12 +366,8 @@ class DuckDBOperatorExecutor:
             raise OperatorFailure("OPERATOR_INVALID", "JOIN requires type and keys")
         left_columns = set(inputs[0].column_names)
         right_columns = set(inputs[1].column_names)
-        left_normalized = {
-            _normalize_identifier(column): column for column in left_columns
-        }
-        right_normalized = {
-            _normalize_identifier(column): column for column in right_columns
-        }
+        left_normalized = {_normalize_identifier(column): column for column in left_columns}
+        right_normalized = {_normalize_identifier(column): column for column in right_columns}
         collisions = [
             (left_normalized[name], right_normalized[name])
             for name in sorted(left_normalized.keys() & right_normalized.keys())
@@ -317,6 +405,23 @@ class DuckDBOperatorExecutor:
                 details={"bytes": retained_bytes, "limit": self.limits.max_bytes},
             )
 
+    @staticmethod
+    def render(
+        expression: TypedExpression,
+        columns: set[str],
+        *,
+        exact: bool,
+        schema: pa.Schema | None = None,
+    ) -> RenderedExpression:
+        return render_expression(
+            expression,
+            columns,
+            exact_literals=exact,
+            column_types={field.name: field.type for field in schema}
+            if schema is not None
+            else None,
+        )
+
 
 def _normalize_identifier(name: str) -> str:
     return name.translate(_ASCII_IDENTIFIER_FOLD)
@@ -339,15 +444,11 @@ def _reject_normalized_collisions(names: list[str], message: str) -> None:
 def _add_output_name(names: set[str], name: str) -> None:
     normalized = _normalize_identifier(name)
     if normalized in names:
-        raise OperatorFailure(
-            "COLUMN_COLLISION", f"Duplicate output column '{name}'"
-        )
+        raise OperatorFailure("COLUMN_COLLISION", f"Duplicate output column '{name}'")
     names.add(normalized)
 
 
-_ASCII_IDENTIFIER_FOLD = str.maketrans(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
-)
+_ASCII_IDENTIFIER_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 async def _await_worker(work: asyncio.Task[pa.Table]) -> None:
