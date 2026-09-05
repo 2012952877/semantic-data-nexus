@@ -331,6 +331,13 @@ def test_cli_blocked_then_invalid_cannot_leave_success(evidence, tmp_path, tools
                                    "--policy", str(tmp_path / "policy.json")])
     assert main() == 2
     assert load(tmp_path / "acceptance.json")["status"] == "BLOCKED"
+    cdx_path = tmp_path / (name + ".cdx.json")
+    cdx_path.write_text(json.dumps(load(cdx_path)), encoding="utf-8")
+    bundle = load(tmp_path / "bundle.json")
+    bundle["files"][cdx_path.name] = sha_file(cdx_path)
+    write(tmp_path / "bundle.json", bundle)
+    assert main() == 1
+    assert load(tmp_path / "acceptance.json")["status"] == "INVALID"
     write(tmp_path / "acceptance.json", {"status": "ACCEPTED"})
     (tmp_path / (name + ".cdx.json")).unlink()
     assert main() == 1

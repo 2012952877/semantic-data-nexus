@@ -260,7 +260,7 @@ def accept(output: Path, tools: Path, revision: str, policy_path: Path) -> bool:
         require({c["id"] for c in inventory["components"]} == {p["id"] for p in raw["artifacts"]}, "scanner-component-drift")
         document = load(output / (subject + ".cdx.json"))
         replay = bind_evidence(load(output / (subject + ".generator.cdx.json")), inventory)
-        require(canonical(document) == canonical(replay), "nonreproducible-document")
+        require((output / (subject + ".cdx.json")).read_bytes() == canonical(replay), "nonreproducible-document")
         reports.append(review_inventory(
             inventory, document,
             policy, output, tools, revision, dt.datetime.now(dt.timezone.utc).date(),
