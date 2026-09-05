@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import os
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+import psycopg
+import pytest
+import pytest_asyncio
+from test_catalog_review_regressions import assert_queued_compile_refreshes_authority
+from test_catalog_v1 import CASES, InjectedProvider, deadline, setup
+
+from semantic_api.catalog_v1.catalog import pin_for
+from semantic_api.catalog_v1.clarification import PostgresClarifications
+from semantic_api.catalog_v1.models import CatalogDocument, CompilerFailure
+
+
+@pytest_asyncio.fixture
+async def pg_store():
+    dsn = os.environ.get("TEST_COMPILER_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("Set TEST_COMPILER_POSTGRES_DSN for disposable PostgreSQL integration tests")
+    store = PostgresClarifications(dsn)
+    await store.initialize()
+    request_id = "synthetic-pg-" + uuid4().hex
+    yield store, request_id, dsn
+    async with await psycopg.AsyncConnection.connect(dsn) as connection:
+        await connection.execute(
+            "DELETE FROM compiler_clarifications_v1 WHERE request_id = %s", (request_id,)
+        )
+
+
+async def start(pg_store, *, provider=None):
+    store, request_id, _ = pg_store
+    compiler, request, context, authority = setup(provider=provider, store=store)
+    request = request.model_copy(
+        update={"request_id": request_id, "question": "yield for alpha above score 1"}
+    )
+    first = await compiler.compile(request, context=context, deadline=deadline())
+    return compiler, request, context, authority, first
+
+
+async def test_restart_two_client_idempotency_and_conflicting_answer(pg_store):
+    compiler, request, context, authority, first = await start(pg_store)
+    # A second repository/compiler instance reads the persisted question/choices;
+    # no process-local continuation state is transferred.
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    kwargs = dict(context=context, pin=request.catalog, revision=1, deadline=deadline())
+    results = await asyncio.gather(
+        compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs),
+        second.resume(first.clarification_id, "lab.mean_yield", **kwargs),
+    )
+    assert results[0] == results[1] and results[0].status == "compiled"
+    assert len(compiler.provider.calls) + len(second.provider.calls) == 1
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.resume(first.clarification_id, "lab.total_yield", **kwargs)
+    replay = await second.compile(request, context=context, deadline=deadline())
+    assert replay == results[0]
+
+
+async def test_transaction_rollback_on_cancellation_allows_clean_retry(pg_store):
+    paused = InjectedProvider(CASES[1]["candidate"])
+    paused.pause = asyncio.Event()
+    compiler, request, context, _, first = await start(pg_store, provider=paused)
+    kwargs = dict(context=context, pin=request.catalog, revision=1, deadline=deadline())
+    task = asyncio.create_task(compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs))
+    await paused.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    compiler.provider = InjectedProvider(CASES[1]["candidate"])
+    result = await compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs)
+    assert result.status == "compiled"
+    assert len(compiler.provider.calls) == 1
+
+
+async def test_revocation_during_resume_rolls_back_and_disallows_replay(pg_store):
+    paused = InjectedProvider(CASES[1]["candidate"])
+    paused.pause = asyncio.Event()
+    compiler, request, context, authority, first = await start(pg_store, provider=paused)
+    kwargs = dict(context=context, pin=request.catalog, revision=1, deadline=deadline())
+    task = asyncio.create_task(compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs))
+    await paused.entered.wait()
+    authority.revoked = True
+    paused.pause.set()
+    with pytest.raises(CompilerFailure, match="MEMBERSHIP_REVOKED"):
+        await task
+    async with _record(compiler, first.clarification_id, context, request.catalog) as transaction:
+        assert transaction.record.history == ()
+    with pytest.raises(CompilerFailure, match="MEMBERSHIP_REVOKED"):
+        await compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs)
+
+
+async def test_access_change_while_provider_runs_does_not_commit(pg_store):
+    paused = InjectedProvider(CASES[1]["candidate"])
+    paused.pause = asyncio.Event()
+    compiler, request, context, authority, first = await start(pg_store, provider=paused)
+    task = asyncio.create_task(
+        compiler.resume(
+            first.clarification_id,
+            "lab.mean_yield",
+            context=context,
+            pin=request.catalog,
+            revision=1,
+            deadline=deadline(),
+        )
+    )
+    await paused.entered.wait()
+    authority.access = authority.access.model_copy(
+        update={"metric_ids": frozenset({"lab.mean_yield"})}
+    )
+    paused.pause.set()
+    with pytest.raises(CompilerFailure, match="AUTHORIZATION_CHANGED"):
+        await task
+    async with _record(compiler, first.clarification_id, context, request.catalog) as transaction:
+        assert not transaction.record.history
+
+
+def _record(compiler, identifier, context, pin):
+    from semantic_api.catalog_v1.trust import owner_for
+
+    return compiler.clarifications.lock(identifier, owner_for(context, pin))
+
+
+async def test_scope_pin_owner_expiry_and_request_id_conflicts(pg_store):
+    compiler, request, context, _, first = await start(pg_store)
+    kwargs = dict(context=context, pin=request.catalog, revision=1, deadline=deadline())
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await compiler.compile(
+            request.model_copy(update={"question": "yield for beta"}),
+            context=context,
+            deadline=deadline(),
+        )
+    context.principal.subject = "synthetic-other"
+    with pytest.raises(CompilerFailure, match="CLARIFICATION_NOT_AVAILABLE"):
+        await compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs)
+    context.principal.subject = "synthetic-subject"
+    with pytest.raises(CompilerFailure, match="CLARIFICATION_NOT_AVAILABLE"):
+        await compiler.resume(
+            first.clarification_id,
+            "lab.mean_yield",
+            **{**kwargs, "pin": request.catalog.model_copy(update={"content_sha256": "f" * 64})},
+        )
+    async with await psycopg.AsyncConnection.connect(pg_store[2]) as connection:
+        await connection.execute(
+            "UPDATE compiler_clarifications_v1 SET expires_at = %s WHERE id = %s",
+            (datetime.now(UTC) - timedelta(seconds=1), first.clarification_id),
+        )
+    with pytest.raises(CompilerFailure, match="CLARIFICATION_EXPIRED"):
+        await compiler.resume(first.clarification_id, "lab.mean_yield", **kwargs)
+
+
+async def test_lock_wait_obeys_overall_deadline(pg_store):
+    compiler, request, context, _, first = await start(pg_store)
+    async with _record(compiler, first.clarification_id, context, request.catalog):
+        with pytest.raises(TimeoutError):
+            await compiler.resume(
+                first.clarification_id,
+                "lab.mean_yield",
+                context=context,
+                pin=request.catalog,
+                revision=1,
+                deadline=asyncio.get_running_loop().time() + 0.05,
+            )
+
+
+async def test_multiple_clarification_steps_preserve_expiry_and_each_replay(pg_store):
+    data = copy.deepcopy(CASES[1]["catalog"])
+    data["fields"][0]["members"][1]["synonyms"] = ["alpha"]
+    document = CatalogDocument.model_validate(data)
+    candidate = copy.deepcopy(CASES[1]["candidate"])
+    candidate["graph"]["catalog"] = pin_for(document).model_dump(mode="json")
+    compiler, request, context, _ = setup(
+        store=pg_store[0], document=document, provider=InjectedProvider(candidate)
+    )
+    request = request.model_copy(
+        update={
+            "request_id": pg_store[1],
+            "question": "yield for alpha above score 1",
+        }
+    )
+    first = await compiler.compile(request, context=context, deadline=deadline())
+    kwargs = dict(context=context, pin=request.catalog, deadline=deadline())
+    second = await compiler.resume(first.clarification_id, "lab.mean_yield", revision=1, **kwargs)
+    assert second.status == "clarification" and second.clarification_revision == 2
+    assert second.expires_at == first.expires_at
+    assert second.clarification_id == first.clarification_id
+    assert not compiler.provider.calls
+    final = await compiler.resume(first.clarification_id, "batch.alpha", revision=2, **kwargs)
+    assert final.status == "compiled"
+    assert len(compiler.provider.calls) == 1
+    assert (
+        await compiler.resume(first.clarification_id, "lab.mean_yield", revision=1, **kwargs)
+        == second
+    )
+    assert (
+        await compiler.resume(first.clarification_id, "batch.alpha", revision=2, **kwargs) == final
+    )
+
+
+async def test_existing_clarification_conflicts_with_direct_question_across_clients(pg_store):
+    first_client, request, context, authority, first = await start(pg_store)
+    second, direct, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    direct = direct.model_copy(update={"request_id": request.request_id})
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.compile(direct, context=context, deadline=deadline())
+    assert not first_client.provider.calls and not second.provider.calls
+    repeated = await second.compile(request, context=context, deadline=deadline())
+    assert repeated == first
+    async with _record(
+        first_client, first.clarification_id, context, request.catalog
+    ) as transaction:
+        assert transaction.record.request == request
+        assert transaction.record.current == first
+
+
+async def test_two_clients_generate_direct_request_once_and_replay_same_hash(pg_store):
+    first, request, context, authority = setup(store=pg_store[0])
+    request = request.model_copy(update={"request_id": pg_store[1]})
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    results = await asyncio.gather(
+        first.compile(request, context=context, deadline=deadline()),
+        second.compile(request, context=context, deadline=deadline()),
+    )
+    assert results[0] == results[1] and results[0].status == "compiled"
+    assert len(first.provider.calls) + len(second.provider.calls) == 1
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.compile(
+            request.model_copy(update={"question": "yield for alpha above score 1"}),
+            context=context,
+            deadline=deadline(),
+        )
+    assert len(first.provider.calls) + len(second.provider.calls) == 1
+    assert await second.compile(request, context=context, deadline=deadline()) == results[0]
+
+
+async def test_cancelled_direct_request_keeps_hash_reservation_and_can_retry(pg_store):
+    paused = InjectedProvider(CASES[1]["candidate"])
+    paused.pause = asyncio.Event()
+    compiler, request, context, authority = setup(store=pg_store[0], provider=paused)
+    request = request.model_copy(update={"request_id": pg_store[1]})
+    task = asyncio.create_task(compiler.compile(request, context=context, deadline=deadline()))
+    await paused.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    second.authorization = authority
+    with pytest.raises(CompilerFailure, match="IDEMPOTENCY_CONFLICT"):
+        await second.compile(
+            request.model_copy(update={"question": "yield for alpha above score 1"}),
+            context=context,
+            deadline=deadline(),
+        )
+    assert not second.provider.calls
+    result = await second.compile(request, context=context, deadline=deadline())
+    assert result.status == "compiled" and len(second.provider.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["membership", "grants", "none"])
+async def test_postgres_queued_direct_request_refreshes_authorization(pg_store, change):
+    first, request, context, authority = setup(store=pg_store[0])
+    request = request.model_copy(update={"request_id": pg_store[1]})
+    second, _, _, _ = setup(store=PostgresClarifications(pg_store[2]))
+    await assert_queued_compile_refreshes_authority(
+        first, second, request, context, authority, change
+    )

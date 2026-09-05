@@ -1,0 +1,567 @@
+{
+  "evidence": "Synthetic held-out domains; wire responses are mocked, not model-accuracy evidence.",
+  "cases": [
+    {
+      "name": "energy",
+      "question": "Total energy by site name for active in June 2026",
+      "catalog": {
+        "contract_version": "compiler-catalog/v1",
+        "scope": {
+          "tenant_id": "synthetic-tenant",
+          "workspace_id": "synthetic-workspace"
+        },
+        "resource_id": "energy-catalog",
+        "revision": 1,
+        "entities": [
+          {
+            "id": "grid.reading",
+            "label": "Readings"
+          },
+          {
+            "id": "grid.site",
+            "label": "Sites"
+          }
+        ],
+        "fields": [
+          {
+            "id": "grid.reading.site",
+            "label": "Reading site",
+            "entity_id": "grid.reading",
+            "data_type": "integer",
+            "member_governed": false
+          },
+          {
+            "id": "grid.reading.kwh",
+            "label": "Kilowatt hours",
+            "entity_id": "grid.reading",
+            "data_type": "number",
+            "member_governed": false
+          },
+          {
+            "id": "grid.reading.observed",
+            "label": "Observed time",
+            "entity_id": "grid.reading",
+            "data_type": "datetime",
+            "member_governed": false
+          },
+          {
+            "id": "grid.site.id",
+            "label": "Site identifier",
+            "entity_id": "grid.site",
+            "data_type": "integer",
+            "member_governed": false
+          },
+          {
+            "id": "grid.site.name",
+            "label": "Site name",
+            "entity_id": "grid.site",
+            "data_type": "string",
+            "member_governed": false
+          },
+          {
+            "id": "grid.site.status",
+            "label": "Site status",
+            "entity_id": "grid.site",
+            "data_type": "string",
+            "members": [
+              {
+                "id": "status.active",
+                "label": "active",
+                "value": "A"
+              },
+              {
+                "id": "status.retired",
+                "label": "retired",
+                "value": "R"
+              }
+            ],
+            "member_governed": true
+          }
+        ],
+        "metrics": [
+          {
+            "id": "metric.energy",
+            "label": "Total energy",
+            "entity_id": "grid.reading",
+            "field_id": "grid.reading.kwh",
+            "function": "sum"
+          }
+        ],
+        "relations": [
+          {
+            "id": "reading.site",
+            "label": "Reading location",
+            "from_entity": "grid.reading",
+            "to_entity": "grid.site",
+            "from_field": "grid.reading.site",
+            "to_field": "grid.site.id",
+            "cardinality": "many_to_one"
+          }
+        ],
+        "time_windows": [
+          {
+            "id": "time.june2026",
+            "label": "June 2026",
+            "start": "2026-06-01T00:00:00Z",
+            "end_exclusive": "2026-07-01T00:00:00Z"
+          }
+        ],
+        "bindings_sha256": "5f20e672bba5219e2cb14ec370962b8a5ea00703d526c817a899f5fe50e484d7"
+      },
+      "candidate": {
+        "contract_version": "compiler-candidate/v1",
+        "status": "graph",
+        "ambiguity_id": null,
+        "graph": {
+          "contract_version": "sqg/v1",
+          "catalog": {
+            "contract_version": "resource-version/v1",
+            "scope": {
+              "tenant_id": "synthetic-tenant",
+              "workspace_id": "synthetic-workspace"
+            },
+            "resource_kind": "ontology",
+            "resource_id": "energy-catalog",
+            "revision": 1,
+            "content_sha256": "25a7e74fa2dd8a09b096b54978498fd7af0a5e6fd566f6a6480897b24cb6812b"
+          },
+          "nodes": [
+            {
+              "id": "readings",
+              "dependencies": [],
+              "operation": {
+                "kind": "SELECT",
+                "entity_id": "grid.reading",
+                "columns": [
+                  "grid.reading.site",
+                  "grid.reading.kwh",
+                  "grid.reading.observed"
+                ]
+              }
+            },
+            {
+              "id": "period",
+              "dependencies": [
+                "readings"
+              ],
+              "operation": {
+                "kind": "FILTER",
+                "predicate": {
+                  "kind": "time",
+                  "column": "grid.reading.observed",
+                  "window_id": "time.june2026"
+                }
+              }
+            },
+            {
+              "id": "sites",
+              "dependencies": [],
+              "operation": {
+                "kind": "SELECT",
+                "entity_id": "grid.site",
+                "columns": [
+                  "grid.site.id",
+                  "grid.site.name",
+                  "grid.site.status"
+                ]
+              }
+            },
+            {
+              "id": "active",
+              "dependencies": [
+                "sites"
+              ],
+              "operation": {
+                "kind": "FILTER",
+                "predicate": {
+                  "kind": "members",
+                  "column": "grid.site.status",
+                  "member_ids": [
+                    "status.active"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "locations",
+              "dependencies": [
+                "period",
+                "active"
+              ],
+              "operation": {
+                "kind": "JOIN",
+                "relation_id": "reading.site",
+                "join_type": "inner"
+              }
+            },
+            {
+              "id": "totals",
+              "dependencies": [
+                "locations"
+              ],
+              "operation": {
+                "kind": "AGGREGATE",
+                "group_by": [
+                  "grid.site.name"
+                ],
+                "measures": [
+                  {
+                    "metric_id": "metric.energy",
+                    "output": "total"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "ranked",
+              "dependencies": [
+                "totals"
+              ],
+              "operation": {
+                "kind": "SORT",
+                "keys": [
+                  {
+                    "column": "total",
+                    "direction": "desc"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "result",
+              "dependencies": [
+                "ranked"
+              ],
+              "operation": {
+                "kind": "PROJECT",
+                "columns": [
+                  {
+                    "source": "grid.site.name",
+                    "alias": "site"
+                  },
+                  {
+                    "source": "total",
+                    "alias": "energy"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "bounded",
+              "dependencies": [
+                "result"
+              ],
+              "operation": {
+                "kind": "LIMIT",
+                "count": 10
+              }
+            }
+          ],
+          "output_node_id": "bounded",
+          "result_schema": [
+            {
+              "name": "site",
+              "data_type": "string"
+            },
+            {
+              "name": "energy",
+              "data_type": "number"
+            }
+          ]
+        }
+      },
+      "bindings": [
+        {
+          "entity_id": "grid.reading",
+          "alias": "measurements",
+          "object_name": "synthetic_reading_asset",
+          "columns": {
+            "grid.reading.site": "site_key",
+            "grid.reading.kwh": "quantity",
+            "grid.reading.observed": "at"
+          },
+          "source_type": "synthetic",
+          "utc_naive_fields": []
+        },
+        {
+          "entity_id": "grid.site",
+          "alias": "locations",
+          "object_name": "synthetic_site_asset",
+          "columns": {
+            "grid.site.id": "site_key",
+            "grid.site.name": "name",
+            "grid.site.status": "state"
+          },
+          "source_type": "synthetic",
+          "utc_naive_fields": []
+        }
+      ],
+      "rows": {
+        "measurements": [
+          {
+            "site_key": 1,
+            "quantity": 4.5,
+            "at": "2026-06-01T00:00:00Z"
+          },
+          {
+            "site_key": 1,
+            "quantity": 5.5,
+            "at": "2026-06-30T23:59:59Z"
+          },
+          {
+            "site_key": 2,
+            "quantity": 7.0,
+            "at": "2026-06-15T00:00:00Z"
+          },
+          {
+            "site_key": 3,
+            "quantity": 99.0,
+            "at": "2026-06-15T00:00:00Z"
+          },
+          {
+            "site_key": 1,
+            "quantity": 500.0,
+            "at": "2026-07-01T00:00:00Z"
+          }
+        ],
+        "locations": [
+          {
+            "site_key": 1,
+            "name": "Cedar",
+            "state": "A"
+          },
+          {
+            "site_key": 2,
+            "name": "Delta",
+            "state": "A"
+          },
+          {
+            "site_key": 3,
+            "name": "Elm",
+            "state": "R"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "site": "Cedar",
+          "energy": 10.0
+        },
+        {
+          "site": "Delta",
+          "energy": 7.0
+        }
+      ]
+    },
+    {
+      "name": "laboratory",
+      "question": "Mean yield for alpha above score 1",
+      "catalog": {
+        "contract_version": "compiler-catalog/v1",
+        "scope": {
+          "tenant_id": "synthetic-tenant",
+          "workspace_id": "synthetic-workspace"
+        },
+        "resource_id": "laboratory-catalog",
+        "revision": 4,
+        "entities": [
+          {
+            "id": "lab.assay",
+            "label": "Assays"
+          }
+        ],
+        "fields": [
+          {
+            "id": "lab.assay.batch",
+            "label": "Batch",
+            "entity_id": "lab.assay",
+            "data_type": "string",
+            "members": [
+              {
+                "id": "batch.alpha",
+                "label": "alpha",
+                "value": "B-01"
+              },
+              {
+                "id": "batch.beta",
+                "label": "beta",
+                "value": "B-02"
+              }
+            ],
+            "member_governed": true
+          },
+          {
+            "id": "lab.assay.score",
+            "label": "Score",
+            "entity_id": "lab.assay",
+            "data_type": "number",
+            "member_governed": false
+          }
+        ],
+        "metrics": [
+          {
+            "id": "lab.mean_yield",
+            "label": "Mean yield",
+            "synonyms": [
+              "yield"
+            ],
+            "entity_id": "lab.assay",
+            "field_id": "lab.assay.score",
+            "function": "avg"
+          },
+          {
+            "id": "lab.total_yield",
+            "label": "Total yield",
+            "synonyms": [
+              "yield"
+            ],
+            "entity_id": "lab.assay",
+            "field_id": "lab.assay.score",
+            "function": "sum"
+          }
+        ],
+        "bindings_sha256": "a6d995df01dc4277fb7f23c6292b5a7135334d715ffae6ac001f1d7986349669"
+      },
+      "candidate": {
+        "contract_version": "compiler-candidate/v1",
+        "status": "graph",
+        "ambiguity_id": null,
+        "graph": {
+          "contract_version": "sqg/v1",
+          "catalog": {
+            "contract_version": "resource-version/v1",
+            "scope": {
+              "tenant_id": "synthetic-tenant",
+              "workspace_id": "synthetic-workspace"
+            },
+            "resource_kind": "ontology",
+            "resource_id": "laboratory-catalog",
+            "revision": 4,
+            "content_sha256": "56c778dddab43ab7139760f3cf54eaf7d8a4223b19f8e1f0607493106c130f8e"
+          },
+          "nodes": [
+            {
+              "id": "samples",
+              "dependencies": [],
+              "operation": {
+                "kind": "SELECT",
+                "entity_id": "lab.assay",
+                "columns": [
+                  "lab.assay.batch",
+                  "lab.assay.score"
+                ]
+              }
+            },
+            {
+              "id": "batch",
+              "dependencies": [
+                "samples"
+              ],
+              "operation": {
+                "kind": "FILTER",
+                "predicate": {
+                  "kind": "members",
+                  "column": "lab.assay.batch",
+                  "member_ids": [
+                    "batch.alpha"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "threshold",
+              "dependencies": [
+                "batch"
+              ],
+              "operation": {
+                "kind": "FILTER",
+                "predicate": {
+                  "kind": "comparison",
+                  "column": "lab.assay.score",
+                  "operator": "gt",
+                  "value": 1.0
+                }
+              }
+            },
+            {
+              "id": "statistic",
+              "dependencies": [
+                "threshold"
+              ],
+              "operation": {
+                "kind": "AGGREGATE",
+                "group_by": [],
+                "measures": [
+                  {
+                    "metric_id": "lab.mean_yield",
+                    "output": "mean"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "answer",
+              "dependencies": [
+                "statistic"
+              ],
+              "operation": {
+                "kind": "PROJECT",
+                "columns": [
+                  {
+                    "source": "mean",
+                    "alias": "yield"
+                  }
+                ]
+              }
+            }
+          ],
+          "output_node_id": "answer",
+          "result_schema": [
+            {
+              "name": "yield",
+              "data_type": "number"
+            }
+          ]
+        }
+      },
+      "bindings": [
+        {
+          "entity_id": "lab.assay",
+          "alias": "experiments",
+          "object_name": "synthetic_lab_asset",
+          "columns": {
+            "lab.assay.batch": "lot_code",
+            "lab.assay.score": "response"
+          },
+          "source_type": "synthetic",
+          "utc_naive_fields": []
+        }
+      ],
+      "rows": {
+        "experiments": [
+          {
+            "lot_code": "B-01",
+            "response": 1.0
+          },
+          {
+            "lot_code": "B-01",
+            "response": 3.0
+          },
+          {
+            "lot_code": "B-01",
+            "response": 5.0
+          },
+          {
+            "lot_code": "B-02",
+            "response": 100.0
+          }
+        ]
+      },
+      "expected": [
+        {
+          "yield": 4.0
+        }
+      ]
+    }
+  ]
+}

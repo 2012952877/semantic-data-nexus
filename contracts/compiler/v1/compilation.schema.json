@@ -1,0 +1,962 @@
+{
+  "$defs": {
+    "Aggregate": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "AGGREGATE",
+          "title": "Kind",
+          "type": "string"
+        },
+        "group_by": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Group By",
+          "type": "array"
+        },
+        "measures": {
+          "items": {
+            "$ref": "#/$defs/Measure"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Measures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "group_by",
+        "measures"
+      ],
+      "title": "Aggregate",
+      "type": "object"
+    },
+    "Ambiguity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "term": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Term",
+          "type": "string"
+        },
+        "choices": {
+          "items": {
+            "$ref": "#/$defs/Choice"
+          },
+          "maxItems": 32,
+          "minItems": 2,
+          "title": "Choices",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "term",
+        "choices"
+      ],
+      "title": "Ambiguity",
+      "type": "object"
+    },
+    "CallMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "deployment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deployment"
+        },
+        "phase": {
+          "enum": [
+            "compile",
+            "repair"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "outcome": {
+          "title": "Outcome",
+          "type": "string"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Tokens"
+        }
+      },
+      "required": [
+        "model",
+        "phase",
+        "outcome",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "CallMetadata",
+      "type": "object"
+    },
+    "Choice": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "entity",
+            "field",
+            "metric",
+            "member",
+            "time"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "field_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field Id"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "target_id"
+      ],
+      "title": "Choice",
+      "type": "object"
+    },
+    "Comparison": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "comparison",
+          "title": "Kind",
+          "type": "string"
+        },
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind",
+        "column",
+        "operator",
+        "value"
+      ],
+      "title": "Comparison",
+      "type": "object"
+    },
+    "Filter": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "FILTER",
+          "title": "Kind",
+          "type": "string"
+        },
+        "predicate": {
+          "discriminator": {
+            "mapping": {
+              "comparison": "#/$defs/Comparison",
+              "members": "#/$defs/MemberPredicate",
+              "time": "#/$defs/TimePredicate"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Comparison"
+            },
+            {
+              "$ref": "#/$defs/MemberPredicate"
+            },
+            {
+              "$ref": "#/$defs/TimePredicate"
+            }
+          ],
+          "title": "Predicate"
+        }
+      },
+      "required": [
+        "kind",
+        "predicate"
+      ],
+      "title": "Filter",
+      "type": "object"
+    },
+    "Join": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "JOIN",
+          "title": "Kind",
+          "type": "string"
+        },
+        "relation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Relation Id",
+          "type": "string"
+        },
+        "join_type": {
+          "enum": [
+            "inner",
+            "left"
+          ],
+          "title": "Join Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "relation_id",
+        "join_type"
+      ],
+      "title": "Join",
+      "type": "object"
+    },
+    "Limit": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "LIMIT",
+          "title": "Kind",
+          "type": "string"
+        },
+        "count": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "count"
+      ],
+      "title": "Limit",
+      "type": "object"
+    },
+    "Measure": {
+      "additionalProperties": false,
+      "properties": {
+        "metric_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Metric Id",
+          "type": "string"
+        },
+        "output": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+          "title": "Output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric_id",
+        "output"
+      ],
+      "title": "Measure",
+      "type": "object"
+    },
+    "MemberPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "members",
+          "title": "Kind",
+          "type": "string"
+        },
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "member_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Member Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "column",
+        "member_ids"
+      ],
+      "title": "MemberPredicate",
+      "type": "object"
+    },
+    "Node": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "dependencies": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "type": "string"
+          },
+          "maxItems": 2,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "operation": {
+          "discriminator": {
+            "mapping": {
+              "AGGREGATE": "#/$defs/Aggregate",
+              "FILTER": "#/$defs/Filter",
+              "JOIN": "#/$defs/Join",
+              "LIMIT": "#/$defs/Limit",
+              "PROJECT": "#/$defs/Project",
+              "SELECT": "#/$defs/Select",
+              "SORT": "#/$defs/Sort"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Select"
+            },
+            {
+              "$ref": "#/$defs/Filter"
+            },
+            {
+              "$ref": "#/$defs/Join"
+            },
+            {
+              "$ref": "#/$defs/Aggregate"
+            },
+            {
+              "$ref": "#/$defs/Project"
+            },
+            {
+              "$ref": "#/$defs/Sort"
+            },
+            {
+              "$ref": "#/$defs/Limit"
+            }
+          ],
+          "title": "Operation"
+        }
+      },
+      "required": [
+        "id",
+        "dependencies",
+        "operation"
+      ],
+      "title": "Node",
+      "type": "object"
+    },
+    "Project": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "PROJECT",
+          "title": "Kind",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/Projection"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "columns"
+      ],
+      "title": "Project",
+      "type": "object"
+    },
+    "Projection": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Source",
+          "type": "string"
+        },
+        "alias": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+          "title": "Alias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "alias"
+      ],
+      "title": "Projection",
+      "type": "object"
+    },
+    "Resolution": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "title": "Term",
+          "type": "string"
+        },
+        "choice": {
+          "$ref": "#/$defs/Choice"
+        }
+      },
+      "required": [
+        "term",
+        "choice"
+      ],
+      "title": "Resolution",
+      "type": "object"
+    },
+    "ResourceVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "resource-version/v1",
+          "default": "resource-version/v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "resource_kind": {
+          "const": "ontology",
+          "default": "ontology",
+          "title": "Resource Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "content_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "resource_id",
+        "revision",
+        "content_sha256"
+      ],
+      "title": "ResourceVersion",
+      "type": "object"
+    },
+    "ResultColumn": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "data_type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "datetime"
+          ],
+          "title": "Data Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "data_type"
+      ],
+      "title": "ResultColumn",
+      "type": "object"
+    },
+    "SQGV1": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "sqg/v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "catalog": {
+          "$ref": "#/$defs/ResourceVersion"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "maxItems": 32,
+          "minItems": 2,
+          "title": "Nodes",
+          "type": "array"
+        },
+        "output_node_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Output Node Id",
+          "type": "string"
+        },
+        "result_schema": {
+          "items": {
+            "$ref": "#/$defs/ResultColumn"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Result Schema",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract_version",
+        "catalog",
+        "nodes",
+        "output_node_id",
+        "result_schema"
+      ],
+      "title": "SQGV1",
+      "type": "object"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "properties": {
+        "tenant_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "workspace_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "workspace_id"
+      ],
+      "title": "Scope",
+      "type": "object"
+    },
+    "Select": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "SELECT",
+          "title": "Kind",
+          "type": "string"
+        },
+        "entity_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "entity_id",
+        "columns"
+      ],
+      "title": "Select",
+      "type": "object"
+    },
+    "Sort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "SORT",
+          "title": "Kind",
+          "type": "string"
+        },
+        "keys": {
+          "items": {
+            "$ref": "#/$defs/SortKey"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Keys",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "keys"
+      ],
+      "title": "Sort",
+      "type": "object"
+    },
+    "SortKey": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "title": "Direction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "direction"
+      ],
+      "title": "SortKey",
+      "type": "object"
+    },
+    "TimePredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "time",
+          "title": "Kind",
+          "type": "string"
+        },
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "window_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Window Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "column",
+        "window_id"
+      ],
+      "title": "TimePredicate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": "catalog-compilation/v1",
+      "default": "catalog-compilation/v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "compiled",
+        "clarification",
+        "blocked"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "catalog": {
+      "$ref": "#/$defs/ResourceVersion"
+    },
+    "graph": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SQGV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "resolutions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Resolution"
+      },
+      "title": "Resolutions",
+      "type": "array"
+    },
+    "clarification_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clarification Id"
+    },
+    "clarification_revision": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clarification Revision"
+    },
+    "ambiguity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ambiguity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "diagnostics": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Diagnostics",
+      "type": "array"
+    },
+    "calls": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CallMetadata"
+      },
+      "title": "Calls",
+      "type": "array"
+    },
+    "input_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Tokens"
+    },
+    "output_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Tokens"
+    },
+    "repair_attempted": {
+      "default": false,
+      "title": "Repair Attempted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "status",
+    "catalog"
+  ],
+  "title": "Compilation",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:semantic-data-nexus:compiler:compilation:v1"
+}

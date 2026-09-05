@@ -247,10 +247,20 @@ class _Completion(_WireModel):
 class StructuredHTTPProvider:
     """Non-streaming Chat Completions over bounded async HTTP; no implicit retries."""
 
-    def __init__(self, settings: ProviderSettings, credential: str) -> None:
+    def __init__(
+        self,
+        settings: ProviderSettings,
+        credential: str,
+        *,
+        schema: dict[str, Any] | None = None,
+        schema_name: str = "sqg_v0",
+        system_policy: str = SYSTEM_POLICY,
+    ) -> None:
         self.settings = settings
         self._credential = credential
-        self._schema = response_schema()
+        self._schema = response_schema() if schema is None else schema
+        self._schema_name = schema_name
+        self._system_policy = system_policy
         self._validator = Draft202012Validator(self._schema)
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_calls)
         self._active: set[asyncio.Task[Any]] = set()
@@ -298,12 +308,16 @@ class StructuredHTTPProvider:
                 {
                     "model": self.settings.model,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_POLICY},
+                        {"role": "system", "content": self._system_policy},
                         {"role": "user", "content": json.dumps(envelope, ensure_ascii=True)},
                     ],
                     "response_format": {
                         "type": "json_schema",
-                        "json_schema": {"name": "sqg_v0", "strict": True, "schema": self._schema},
+                        "json_schema": {
+                            "name": self._schema_name,
+                            "strict": True,
+                            "schema": self._schema,
+                        },
                     },
                     "max_completion_tokens": self.settings.max_output_tokens,
                     "n": 1,
@@ -427,7 +441,8 @@ class StructuredHTTPProvider:
         try:
             if not self._validator.is_valid(candidate):
                 raise ProviderError("PROVIDER_SCHEMA")
-            SQG.model_validate(candidate)
+            if self._schema_name == "sqg_v0":
+                SQG.model_validate(candidate)
         except (ValidationError, RecursionError):
             raise ProviderError("PROVIDER_SCHEMA") from None
         return ProviderResult(
