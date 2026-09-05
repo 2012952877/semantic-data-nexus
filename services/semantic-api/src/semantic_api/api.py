@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
@@ -23,9 +24,18 @@ logger = logging.getLogger("semantic_api")
 
 def create_app(compiler: SemanticCompiler | None = None) -> FastAPI:
     service = compiler or SemanticCompiler.default()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await service.aclose()
+
     app = FastAPI(
         title="Semantic Compiler API",
         version="1.0.0",
+        lifespan=lifespan,
         description=(
             "Initializes governed semantic context and compiles validated typed SQG. "
             "This service does not generate or execute SQL."

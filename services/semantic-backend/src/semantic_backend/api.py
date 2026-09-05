@@ -19,8 +19,10 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        yield
-        await orchestrator.shutdown()
+        try:
+            yield
+        finally:
+            await orchestrator.shutdown()
 
     app = FastAPI(
         title="Semantic Data Nexus backend",

@@ -43,6 +43,7 @@ class RunRecord:
     terminal_observed: bool = False
     compile_response: CompileResponse | None = None
     physical_plan: PhysicalPlan | None = None
+    deadline: float | None = None
 
 
 class RunRepository(Protocol):

@@ -28,6 +28,7 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
   "ruff>=0.9,<1",
+  "types-jsonschema>=4.23",
 ]
 eval = [
   "semantic-data-nexus-evals==0.1.0",
