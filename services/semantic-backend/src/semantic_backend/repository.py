@@ -49,6 +49,7 @@ class RunRecord:
     authorization_error: str | None = None
     revocation_task: asyncio.Task[None] | None = None
     pending_detail: RunDetail | None = None
+    terminal_cleanup_started: bool = False
 
 
 class RunRepository(Protocol):

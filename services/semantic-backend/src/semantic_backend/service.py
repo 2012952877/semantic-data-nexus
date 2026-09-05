@@ -228,7 +228,7 @@ class OrchestrationService:
                 return record.status.model_copy(deep=True)
             record.cancel_requested = True
             task = record.task
-            coordinator = record.coordinator
+            coordinator = None if record.terminal_cleanup_started else record.coordinator
         accepted = False
         finishing = False
         if coordinator is not None:
@@ -246,16 +246,23 @@ class OrchestrationService:
                     async with record.lock:
                         record.terminal_observed = True
         current = asyncio.current_task()
-        if (
-            not accepted
-            and not finishing
-            and task is not None
-            and task is not current
-            and not task.done()
-        ):
-            task.cancel()
+        async with record.lock:
+            if (
+                not accepted
+                and not finishing
+                and not record.terminal_cleanup_started
+                and task is not None
+                and task is not current
+                and not task.done()
+                and not task.cancelling()
+            ):
+                task.cancel()
         if task is not None and task is not current and not task.done():
-            await asyncio.gather(task, return_exceptions=True)
+            # A disconnected cancel caller must not cancel the run's bounded terminal cleanup.
+            outcomes = await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+            for outcome in outcomes:
+                if isinstance(outcome, Exception):
+                    raise outcome
         await self._finalize_cancelled(record)
         return record.status.model_copy(deep=True)
 
@@ -397,11 +404,13 @@ class OrchestrationService:
                     raise TimeoutError("The whole-run deadline has expired.")
                 await self._succeed(record)
         except asyncio.CancelledError:
+            await self._begin_terminal_cleanup(record)
             if record.authorization_error is not None:
                 await self._authorization_failed(record)
             else:
                 await self._cancelled(record)
         except (AccessDenied, PostgresError) as exc:
+            await self._begin_terminal_cleanup(record)
             record.authorization_error = (
                 "AUTHORIZATION_DENIED"
                 if isinstance(exc, AccessDenied)
@@ -409,6 +418,7 @@ class OrchestrationService:
             )
             await self._authorization_failed(record)
         except TimeoutError:
+            await self._begin_terminal_cleanup(record)
             cleanup = await self._resolver_cleanup_failure(record)
             await self._fail(
                 record,
@@ -420,8 +430,10 @@ class OrchestrationService:
                 ),
             )
         except AdapterFailure as exc:
+            await self._begin_terminal_cleanup(record)
             await self._fail(record, exc.code, str(exc))
         except RuntimeFailure as exc:
+            await self._begin_terminal_cleanup(record)
             cleanup = await self._resolver_cleanup_failure(record)
             await self._fail(
                 record,
@@ -433,6 +445,7 @@ class OrchestrationService:
                 ),
             )
         except Exception:
+            await self._begin_terminal_cleanup(record)
             cleanup = await self._resolver_cleanup_failure(record)
             await self._fail(
                 record,
@@ -918,13 +931,13 @@ class OrchestrationService:
         while True:
             await asyncio.sleep(0.25)
             async with record.lock:
-                if record.status.state.terminal:
+                if record.status.state.terminal or record.terminal_cleanup_started:
                     return
             try:
                 await self._authorize_request(record.trusted_context, "run.contributor")
             except (AccessDenied, PostgresError, TimeoutError) as exc:
                 async with record.lock:
-                    if record.status.state.terminal:
+                    if record.status.state.terminal or record.terminal_cleanup_started:
                         return
                     record.authorization_error = (
                         "AUTHORIZATION_DENIED"
@@ -932,9 +945,14 @@ class OrchestrationService:
                         else "AUTHORIZATION_UNAVAILABLE"
                     )
                     task = record.task
-                if task is not None:
-                    task.cancel()
+                    if task is not None and not task.done() and not task.cancelling():
+                        task.cancel()
                 return
+
+    async def _begin_terminal_cleanup(self, record: RunRecord) -> None:
+        # Set synchronously before any await: terminal drain has a single cancellation owner.
+        record.terminal_cleanup_started = True
+        await self._stop_revocation_watch(record)
 
     @staticmethod
     async def _stop_revocation_watch(record: RunRecord) -> None:

@@ -80,6 +80,11 @@ between stages and before publication; an in-flight monitor checks every 250 ms
 unavailability. Cancellation reaches the existing provider/runtime cleanup paths.
 Shutdown uses a private lifecycle snapshot and record cancellation, not an
 unauthenticated public run lookup. Terminal absorption remains unchanged.
+Once terminal cleanup starts, its owner retires the revocation monitor before
+draining the resolver. Repeated cancellation or an aborted cancel/shutdown caller
+cannot issue a second task cancellation that interrupts that bounded drain.
+Cleanup failure remains an explicit terminal diagnostic, not a successful result
+or an early cancellation acknowledgment.
 
 ### Atomic authorization and commit protocol for #33
 
