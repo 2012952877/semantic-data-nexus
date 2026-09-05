@@ -1,0 +1,100 @@
+{
+  "description": "Entirely synthetic. Negative cases apply one explicit mutation to a named positive document; no external fixtures or secret values.",
+  "positive": [
+    {
+      "id": "trusted-context", "schema": "trusted-context",
+      "document": {
+        "contract_version": "trusted-context/v1",
+        "scope": {"tenant_id": "synthetic-tenant", "workspace_id": "synthetic-workspace"},
+        "principal": {"principal_id": "synthetic-principal", "issuer": "https://issuer.example.invalid", "subject": "synthetic-subject"},
+        "authentication": {"method": "oidc", "audience": "synthetic-api", "authenticated_at": "2026-01-01T00:00:00Z", "expires_at": "2026-01-01T01:00:00Z"},
+        "membership": {"membership_id": "synthetic-membership", "revision": 1, "authorized_at": "2026-01-01T00:01:00Z", "permissions": ["run.read"]}
+      }
+    },
+    {
+      "id": "resource-version", "schema": "resource-version",
+      "document": {
+        "contract_version": "resource-version/v1",
+        "scope": {"tenant_id": "synthetic-tenant", "workspace_id": "synthetic-workspace"},
+        "resource_kind": "ontology", "resource_id": "synthetic-ontology", "revision": 1,
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "id": "audit-envelope", "schema": "audit-envelope",
+      "document": {
+        "contract_version": "audit-envelope/v1", "operation": "append",
+        "event_id": "synthetic-audit-1", "stream_id": "synthetic-audit", "sequence": 1,
+        "previous_event_id": null, "recorded_at": "2026-01-01T00:02:00Z",
+        "scope": {"tenant_id": "synthetic-tenant", "workspace_id": "synthetic-workspace"},
+        "actor": {"principal_id": "synthetic-principal", "issuer": "https://issuer.example.invalid", "subject": "synthetic-subject"},
+        "authorization_ref": "synthetic-decision",
+        "resource": {
+          "contract_version": "resource-version/v1",
+          "scope": {"tenant_id": "synthetic-tenant", "workspace_id": "synthetic-workspace"},
+          "resource_kind": "ontology", "resource_id": "synthetic-ontology", "revision": 1,
+          "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "action": "read", "outcome": "allowed", "trace_id": "synthetic-trace"
+      }
+    },
+    {
+      "id": "usage-envelope", "schema": "usage-envelope",
+      "document": {
+        "contract_version": "usage-envelope/v1", "operation": "append",
+        "event_id": "synthetic-usage-1", "stream_id": "synthetic-usage", "sequence": 1,
+        "previous_event_id": null, "recorded_at": "2026-01-01T00:02:00Z",
+        "scope": {"tenant_id": "synthetic-tenant", "workspace_id": "synthetic-workspace"},
+        "producer": "synthetic-worker", "run_id": "synthetic-run", "meter": "synthetic-input",
+        "unit": "tokens", "quantity": "120", "kind": "measurement", "corrects_event_id": null
+      }
+    },
+    {
+      "id": "usage-adjustment", "schema": "usage-envelope",
+      "document": {
+        "contract_version": "usage-envelope/v1", "operation": "append",
+        "event_id": "synthetic-usage-2", "stream_id": "synthetic-usage", "sequence": 2,
+        "previous_event_id": "synthetic-usage-1", "recorded_at": "2026-01-01T00:03:00Z",
+        "scope": {"tenant_id": "synthetic-tenant", "workspace_id": "synthetic-workspace"},
+        "producer": "synthetic-worker", "run_id": "synthetic-run", "meter": "synthetic-input",
+        "unit": "tokens", "quantity": "-2", "kind": "adjustment", "corrects_event_id": "synthetic-usage-1"
+      }
+    }
+  ],
+  "negative": [
+    {"id": "caller-header-authority", "base": "trusted-context", "path": ["authentication", "method"], "operation": "set", "value": "request-headers"},
+    {"id": "missing-membership", "base": "trusted-context", "path": ["membership"], "operation": "remove"},
+    {"id": "missing-issuer", "base": "trusted-context", "path": ["principal", "issuer"], "operation": "remove"},
+    {"id": "missing-subject", "base": "trusted-context", "path": ["principal", "subject"], "operation": "remove"},
+    {"id": "unversioned-membership", "base": "trusted-context", "path": ["membership", "revision"], "operation": "set", "value": 0},
+    {"id": "invalid-issuer", "base": "trusted-context", "path": ["principal", "issuer"], "operation": "set", "value": "not-an-issuer"},
+    {"id": "invalid-date", "base": "trusted-context", "path": ["membership", "authorized_at"], "operation": "set", "value": "2026-02-30T00:00:00Z"},
+    {"id": "unknown-context-version", "base": "trusted-context", "path": ["contract_version"], "operation": "set", "value": "trusted-context/v99"},
+    {"id": "arbitrary-header", "base": "trusted-context", "path": ["tenant_header"], "operation": "set", "value": "synthetic-tenant"},
+    {"id": "empty-permissions", "base": "trusted-context", "path": ["membership", "permissions"], "operation": "set", "value": []},
+    {"id": "missing-workspace", "base": "resource-version", "path": ["scope", "workspace_id"], "operation": "remove"},
+    {"id": "zero-resource-revision", "base": "resource-version", "path": ["revision"], "operation": "set", "value": 0},
+    {"id": "boolean-resource-revision", "base": "resource-version", "path": ["revision"], "operation": "set", "value": true},
+    {"id": "short-digest", "base": "resource-version", "path": ["content_sha256"], "operation": "set", "value": "synthetic-invalid"},
+    {"id": "digest-newline", "base": "resource-version", "path": ["content_sha256"], "operation": "set", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"},
+    {"id": "identifier-newline", "base": "resource-version", "path": ["resource_id"], "operation": "set", "value": "synthetic-resource\n"},
+    {"id": "unknown-resource-kind", "base": "resource-version", "path": ["resource_kind"], "operation": "set", "value": "unregistered"},
+    {"id": "audit-update", "base": "audit-envelope", "path": ["operation"], "operation": "set", "value": "update"},
+    {"id": "audit-delete", "base": "audit-envelope", "path": ["operation"], "operation": "set", "value": "delete"},
+    {"id": "audit-freeform-payload", "base": "audit-envelope", "path": ["payload"], "operation": "set", "value": {"synthetic": "not-permitted"}},
+    {"id": "audit-missing-actor", "base": "audit-envelope", "path": ["actor"], "operation": "remove"},
+    {"id": "audit-missing-decision", "base": "audit-envelope", "path": ["authorization_ref"], "operation": "remove"},
+    {"id": "audit-first-parent", "base": "audit-envelope", "path": ["previous_event_id"], "operation": "set", "value": "synthetic-parent"},
+    {"id": "audit-later-no-parent", "base": "audit-envelope", "path": ["sequence"], "operation": "set", "value": 2},
+    {"id": "usage-float", "base": "usage-envelope", "path": ["quantity"], "operation": "set", "value": 1.5},
+    {"id": "usage-negative-measurement", "base": "usage-envelope", "path": ["quantity"], "operation": "set", "value": "-1"},
+    {"id": "usage-nan", "base": "usage-envelope", "path": ["quantity"], "operation": "set", "value": "NaN"},
+    {"id": "usage-infinity", "base": "usage-envelope", "path": ["quantity"], "operation": "set", "value": "Infinity"},
+    {"id": "usage-leading-zero", "base": "usage-envelope", "path": ["quantity"], "operation": "set", "value": "012"},
+    {"id": "usage-newline", "base": "usage-envelope", "path": ["quantity"], "operation": "set", "value": "12\n"},
+    {"id": "usage-delete", "base": "usage-envelope", "path": ["operation"], "operation": "set", "value": "delete"},
+    {"id": "usage-inline-price", "base": "usage-envelope", "path": ["price"], "operation": "set", "value": "0.01"},
+    {"id": "usage-missing-correction-target", "base": "usage-adjustment", "path": ["corrects_event_id"], "operation": "set", "value": null},
+    {"id": "usage-measurement-with-target", "base": "usage-envelope", "path": ["corrects_event_id"], "operation": "set", "value": "synthetic-other"}
+  ]
+}
