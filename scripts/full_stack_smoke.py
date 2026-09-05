@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
@@ -24,10 +26,19 @@ _TERMINAL_STATES = {"Cancelled", "Succeeded", "Failed"}
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _MAX_NUMBER = Decimal("1e28")
+_SMOKE_USERNAME_ENV = "NEXUS_SMOKE_USERNAME"
+_SMOKE_SECRET_ENV = "NEXUS_SMOKE_PASSWORD"
 
 
 class SmokeFailure(RuntimeError):
     pass
+
+
+class _NoAuthenticatedRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
+        raise SmokeFailure("Authenticated smoke requests must not follow redirects.")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -43,6 +54,34 @@ def _read_response(response: Any) -> bytes:
     body = response.read(_MAX_RESPONSE_BYTES + 1)
     _require(len(body) <= _MAX_RESPONSE_BYTES, "response exceeded the smoke-test limit")
     return body
+
+
+def _open_request(
+    request: urllib.request.Request,
+    base_url: str,
+    timeout: float,
+) -> Any:
+    username = os.environ.get(_SMOKE_USERNAME_ENV)
+    password = os.environ.get(_SMOKE_SECRET_ENV)
+    if bool(username) != bool(password):
+        raise SmokeFailure("Both temporary HTTPS test credentials must be supplied.")
+    if username and password:
+        if urllib.parse.urlsplit(base_url).scheme != "https":
+            raise SmokeFailure("Temporary test credentials require an HTTPS base URL.")
+        manager = urllib.request.HTTPPasswordMgrWithPriorAuth()
+        manager.add_password(
+            None,
+            base_url.rstrip("/") + "/",
+            username,
+            password,
+            is_authenticated=True,
+        )
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPBasicAuthHandler(manager),
+            _NoAuthenticatedRedirect(),
+        )
+        return opener.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
 def _request(
@@ -69,7 +108,7 @@ def _request(
         method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_request(request, base_url, timeout) as response:
             return response.status, _read_response(response)
     except urllib.error.HTTPError as error:
         detail = _read_response(error)[:4_096].decode("utf-8", errors="replace")
