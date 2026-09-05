@@ -164,3 +164,11 @@ SQG remains valid even if a later execution layer returns no rows.
 Requests require a timezone-aware evaluation clock and an explicit IANA timezone. Errors use a
 stable Problem Details-like envelope and return the request ID in both the body and
 `X-Request-ID`.
+
+## Additive catalog compiler
+
+The opt-in catalog compiler, immutable authorization boundary, SQG v1, and
+PostgreSQL clarification library are documented in
+[`contracts/compiler/v1`](../../contracts/compiler/v1/README.md).
+They do not replace the M0 endpoints, static default provider or two-mode validator.
+Public identity/API composition is not connected by this library change.

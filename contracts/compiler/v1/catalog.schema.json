@@ -1,0 +1,595 @@
+{
+  "$defs": {
+    "Comparison": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "comparison",
+          "title": "Kind",
+          "type": "string"
+        },
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind",
+        "column",
+        "operator",
+        "value"
+      ],
+      "title": "Comparison",
+      "type": "object"
+    },
+    "Entity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Synonyms",
+          "type": "array"
+        },
+        "required_filters": {
+          "default": [],
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "comparison": "#/$defs/Comparison",
+                "members": "#/$defs/MemberPredicate",
+                "time": "#/$defs/TimePredicate"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Comparison"
+              },
+              {
+                "$ref": "#/$defs/MemberPredicate"
+              },
+              {
+                "$ref": "#/$defs/TimePredicate"
+              }
+            ]
+          },
+          "maxItems": 16,
+          "title": "Required Filters",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "Entity",
+      "type": "object"
+    },
+    "FieldDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Synonyms",
+          "type": "array"
+        },
+        "entity_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "data_type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "datetime"
+          ],
+          "title": "Data Type",
+          "type": "string"
+        },
+        "members": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Member"
+          },
+          "maxItems": 128,
+          "title": "Members",
+          "type": "array"
+        },
+        "groupable": {
+          "default": true,
+          "title": "Groupable",
+          "type": "boolean"
+        },
+        "filterable": {
+          "default": true,
+          "title": "Filterable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "entity_id",
+        "data_type"
+      ],
+      "title": "FieldDefinition",
+      "type": "object"
+    },
+    "Member": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Synonyms",
+          "type": "array"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "value"
+      ],
+      "title": "Member",
+      "type": "object"
+    },
+    "MemberPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "members",
+          "title": "Kind",
+          "type": "string"
+        },
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "member_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Member Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "column",
+        "member_ids"
+      ],
+      "title": "MemberPredicate",
+      "type": "object"
+    },
+    "Metric": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Synonyms",
+          "type": "array"
+        },
+        "entity_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "field_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Field Id",
+          "type": "string"
+        },
+        "function": {
+          "enum": [
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "count"
+          ],
+          "title": "Function",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "entity_id",
+        "field_id",
+        "function"
+      ],
+      "title": "Metric",
+      "type": "object"
+    },
+    "Relation": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Synonyms",
+          "type": "array"
+        },
+        "from_entity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "From Entity",
+          "type": "string"
+        },
+        "to_entity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "To Entity",
+          "type": "string"
+        },
+        "from_field": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "From Field",
+          "type": "string"
+        },
+        "to_field": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "To Field",
+          "type": "string"
+        },
+        "cardinality": {
+          "enum": [
+            "many_to_one",
+            "one_to_one"
+          ],
+          "title": "Cardinality",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "from_entity",
+        "to_entity",
+        "from_field",
+        "to_field",
+        "cardinality"
+      ],
+      "title": "Relation",
+      "type": "object"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "properties": {
+        "tenant_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "workspace_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "workspace_id"
+      ],
+      "title": "Scope",
+      "type": "object"
+    },
+    "TimePredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "time",
+          "title": "Kind",
+          "type": "string"
+        },
+        "column": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Column",
+          "type": "string"
+        },
+        "window_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Window Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "column",
+        "window_id"
+      ],
+      "title": "TimePredicate",
+      "type": "object"
+    },
+    "TimeWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Synonyms",
+          "type": "array"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        },
+        "end_exclusive": {
+          "format": "date-time",
+          "title": "End Exclusive",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "start",
+        "end_exclusive"
+      ],
+      "title": "TimeWindow",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": "compiler-catalog/v1",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/Scope"
+    },
+    "resource_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "title": "Resource Id",
+      "type": "string"
+    },
+    "revision": {
+      "minimum": 1,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/Entity"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Entities",
+      "type": "array"
+    },
+    "fields": {
+      "items": {
+        "$ref": "#/$defs/FieldDefinition"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "title": "Fields",
+      "type": "array"
+    },
+    "metrics": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Metric"
+      },
+      "maxItems": 64,
+      "title": "Metrics",
+      "type": "array"
+    },
+    "relations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Relation"
+      },
+      "maxItems": 64,
+      "title": "Relations",
+      "type": "array"
+    },
+    "time_windows": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TimeWindow"
+      },
+      "maxItems": 32,
+      "title": "Time Windows",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract_version",
+    "scope",
+    "resource_id",
+    "revision",
+    "entities",
+    "fields"
+  ],
+  "title": "CatalogDocument",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:semantic-data-nexus:compiler:catalog:v1"
+}
