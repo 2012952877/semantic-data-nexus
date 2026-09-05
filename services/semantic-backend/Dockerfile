@@ -5,6 +5,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 WORKDIR /build
 COPY connectors/databricks ./connectors/databricks
+COPY connectors/plugins ./connectors/plugins
 COPY services/semantic-api ./services/semantic-api
 COPY services/query-runtime ./services/query-runtime
 COPY services/semantic-backend ./services/semantic-backend
@@ -13,6 +14,7 @@ RUN python -m pip install --prefix=/install \
     ./connectors/databricks \
     ./services/semantic-api \
     ./services/query-runtime \
+    ./connectors/plugins \
     "./services/semantic-backend[databricks]"
 
 FROM python:3.12-slim

@@ -76,7 +76,13 @@ class ServiceAuthentication(BaseHTTPMiddleware):
             ):
                 raise AccessDenied("Invalid service request binding.")
             context = TrustedContext.model_validate(claims["ctx"])
-            permission = "run.reader" if request.method == "GET" else "run.contributor"
+            permission = (
+                "compiler:query"
+                if request.url.path.startswith("/v1/catalog/")
+                else "run.reader"
+                if request.method == "GET"
+                else "run.contributor"
+            )
             await self._authority.accept_assertion(
                 context, permission, claims["jti"], datetime.fromtimestamp(claims["exp"], UTC)
             )

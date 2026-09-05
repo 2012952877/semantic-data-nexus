@@ -166,6 +166,20 @@ class GuardedClarifications:
             raise CompilerFailure("CLARIFICATION_VERSION_UNSUPPORTED")
         return StoredRecord(record, row[2], row[1])
 
+    async def resolve(
+        self, connection: Connection, request_id: str, owner: Owner
+    ) -> StoredRecord:
+        require_transaction(connection)
+        cursor = await connection.execute(
+            """SELECT id FROM compiler_clarifications_v1
+               WHERE request_id=%s AND owner_hash=%s FOR UPDATE""",
+            (request_id, fingerprint(owner.model_dump(mode="json"))),
+        )
+        row = await cursor.fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise CompilerFailure("CLARIFICATION_NOT_AVAILABLE")
+        return await self.lock(connection, row[0], owner)
+
     async def adopt(self, connection: Connection, stored: StoredRecord) -> StoredRecord:
         require_transaction(connection)
         await connection.execute(

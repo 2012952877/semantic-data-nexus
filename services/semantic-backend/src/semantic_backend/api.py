@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
+from psycopg import Error as PostgresError
+from query_runtime.errors import RuntimeFailure
+from semantic_api.catalog_v1.models import CatalogCompileRequest, CompilerFailure
 
 from semantic_backend.auth_context import AccessDenied, get_trusted_context, legacy_development
 from semantic_backend.auth_middleware import ServiceAuthentication
 from semantic_backend.authorization import PostgresAuthorization
+from semantic_backend.catalog_models import CatalogAnswerRequest, CatalogQueryResponse
+from semantic_backend.catalog_service import CatalogQueryService
 from semantic_backend.models import RunDetail, RunStatus, StartRunRequest
 from semantic_backend.repository import (
     RunCapacityError,
@@ -18,14 +23,24 @@ from semantic_backend.repository import (
 from semantic_backend.service import OrchestrationService
 
 
-def create_app(service: OrchestrationService | None = None) -> FastAPI:
+def create_app(
+    service: OrchestrationService | None = None,
+    catalog_service: CatalogQueryService | None = None,
+) -> FastAPI:
     orchestrator = service or OrchestrationService()
+    legacy = legacy_development()
+    if catalog_service is None and isinstance(orchestrator.authority, PostgresAuthorization):
+        catalog_service = CatalogQueryService.from_environment(orchestrator.authority)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
+            if catalog_service is not None:
+                await catalog_service.initialize()
             yield
         finally:
+            if catalog_service is not None:
+                await catalog_service.shutdown()
             await orchestrator.shutdown()
 
     app = FastAPI(
@@ -34,7 +49,7 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.orchestrator = orchestrator
-    legacy = legacy_development()
+    app.state.catalog_service = catalog_service
     if not legacy:
         authority = orchestrator.authority
         if not isinstance(authority, PostgresAuthorization):
@@ -118,5 +133,65 @@ def create_app(service: OrchestrationService | None = None) -> FastAPI:
     @app.get("/v1/runs/{run_id}/lineage", response_model=RunDetail)
     async def get_lineage(run_id: str) -> RunDetail:
         return await get_detail(run_id)
+
+    async def catalog_call(operation: Awaitable[CatalogQueryResponse]) -> CatalogQueryResponse:
+        try:
+            return await operation
+        except CompilerFailure as exc:
+            code = exc.code
+            status_code = (
+                404
+                if code in {"RESOURCE_NOT_AVAILABLE", "CLARIFICATION_NOT_AVAILABLE"}
+                else 403
+                if code in {"CLARIFICATION_CONTEXT_CHANGED", "AUTHORIZATION_CHANGED"}
+                else 410
+                if code == "CLARIFICATION_EXPIRED"
+                else 409
+                if code
+                in {
+                    "IDEMPOTENCY_CONFLICT",
+                    "ATTEMPT_FENCED",
+                    "COMPILATION_IN_PROGRESS",
+                    "COMPILATION_OUTCOME_UNKNOWN",
+                    "CLARIFICATION_REVISION",
+                    "RUNTIME_IN_PROGRESS",
+                    "RUNTIME_OUTCOME_UNKNOWN",
+                    "RUNTIME_FENCED",
+                    "RUNTIME_POLICY_CHANGED",
+                    "COMPILER_CONFIGURATION_CHANGED",
+                }
+                else 422
+            )
+            raise HTTPException(status_code=status_code, detail={"code": code}) from None
+        except TimeoutError:
+            raise HTTPException(status_code=504, detail={"code": "CATALOG_TIMEOUT"}) from None
+        except PostgresError:
+            raise HTTPException(
+                status_code=503, detail={"code": "CATALOG_STORE_UNAVAILABLE"}
+            ) from None
+        except RuntimeFailure:
+            raise HTTPException(
+                status_code=422, detail={"code": "CATALOG_RUNTIME_FAILED"}
+            ) from None
+
+    def enabled_catalog() -> CatalogQueryService:
+        get_trusted_context()
+        if legacy or catalog_service is None:
+            raise HTTPException(status_code=503, detail={"code": "CATALOG_NOT_CONFIGURED"})
+        return catalog_service
+
+    @app.post("/v1/catalog/queries", response_model=CatalogQueryResponse)
+    async def catalog_query(request: CatalogCompileRequest) -> CatalogQueryResponse:
+        catalog = enabled_catalog()
+        return await catalog_call(catalog.query(request, get_trusted_context()))
+
+    @app.post(
+        "/v1/catalog/clarifications/{identifier}/answers", response_model=CatalogQueryResponse
+    )
+    async def catalog_answer(
+        identifier: str, request: CatalogAnswerRequest
+    ) -> CatalogQueryResponse:
+        catalog = enabled_catalog()
+        return await catalog_call(catalog.answer(identifier, request, get_trusted_context()))
 
     return app

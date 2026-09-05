@@ -27,6 +27,7 @@ from query_runtime.domain import (
     NamedExpression,
     OperatorKind,
     OperatorSpec,
+    OperatorSpecV1,
     PhysicalPlan,
     ScalarType,
     SortDirection,
@@ -157,6 +158,7 @@ def adapt_catalog(
     source_capabilities: dict[str, CapabilityCatalog],
     *,
     run_id: str,
+    runtime_version: Literal["query-runtime/v0", "query-runtime/v1"] = "query-runtime/v0",
 ) -> AdaptedExecution:
     validate(graph, context)
     _require_binding_pin(graph, context, bindings)
@@ -231,14 +233,30 @@ def adapt_catalog(
             capabilities[asset.source.alias] = CapabilityCatalog(
                 source_alias=asset.source.alias,
                 source_type=asset.source.source_type,
-                operator_kinds=frozenset({OperatorKind.SELECT}),
+                operator_kinds=frozenset(
+                    {OperatorKind.SOURCE, OperatorKind.SELECT}
+                    if runtime_version == "query-runtime/v1"
+                    else {OperatorKind.SELECT}
+                ),
             )
+            source_dependencies: tuple[str, ...] = ()
+            if runtime_version == "query-runtime/v1":
+                root_id = f"_root_{node.id}"
+                nodes.append(
+                    LogicalNode(
+                        id=root_id,
+                        operation=OperatorSpec(kind=OperatorKind.SOURCE),
+                        source_alias=asset.source.alias,
+                    )
+                )
+                source_dependencies = (root_id,)
             nodes.append(
                 LogicalNode(
                     id=f"_source_{node.id}",
                     operation=OperatorSpec(kind=OperatorKind.SELECT, columns=op.columns),
                     source_alias=asset.source.alias,
                     concepts=op.columns,
+                    dependencies=source_dependencies,
                 )
             )
             nodes.append(
@@ -351,16 +369,35 @@ def adapt_catalog(
         else:
             raise CompilerFailure("OPERATOR_NOT_ADAPTED")
         nodes.append(LogicalNode(id=node.id, operation=operation, dependencies=node.dependencies))
+    if runtime_version == "query-runtime/v1":
+        nodes = [
+            node.model_copy(
+                update={
+                    "operation": OperatorSpecV1.model_validate(
+                        {
+                            **node.operation.model_dump(),
+                            "version": "query-runtime/v1",
+                        }
+                    )
+                }
+            )
+            if node.source_alias is None
+            else node
+            for node in nodes
+        ]
     return AdaptedExecution(
         graph=ValidatedLogicalGraph(
-            id="catalog-" + run_id, nodes=tuple(nodes), output_node_id=graph.output_node_id
+            version=runtime_version,
+            id="catalog-" + run_id,
+            nodes=tuple(nodes),
+            output_node_id=graph.output_node_id,
         ),
         binder=ExactConceptBinder(bound),
         sources=sources,
         capabilities=capabilities,
         metadata={
             "compiler_contract": "sqg/v1",
-            "runtime_contract": "query-runtime/v0",
+            "runtime_contract": runtime_version,
             "catalog_sha256": graph.catalog.content_sha256,
             "binding_sha256": bindings.content_sha256,
         },
@@ -560,6 +597,7 @@ async def execute_catalog(
     run_id: str,
     deadline: float,
     limits: ResourceLimits,
+    runtime_version: Literal["query-runtime/v0", "query-runtime/v1"] = "query-runtime/v0",
 ) -> CatalogExecution:
     """One encompassing caller deadline includes compile/repair and execution.
 
@@ -585,22 +623,46 @@ async def execute_catalog(
             if e.entity_id in selected
         }
         adapted = adapt_catalog(
-            compilation.graph, authorized, bindings, capabilities, run_id=run_id
+            compilation.graph,
+            authorized,
+            bindings,
+            capabilities,
+            run_id=run_id,
+            runtime_version=runtime_version,
         )
-        plan = CapabilityPlanner(
-            binder=adapted.binder, sources=adapted.sources, capabilities=adapted.capabilities
-        ).plan(adapted.graph)
         store = InlineResultStore()
         source_resolver = _CatalogResolver(
             resolver, bindings, limits, compilation.graph, authorized
         )
-        coordinator = QueryCoordinator(
-            resolver=source_resolver,
-            result_store=store,
-            limits=limits,
-        )
         try:
-            outcome = await coordinator.run(plan, run_id=run_id)
+            if runtime_version == "query-runtime/v1":
+                from nexus_plugins.runtime import (
+                    DuckDBComputePlugin,
+                    PluginRuntime,
+                    ResolverRegistry,
+                    ResultStorePlugin,
+                )
+
+                if not isinstance(resolver, ResolverRegistry):
+                    raise CompilerFailure("PLUGIN_REGISTRY_REQUIRED")
+                plan = await resolver.plan(adapted.graph, adapted.binder)
+                runtime = PluginRuntime(
+                    resolver, DuckDBComputePlugin(limits), ResultStorePlugin(store, limits)
+                )
+                runtime.coordinator.resolver = source_resolver
+                outcome = await runtime.run(plan, run_id=run_id)
+            else:
+                plan = CapabilityPlanner(
+                    binder=adapted.binder,
+                    sources=adapted.sources,
+                    capabilities=adapted.capabilities,
+                ).plan(adapted.graph)
+                coordinator = QueryCoordinator(
+                    resolver=source_resolver,
+                    result_store=store,
+                    limits=limits,
+                )
+                outcome = await coordinator.run(plan, run_id=run_id)
         finally:
             await source_resolver.aclose(deadline=deadline)
         if outcome.summary.state is not ExecutionState.SUCCEEDED or outcome.manifest is None:

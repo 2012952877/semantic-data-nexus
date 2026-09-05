@@ -51,6 +51,7 @@ jobs:
           python -m pip install
           -e evals
           -e connectors/databricks
+          -e connectors/plugins
           -e services/semantic-api
           -e services/query-runtime
           -e "services/semantic-backend[databricks,dev,eval]"
