@@ -323,4 +323,7 @@ finally {
     }
 }
 
-Write-Host 'Infrastructure regression assertions passed: identity ordering, principal-seeded RBAC, worker entrypoint, endpoint, firewall reconciliation docs, and structural ARM parameter JSON.'
+& (Join-Path $PSScriptRoot 'test-m0-vm-template.ps1')
+& (Join-Path $PSScriptRoot 'test-m0-aca-template.ps1')
+
+Write-Host 'Infrastructure regression assertions passed: identity ordering, principal-seeded RBAC, worker entrypoint, endpoint, firewall reconciliation docs, structural ARM parameter JSON, isolated M0 VM, and authenticated ACA.'

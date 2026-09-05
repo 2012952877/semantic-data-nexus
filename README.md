@@ -17,9 +17,10 @@ fake and opt-in Databricks resolvers, evaluation suite, and Azure Bicep
 baseline.
 
 M0 is not a production deployment. Run metadata and inline results are
-process-local, the compiler supports two deterministic synthetic scenarios, and
-the Azure infrastructure has static validation but no checked-in deployment
-evidence.
+process-local, and the compiler supports two deterministic synthetic scenarios.
+The broad Azure infrastructure baseline has static validation; a separate
+[authenticated Consumption test](docs/operations/m0-azure-test.md) exercises
+M0 over HTTPS without deploying that baseline.
 
 ## Delivered architecture
 
@@ -194,6 +195,7 @@ scripts/                     Compose smoke and release audit utilities
 - [M0 operations, security, and cost runbook](docs/operations/m0-release.md)
 - [Local Compose runbook](docs/operations/local-compose.md)
 - [Azure deployment operations](docs/operations/azure-deployment.md)
+- [Small authenticated Azure M0 test](docs/operations/m0-azure-test.md)
 - [HTTP contracts](docs/architecture/http-contracts.md)
 - [Clean-room checklist](docs/clean-room-checklist.md)
 - [Roadmap](docs/roadmap.md)
