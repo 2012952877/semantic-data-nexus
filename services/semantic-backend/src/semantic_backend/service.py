@@ -600,6 +600,11 @@ class OrchestrationService:
                     "token_usage": TokenUsage(
                         input_tokens=response.token_metadata.input_tokens or 0,
                         output_tokens=response.token_metadata.output_tokens or 0,
+                        model=(
+                            response.token_metadata.provider_calls[0].model
+                            if response.token_metadata.provider_calls
+                            else None
+                        ),
                     )
                 }
             )

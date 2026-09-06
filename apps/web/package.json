@@ -10,7 +10,8 @@
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
     "test:e2e": "playwright test && playwright test --config playwright.mock.config.ts",
-    "test:e2e:full-stack": "playwright test --config playwright.full-stack.config.ts"
+    "test:e2e:full-stack": "playwright test --config playwright.full-stack.config.ts",
+    "test:e2e:network-demo": "playwright test --config playwright.network-demo.config.ts"
   },
   "dependencies": {
     "vue": "^3.5.18",

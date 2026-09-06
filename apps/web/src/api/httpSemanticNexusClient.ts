@@ -111,6 +111,7 @@ interface BffRunSummary {
     inputTokens: number
     outputTokens: number
     totalTokens: number
+    model?: string | null
   }
   diagnostics: BffSummaryDiagnostic[]
 }
@@ -453,6 +454,11 @@ const isTokenUsage = (value: unknown): value is BffRunSummary['tokenUsage'] =>
   && isInteger(value.outputTokens)
   && isInteger(value.totalTokens)
   && value.totalTokens === value.inputTokens + value.outputTokens
+  && (
+    value.model === undefined
+    || value.model === null
+    || (typeof value.model === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(value.model))
+  )
 
 const isBffRunSummary = (value: unknown): value is BffRunSummary =>
   isRecord(value)
@@ -755,7 +761,7 @@ const mapSummary = (summary: BffRunSummary): Run => {
     workload: summary.workload,
     ontology: 'unknown',
     compilationMode: summary.compilationMode,
-    model: 'unknown',
+    model: summary.tokenUsage.model ?? 'unknown',
     executionMode: summary.executionMode,
     outputMode: summary.outputMode,
     tokens: {

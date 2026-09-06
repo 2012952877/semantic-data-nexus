@@ -117,7 +117,7 @@ public enum CancellationDeliveryState
     Delivered
 }
 
-public sealed record TokenUsage(long InputTokens, long OutputTokens)
+public sealed record TokenUsage(long InputTokens, long OutputTokens, string? Model = null)
 {
     public long TotalTokens => checked(InputTokens + OutputTokens);
 }

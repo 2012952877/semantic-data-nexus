@@ -438,6 +438,14 @@ public static class SemanticRunStatusValidator
             throw Invalid("The semantic backend returned invalid token usage.");
         }
 
+        if (status.TokenUsage.Model is { } model &&
+            (model.Length is 0 or > 100 ||
+             model.Any(character =>
+                 !(char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-'))))
+        {
+            throw Invalid("The semantic backend returned an invalid model identifier.");
+        }
+
         if (status.Stages is null || status.Stages.Count > MaximumStages)
         {
             throw Invalid("The semantic backend returned an invalid stage collection.");

@@ -6,6 +6,12 @@
 !connectors/databricks/pyproject.toml
 !connectors/databricks/src/
 !connectors/databricks/src/**
+!connectors/plugins/
+connectors/plugins/**
+!connectors/plugins/README.md
+!connectors/plugins/pyproject.toml
+!connectors/plugins/src/
+!connectors/plugins/src/**
 !services/
 !services/semantic-api/
 !services/semantic-api/README.md

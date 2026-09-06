@@ -729,6 +729,22 @@ public sealed class SemanticBackendClientTests
     }
 
     [Fact]
+    public void BackendModelProvenanceSurvivesTheTypedContract()
+    {
+        var runId = RunId.New();
+        var status = StubSemanticBackendClient.Status(runId, RunState.Running) with
+        {
+            TokenUsage = new TokenUsage(123, 456, "gpt-4.1-mini-2025-04-14")
+        };
+        var serialized = JsonSerializer.Serialize(status, JsonOptions());
+        var received = JsonSerializer.Deserialize<SemanticRunStatus>(serialized, JsonOptions())!;
+
+        SemanticRunStatusValidator.Validate(received, runId);
+        Assert.Equal("gpt-4.1-mini-2025-04-14", received.TokenUsage.Model);
+        Assert.Equal(579, received.TokenUsage.TotalTokens);
+    }
+
+    [Fact]
     public void BackendValidatorRejectsIdentityUsageCollectionAndTimelineViolations()
     {
         var runId = RunId.New();
@@ -737,6 +753,9 @@ public sealed class SemanticBackendClientTests
         [
             valid with { RunId = RunId.New() },
             valid with { TokenUsage = new TokenUsage(-1, 0) },
+            valid with { TokenUsage = new TokenUsage(1, 2, "") },
+            valid with { TokenUsage = new TokenUsage(1, 2, "untrusted\nmodel") },
+            valid with { TokenUsage = new TokenUsage(1, 2, new string('x', 101)) },
             valid with { Stages = null! },
             valid with { Diagnostics = null! },
             valid with { StartedAt = null },

@@ -112,6 +112,28 @@ describe('ask workflow', () => {
     expect(textarea.attributes('required')).toBeDefined()
   })
 
+  it('offers only the supported query example and states HTTP demo boundaries', async () => {
+    const client: SemanticNexusClient = {
+      mode: 'http',
+      listRuns: vi.fn(),
+      getRun: vi.fn(),
+      startRun: vi.fn(),
+      cancelRun: vi.fn(),
+      getOntology: vi.fn(),
+      getComponentStatus: vi.fn(),
+    }
+    const wrapper = mountAsk(client)
+    const examples = wrapper.findAll('.example-strip button')
+
+    expect(examples.map((example) => example.text())).toEqual(['按区域和季度汇总利润'])
+    expect(wrapper.get('textarea').attributes('placeholder')).toContain('区域和季度')
+    expect(wrapper.get('[role="note"]').text()).toContain('合成业务数据')
+    expect(wrapper.get('[role="note"]').text()).toContain('不在本版范围内')
+    await examples[0]!.trigger('click')
+    expect(wrapper.get<HTMLTextAreaElement>('textarea').element.value).toBe('按区域和季度汇总利润')
+    expect(client.startRun).not.toHaveBeenCalled()
+  })
+
   it('recovers controls and focuses an actionable client error', async () => {
     const client = new MockSemanticNexusClient(20, false)
     vi.spyOn(client, 'startRun').mockRejectedValue(new Error(

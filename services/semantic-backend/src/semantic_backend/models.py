@@ -124,6 +124,7 @@ class StartRunRequest(ApiModel):
 class TokenUsage(ApiModel):
     input_tokens: StrictInt = Field(default=0, ge=0)
     output_tokens: StrictInt = Field(default=0, ge=0)
+    model: str | None = Field(default=None, max_length=100, pattern=r"^[a-zA-Z0-9_.-]+$")
 
 
 class DiagnosticSummary(ApiModel):

@@ -99,6 +99,8 @@ async def test_default_backend_constructs_real_provider_from_environment(monkeyp
             assert status.state is RunState.SUCCEEDED
             assert status.token_usage.input_tokens == 123
             assert status.token_usage.output_tokens == 456
+            assert status.token_usage.model == MODEL
+            assert status.model_dump(mode="json", by_alias=True)["tokenUsage"]["model"] == MODEL
             artifact = await service.get_integrated_artifact(request.run_id)
             assert artifact.compile_response.candidate_sqg == candidate
             assert artifact.compile_response.token_metadata.provider_calls[0].model == MODEL
@@ -171,6 +173,49 @@ async def test_static_default_is_explicit_and_offline():
     assert response.normalized_sqg is not None
     assert response.token_metadata.provider_calls == []
     await compiler.aclose()
+
+
+async def test_backend_azure_environment_is_server_selected_without_billable_readiness(monkeypatch):
+    from semantic_api.provider import ProviderError
+    from semantic_api.structured_provider import AzureOpenAIProvider
+
+    monkeypatch.setenv("SEMANTIC_COMPILER_MODE", "azure_openai")
+    monkeypatch.setenv(
+        "SEMANTIC_COMPILER_ENDPOINT",
+        "https://approved-synthetic.openai.azure.com/openai/v1/chat/completions",
+    )
+    monkeypatch.setenv(
+        "SEMANTIC_COMPILER_AZURE_APPROVED_ORIGIN",
+        "https://approved-synthetic.openai.azure.com",
+    )
+    monkeypatch.setenv("SEMANTIC_COMPILER_AZURE_DEPLOYMENT", "synthetic-deployment")
+    monkeypatch.setenv("SEMANTIC_COMPILER_MODEL", "gpt-4.1-mini-2025-04-14")
+    monkeypatch.setenv("SEMANTIC_COMPILER_AZURE_AUTH", "azure_cli")
+    monkeypatch.setenv("SEMANTIC_COMPILER_AZURE_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setenv(
+        "SEMANTIC_COMPILER_AZURE_SUBSCRIPTION_ID", "00000000-0000-0000-0000-000000000002"
+    )
+    calls = []
+
+    async def rejected(self, context):
+        calls.append(context)
+        raise ProviderError("PROVIDER_AUTH", self._metadata("compile"))
+
+    monkeypatch.setattr(AzureOpenAIProvider, "compile", rejected)
+    service = OrchestrationService()
+    try:
+        assert await service.ready()
+        assert isinstance(service.compiler.runtime.real, AzureOpenAIProvider)
+        assert not calls
+        request = request_for("run_00000000000000000000000000000308")
+        await service.start(request)
+        status = await wait_for_terminal(service, request.run_id)
+        assert status.state is RunState.FAILED
+        assert any(item.code == "PROVIDER_AUTH" for item in status.diagnostics)
+        assert len(calls) == 1
+        assert (await service.get_detail(request.run_id)).manifest is None
+    finally:
+        await service.shutdown()
 
 
 @asynccontextmanager

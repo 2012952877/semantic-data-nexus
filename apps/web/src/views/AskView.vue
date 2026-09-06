@@ -10,7 +10,7 @@ import { createStages } from '@/api/mockFixtures'
 const client = inject(nexusClientKey)
 if (!client) throw new Error('SemanticNexusClient is not provided')
 
-const examples = [
+const mockExamples = [
   '比较各区域第二季度净销售额、目标达成率和同比',
   '哪些区域的销售额低于目标，但同比仍在增长？',
   '按区域汇总 2025 年上半年的净销售额',
@@ -24,6 +24,10 @@ const alertPanel = ref<HTMLElement>()
 const formError = ref('')
 const cancelError = ref('')
 const isMock = client.mode === 'mock'
+const examples = isMock ? mockExamples : ['按区域和季度汇总利润']
+const questionPlaceholder = isMock
+  ? '例如：比较各区域第二季度净销售额、目标达成率和同比'
+  : '例如：按区域和季度汇总利润'
 const currentRunActive = computed(() =>
   currentRun.value?.state === 'queued' || currentRun.value?.state === 'running')
 const hasResumableRun = computed(() => Boolean(!isMock && formError.value && currentRun.value))
@@ -131,7 +135,7 @@ const useExample = (example: string) => {
           id="question"
           v-model="question"
           rows="5"
-          placeholder="例如：比较各区域第二季度净销售额、目标达成率和同比"
+          :placeholder="questionPlaceholder"
           :disabled="submitting"
           required
         />
@@ -147,6 +151,12 @@ const useExample = (example: string) => {
             {{ example }}
           </button>
         </div>
+
+        <p v-if="!isMock" class="demo-scope" role="note">
+          当前演示使用合成业务数据，支持区域与季度维度的利润查询。
+          目标达成率、同比等未定义指标不在本版范围内；运行历史不会跨服务重启保留。
+          模型信息来自服务端运行记录，不代表所有自然语言问题均受支持。
+        </p>
 
         <div class="scope-ledger">
           <dl>
@@ -284,7 +294,7 @@ const useExample = (example: string) => {
         <div class="inline-result-heading">
           <div>
             <span>结果已提交</span>
-            <h3>{{ currentRun.result.rowCount }} 个区域</h3>
+            <h3>{{ currentRun.result.rowCount }} 行结果</h3>
           </div>
           <RouterLink :to="`/runs/${currentRun.id}`">检查运行 →</RouterLink>
         </div>

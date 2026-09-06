@@ -40,7 +40,34 @@ const request = {
 const latest = (path: string, method = 'GET'): StubRequest | undefined =>
   [...stub.requests].reverse().find((item) => item.path === path && item.method === method)
 
+const withModelProvenance = (model: unknown): ClientOptions['fetch'] => async (url, init) => {
+  const response = await fetch(url, init)
+  const body: unknown = await response.json()
+  if (typeof body === 'object' && body !== null && 'tokenUsage' in body) {
+    const usage = body.tokenUsage
+    if (typeof usage === 'object' && usage !== null) Object.assign(usage, { model })
+  }
+  return new Response(JSON.stringify(body), { status: response.status, headers: response.headers })
+}
+
 describe('HttpSemanticNexusClient', () => {
+  it('shows model provenance supplied by the server instead of the requested model label', async () => {
+    const client = createClient({ fetch: withModelProvenance('gpt-4.1-mini-2025-04-14') })
+    const run = await client.getRun('run_0123456789abcdef0123456789abcdef')
+
+    expect(run?.model).toBe('gpt-4.1-mini-2025-04-14')
+    expect(run?.model).not.toBe(request.model)
+  })
+
+  it.each(['', 'invalid\nmodel', 'x'.repeat(101), 123])(
+    'rejects invalid server model provenance %j',
+    async (model) => {
+      await expect(createClient({ fetch: withModelProvenance(model) })
+        .getRun('run_0123456789abcdef0123456789abcdef'))
+        .rejects.toMatchObject({ code: 'invalid-response' })
+    },
+  )
+
   it('posts the complete BFF contract and maps terminal detail', async () => {
     const progress: string[] = []
     const run = await createClient({

@@ -3,12 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from azure.core.credentials_async import AsyncTokenCredential
+
 from semantic_api.catalog_v1.catalog import fingerprint
 from semantic_api.catalog_v1.models import Candidate, CompilerContext
 from semantic_api.models import ProviderSelection
 from semantic_api.provider import ProviderError, ProviderResult
 from semantic_api.provider_config import ProviderConfigError, ProviderSettings
-from semantic_api.structured_provider import StructuredHTTPProvider
+from semantic_api.structured_provider import (
+    AzureOpenAIProvider,
+    StructuredHTTPProvider,
+)
 
 POLICY = (
     "Compile read-only semantic queries using compiler-candidate/v1 and sqg/v1. "
@@ -25,6 +30,14 @@ POLICY = (
     "aggregation. Resolve every stated member/time/field/metric constraint; do not guess "
     "ambiguous terms. Nodes are topologically ordered with one terminal PROJECT or LIMIT. "
     "No branching reuse, disconnected nodes, SELECT dependencies or implicit joins. "
+    "Dependency arity is exact: each SELECT has dependencies []; each JOIN has exactly "
+    "two distinct input node IDs ordered from-entity branch then to-entity branch; "
+    "every FILTER, AGGREGATE, SORT, PROJECT and LIMIT has exactly one input node ID. "
+    "Dependencies contain only immediate input node IDs, never all ancestors, entity IDs "
+    "or field IDs. A JOIN consumes the final filtered node of each branch. After joining, "
+    "AGGREGATE consumes only the JOIN, then PROJECT consumes only the AGGREGATE. "
+    "In repair, GRAPH_ARITY means correct these dependency counts without dropping any "
+    "authorized member, time or required-filter constraints. "
     "Return status graph with graph and null ambiguity_id, or blocked with both null. "
     "A clarification may refer only to a supplied ambiguity ID and has graph null. "
     "Capability absence means blocked, not a substitute operation. The server alone "
@@ -71,31 +84,45 @@ class CatalogHTTPProvider:
 
     settings: ProviderSettings
     configuration_fingerprint: str
-    _transport: StructuredHTTPProvider = field(repr=False)
+    _transport: StructuredHTTPProvider | AzureOpenAIProvider = field(repr=False)
 
-    def __init__(self, settings: ProviderSettings, credential: str) -> None:
-        if settings.mode is not ProviderSelection.OPENAI_COMPATIBLE:
+    def __init__(
+        self,
+        settings: ProviderSettings,
+        credential: str = "",
+        *,
+        token_credential: AsyncTokenCredential | None = None,
+    ) -> None:
+        if settings.mode is ProviderSelection.STATIC:
             raise ProviderConfigError()
-        if (
-            not credential
-            or len(credential) > 4096
-            or any(ord(c) < 33 or ord(c) > 126 for c in credential)
-        ):
+        if settings.mode != "azure_openai" and token_credential is not None:
             raise ProviderConfigError()
         object.__setattr__(self, "settings", settings)
         object.__setattr__(
-            self, "configuration_fingerprint", fingerprint(settings.model_dump(mode="json"))
+            self, "configuration_fingerprint", fingerprint(settings.fingerprint_payload())
         )
-        object.__setattr__(
-            self,
-            "_transport",
-            StructuredHTTPProvider(
+        transport = (
+            AzureOpenAIProvider(
+                settings,
+                credential,
+                token_credential=token_credential,
+                schema=candidate_schema(),
+                schema_name="catalog_candidate_v1",
+                system_policy=POLICY,
+            )
+            if settings.mode == "azure_openai"
+            else StructuredHTTPProvider(
                 settings,
                 credential,
                 schema=candidate_schema(),
                 schema_name="catalog_candidate_v1",
                 system_policy=POLICY,
-            ),
+            )
+        )
+        object.__setattr__(
+            self,
+            "_transport",
+            transport,
         )
 
     async def invoke(
