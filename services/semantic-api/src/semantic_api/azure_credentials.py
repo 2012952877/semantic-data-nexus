@@ -7,13 +7,16 @@ import base64
 import ctypes
 import json
 import logging
+import ntpath
 import os
+import re
 import shutil
 import signal
 import sys
 import time
 from collections.abc import Awaitable
 from contextvars import ContextVar
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Final, Literal, Self
 from urllib.parse import parse_qs, urlsplit
@@ -30,7 +33,7 @@ from azure.identity.aio import ManagedIdentityCredential
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AI_SCOPE: Final = "https://ai.azure.com/.default"
-CREDENTIAL_POLICY = "bounded-azure-identity/v1"
+CREDENTIAL_POLICY = "bounded-azure-identity/v2"
 _UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _IMDS = "http://169.254.169.254/metadata/identity/oauth2/token"
 _ENV_SELECTORS = (
@@ -417,6 +420,46 @@ def _cli_supported() -> bool:
     )
 
 
+def _windows_cli_command(arguments: list[str]) -> list[str]:
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    directory = kernel.GetSystemDirectoryW
+    directory.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+    directory.restype = ctypes.c_uint32
+    buffer = ctypes.create_unicode_buffer(32_768)
+    size = directory(buffer, len(buffer))
+    if size == 0 or size >= len(buffer):
+        raise AzureCredentialError("AUTH_UNAVAILABLE")
+    interpreter = ntpath.join(buffer.value, "cmd.exe")
+    executable = arguments[0]
+    drive, tail = ntpath.splitdrive(executable)
+    if (
+        not re.fullmatch(r"[A-Za-z]:", drive)
+        or not tail.startswith("\\")
+        or len(executable) > 4096
+        or any(c in '&|<>^%!"' or ord(c) < 32 for c in executable)
+        or any(not re.fullmatch(r"[A-Za-z0-9:/._-]+", arg) for arg in arguments[1:])
+    ):
+        raise AzureCredentialError("AUTH_UNAVAILABLE")
+    try:
+        cli_path = Path(executable).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise AzureCredentialError("AUTH_UNAVAILABLE") from None
+    resolved = str(cli_path)
+    if (
+        cli_path.name.lower() != "az.cmd"
+        or len(resolved) > 4096
+        or not cli_path.is_file()
+        or not re.fullmatch(r"[A-Za-z]:", ntpath.splitdrive(resolved)[0])
+        or any(c in '&|<>^%!"' or ord(c) < 32 for c in resolved)
+    ):
+        raise AzureCredentialError("AUTH_UNAVAILABLE")
+    # All arguments after the batch path are fixed literals or validated identifiers.
+    # subprocess quotes paths containing spaces; otherwise cmd needs literal
+    # parentheses escaped. No user-supplied quoting or expansion is accepted.
+    command_path = resolved if " " in resolved else resolved.replace("(", "^(").replace(")", "^)")
+    return [interpreter, "/d", "/v:off", "/c", command_path, *arguments[1:]]
+
+
 class BoundedAzureCredential:
     """Factory-owned credential; close cancels acquisition and settles owned resources."""
 
@@ -485,6 +528,10 @@ class BoundedAzureCredential:
             "--subscription",
             self.config.subscription_id,
         ]
+        environment = dict(os.environ, AZURE_CORE_NO_COLOR="true")
+        if sys.platform == "win32":
+            arguments = _windows_cli_command(arguments)
+            environment["COMSPEC"] = arguments[0]
         job = _WindowsJob() if sys.platform == "win32" else None
         creation = asyncio.create_task(
             asyncio.create_subprocess_exec(
@@ -495,8 +542,8 @@ class BoundedAzureCredential:
                 limit=8192,
                 start_new_session=sys.platform != "win32",
                 creationflags=4 if sys.platform == "win32" else 0,  # CREATE_SUSPENDED
-                cwd=os.environ["SystemRoot"] if sys.platform == "win32" else "/",
-                env=dict(os.environ, AZURE_CORE_NO_COLOR="true"),
+                cwd=ntpath.dirname(arguments[0]) if sys.platform == "win32" else "/",
+                env=environment,
             )
         )
         process: asyncio.subprocess.Process | None = None

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import math
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import pytest
@@ -106,10 +109,11 @@ def clear_identity_environment(monkeypatch):
 
 
 def offline_cli(monkeypatch, script):
-    """Run only local synthetic Python processes, never the installed CLI/account."""
+    """Isolate process-lifetime tests; real batch dispatch is covered separately below."""
     original = asyncio.create_subprocess_exec
     calls, processes = [], []
     monkeypatch.setattr(credentials.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(credentials, "_windows_cli_command", lambda args: args)
 
     async def create(*args, **kwargs):
         if len(args) > 1 and args[1] == "account":
@@ -148,6 +152,161 @@ async def test_owned_cli_explicit_subscription_and_routing(monkeypatch):
             await credential.get_token("https://unapproved.invalid/.default")
     finally:
         await credential.close()
+
+
+def windows_process_image(pid):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    kernel.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    assert handle
+    try:
+        buffer = ctypes.create_unicode_buffer(32_768)
+        size = ctypes.c_uint32(len(buffer))
+        assert kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size))
+        return buffer.value
+    finally:
+        kernel.CloseHandle(handle)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Real Windows batch dispatch regression")
+@pytest.mark.parametrize("folder", ["CLI with spaces (x86)", "CLI(no-spaces)"])
+@pytest.mark.parametrize("action", ["success", "timeout", "cancel", "close"])
+async def test_real_cmd_dispatch_ignores_parent_comspec(monkeypatch, tmp_path, folder, action):
+    directory = tmp_path / folder
+    directory.mkdir()
+    batch, program, observation = (
+        directory / "az.cmd",
+        directory / "synthetic.py",
+        directory / "arguments.json",
+    )
+    connected = asyncio.get_running_loop().create_future()
+    server = await asyncio.start_server(
+        lambda reader, writer: connected.set_result((reader, writer)), "127.0.0.1", 0
+    )
+    port = server.sockets[0].getsockname()[1]
+    response = json.dumps({"accessToken": AZURE_TOKEN, "expires_on": int(time.time()) + 3600})
+    program.write_text(
+        "import json,pathlib,socket,sys,time\n"
+        f"pathlib.Path({str(observation)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        f"s=socket.create_connection(('127.0.0.1',{port}))\ns.sendall(b'1')\n"
+        + (f"print({response!r})\n" if action == "success" else "time.sleep(60)\n"),
+        encoding="utf-8",
+    )
+    batch.write_text(f'@echo off\n"{sys.executable}" "{program}" %*\n', encoding="utf-8")
+    monkeypatch.setenv("COMSPEC", sys.executable)
+    monkeypatch.setattr(credentials.shutil, "which", lambda _: str(batch))
+    original_spawn = asyncio.create_subprocess_exec
+    calls, images, processes = [], [], []
+
+    async def inspect_spawn(*args, **kwargs):
+        assert kwargs.get("shell", False) is False
+        assert kwargs["creationflags"] == 4
+        process = await original_spawn(*args, **kwargs)
+        # Inspect the actual suspended process, not just a mocked argument list.
+        images.append(windows_process_image(process.pid))
+        calls.append((args, kwargs))
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", inspect_spawn)
+    credential = create_azure_credential(identity_config(timeout_seconds=30))
+    deadline = asyncio.timeout(30)
+
+    async def invoke():
+        async with deadline:
+            return await credential.get_token(AI_SCOPE)
+
+    async with server:
+        task = asyncio.create_task(invoke())
+        writer = None
+        try:
+            reader, writer = await asyncio.wait_for(connected, 20)
+            assert await asyncio.wait_for(reader.readexactly(1), 1) == b"1"
+            args, options = calls[0]
+            assert Path(images[0]).name.lower() == "cmd.exe"
+            assert os.path.normcase(images[0]) == os.path.normcase(args[0])
+            assert args[1:4] == ("/d", "/v:off", "/c")
+            resolved = str(batch.resolve())
+            assert args[4] == (
+                resolved if " " in resolved else resolved.replace("(", "^(").replace(")", "^)")
+            )
+            assert options["env"]["COMSPEC"] == args[0]
+            assert os.environ["COMSPEC"] == sys.executable
+            assert options["cwd"] == str(Path(args[0]).parent)
+            assert json.loads(observation.read_text()) == [
+                "account",
+                "get-access-token",
+                "--output",
+                "json",
+                "--resource",
+                "https://ai.azure.com",
+                "--subscription",
+                SUBSCRIPTION,
+            ]
+            if action == "success":
+                assert (await task).token == AZURE_TOKEN
+            elif action == "timeout":
+                deadline.reschedule(asyncio.get_running_loop().time() + 0.05)
+                with pytest.raises(TimeoutError):
+                    await task
+            else:
+                if action == "cancel":
+                    task.cancel()
+                else:
+                    await credential.close()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert processes[0].returncode is not None
+            try:
+                assert await asyncio.wait_for(reader.read(), 1) == b""
+            except ConnectionResetError:
+                pass
+        finally:
+            await credential.close()
+            await asyncio.gather(task, return_exceptions=True)
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except ConnectionResetError:
+                    pass
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows command path validation")
+@pytest.mark.parametrize(
+    "path",
+    [
+        "az.cmd",
+        r"C:az.cmd",
+        r"\\server\share\az.cmd",
+        r"C:\synthetic%EXPANSION%\az.cmd",
+        r"C:\synthetic&command\az.cmd",
+        r"C:\synthetic!expansion!\az.cmd",
+        "C:\\synthetic\ncommand\\az.cmd",
+    ],
+)
+def test_batch_command_rejects_untrusted_paths_before_spawn(path):
+    with pytest.raises(AzureCredentialError) as caught:
+        credentials._windows_cli_command([path, "account"])
+    assert caught.value.code == "AUTH_UNAVAILABLE"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="OS-owned interpreter location")
+def test_batch_interpreter_does_not_use_systemroot_or_comspec(monkeypatch, tmp_path):
+    batch = tmp_path / "az.cmd"
+    batch.write_text("@exit /b 0\n")
+    expected = credentials._windows_cli_command([str(batch), "account"])[0]
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    monkeypatch.setenv("COMSPEC", sys.executable)
+    assert credentials._windows_cli_command([str(batch), "account"])[0] == expected
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows SDK selector-loop regression")
