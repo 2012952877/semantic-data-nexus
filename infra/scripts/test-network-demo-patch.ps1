@@ -5,7 +5,7 @@ New-Item -ItemType Directory -Path $directory | Out-Null
 try {
     $client = [guid]::Empty.ToString()
     $containers = @(
-        @{ name = 'web'; image = 'demo.azurecr.io/web:old'; resources = @{ cpu = 0.25; memory = '0.5Gi' } }
+        @{ name = 'web'; image = 'demo.azurecr.io/web:old'; imageType = 'ContainerImage'; resources = @{ cpu = 0.25; memory = '0.5Gi' } }
         @{ name = 'control-api'; image = 'demo.azurecr.io/control-api:old'; resources = @{ cpu = 0.25; memory = '0.5Gi' } }
         @{
             name = 'semantic-backend'
@@ -29,6 +29,7 @@ try {
                 containers = $containers
                 volumes = @(@{ name = 'auth'; storageType = 'Secret' })
                 revisionSuffix = 'old'
+                customMetricsSettings = $null
             }
         }
     }
@@ -62,7 +63,19 @@ try {
     if ($patch.properties.ContainsKey('configuration') -or $patch.ContainsKey('identity')) {
         throw 'Authentication or identity configuration leaked into the patch.'
     }
+    if ($patch.properties.template.ContainsKey('customMetricsSettings') -or
+        $patch.properties.template.containers[0].ContainsKey('imageType')) {
+        throw 'Unsupported readback fields leaked into the stable API patch.'
+    }
     $backend = @($patch.properties.template.containers | Where-Object name -eq 'semantic-backend')[0]
+    if ($backend.args[0] -notmatch 'unset MSI_ENDPOINT MSI_SECRET' -or
+        $backend.args[0] -notmatch 'Conflicting managed identity endpoint aliases' -or
+        $backend.args[0] -notmatch 'Conflicting managed identity header aliases') {
+        throw 'Explicit identity selection must reject conflicting legacy aliases.'
+    }
+    if ($backend.args[0].Contains("`r")) {
+        throw 'The Linux startup script must use LF line endings.'
+    }
     $envValues = @{}
     foreach ($entry in $backend.env) { $envValues[$entry.name] = $entry.value }
     if ($envValues.SEMANTIC_COMPILER_MAX_CONCURRENT_CALLS -ne '1' -or

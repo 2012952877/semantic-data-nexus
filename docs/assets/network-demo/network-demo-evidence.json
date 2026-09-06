@@ -1,0 +1,16 @@
+{
+  "url": "https://sdn-m0-https.salmonbush-f52c1293.eastus2.azurecontainerapps.io/runs/run_c56b920c0b01472997f86aad6d3ad0ed",
+  "runId": "run_c56b920c0b01472997f86aad6d3ad0ed",
+  "question": "按区域和季度汇总利润",
+  "state": "Succeeded",
+  "model": "gpt-4.1-mini-2025-04-14",
+  "tokenUsage": {
+    "inputTokens": 3010,
+    "outputTokens": 292,
+    "model": "gpt-4.1-mini-2025-04-14",
+    "totalTokens": 3302
+  },
+  "rowCount": 20,
+  "data": "synthetic",
+  "sourceCommit": "b4b5f0c918b1b2899b5c69029814b551b568789c"
+}

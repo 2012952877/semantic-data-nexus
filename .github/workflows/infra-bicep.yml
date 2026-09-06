@@ -36,4 +36,6 @@ jobs:
 
       - name: Run infrastructure regression assertions
         shell: pwsh
-        run: ./infra/scripts/test-template.ps1
+        run: |
+          ./infra/scripts/test-template.ps1
+          ./infra/scripts/test-network-demo-patch.ps1

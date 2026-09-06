@@ -35,6 +35,24 @@ if ($ClientId.ToString() -notin $identityClients) {
 
 $original = $current.properties.template | ConvertTo-Json -Depth 80 | ConvertFrom-Json -AsHashtable
 $candidate = $current.properties.template | ConvertTo-Json -Depth 80 | ConvertFrom-Json -AsHashtable
+# Newer CLI readbacks include fields that the stable 2025-01-01 write API rejects.
+foreach ($template in @($original, $candidate)) {
+    if ($template.ContainsKey('customMetricsSettings')) {
+        if ($null -ne $template.customMetricsSettings) {
+            throw 'Custom metrics require a separately reviewed deployment recipe.'
+        }
+        $template.Remove('customMetricsSettings')
+    }
+    foreach ($container in $template.containers) {
+        if ($container.ContainsKey('imageType')) {
+            if ($container.imageType -notin @($null, 'ContainerImage')) {
+                throw 'Only ordinary container images are supported by this recipe.'
+            }
+            $container.Remove('imageType')
+        }
+        $container.resources.Remove('ephemeralStorage')
+    }
+}
 if ($candidate.scale.minReplicas -ne 1 -or $candidate.scale.maxReplicas -ne 1) {
     throw 'This recipe preserves exactly one always-on replica; it cannot change scale.'
 }
@@ -60,10 +78,6 @@ foreach ($container in $candidate.containers) {
         throw "An immutable image in the existing registry is required for $($container.name)."
     }
     $container.image = $image
-    $container.resources.Remove('ephemeralStorage')
-}
-foreach ($container in $original.containers) {
-    $container.resources.Remove('ephemeralStorage')
 }
 
 $backend = @($candidate.containers | Where-Object { $_.name -eq 'semantic-backend' })[0]
@@ -95,9 +109,24 @@ foreach ($entry in $settings.GetEnumerator()) {
 }
 $backend.env = @($environment.Values)
 $backend.command = @('sh', '-c')
-$backend.args = @(
-    'set -eu; : "${IDENTITY_ENDPOINT:?Managed identity endpoint is missing}"; export SEMANTIC_COMPILER_AZURE_MANAGED_IDENTITY_ENDPOINT="$IDENTITY_ENDPOINT"; exec python -m uvicorn semantic_backend.api:create_app --factory --host 127.0.0.1 --port 8082'
-)
+# ACA also injects legacy aliases. Reject conflicting values before selecting the modern pair.
+$backend.args = @(@'
+set -eu
+: "${IDENTITY_ENDPOINT:?Managed identity endpoint is missing}"
+: "${IDENTITY_HEADER:?Managed identity header is missing}"
+if [ -n "${MSI_ENDPOINT:-}" ] && [ "$MSI_ENDPOINT" != "$IDENTITY_ENDPOINT" ]; then
+    echo "Conflicting managed identity endpoint aliases." >&2
+    exit 1
+fi
+if [ -n "${MSI_SECRET:-}" ] && [ "$MSI_SECRET" != "$IDENTITY_HEADER" ]; then
+    echo "Conflicting managed identity header aliases." >&2
+    exit 1
+fi
+unset MSI_ENDPOINT MSI_SECRET
+export SEMANTIC_COMPILER_AZURE_MANAGED_IDENTITY_ENDPOINT="$IDENTITY_ENDPOINT"
+exec python -m uvicorn semantic_backend.api:create_app --factory --host 127.0.0.1 --port 8082
+'@)
+$backend.args = @($backend.args[0].Replace("`r`n", "`n").Replace("`r", "`n"))
 $candidate.revisionSuffix = $RevisionSuffix
 $original.revisionSuffix = "$RevisionSuffix-rollback"
 
