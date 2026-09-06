@@ -16,6 +16,8 @@ dependencies = [
   "pydantic>=2.10,<3",
   "tzdata>=2025.2",
   "uvicorn>=0.34,<1",
+  "azure-identity>=1.25,<2",
+  "aiohttp>=3.11,<4",
 ]
 
 [project.optional-dependencies]

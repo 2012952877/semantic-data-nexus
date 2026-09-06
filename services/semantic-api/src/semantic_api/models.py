@@ -397,7 +397,7 @@ class SQG(StrictModel):
 
 
 class ProviderCallMetadata(StrictModel):
-    provider: Literal["openai_compatible"] = "openai_compatible"
+    provider: Literal["openai_compatible", "azure_openai"] = "openai_compatible"
     model: str
     deployment: str | None = None
     phase: Literal["compile", "repair"] = "compile"

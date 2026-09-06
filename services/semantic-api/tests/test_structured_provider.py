@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import logging
+import ssl
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from azure.core.credentials import AccessToken
+from azure.core.exceptions import ClientAuthenticationError
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+from httpcore._backends.auto import AutoBackend
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
@@ -28,8 +39,20 @@ from semantic_api.provider import (
     StructuredCompileContext,
     UntrustedQuestion,
 )
-from semantic_api.provider_config import ProviderRuntime, ProviderSettings
-from semantic_api.structured_provider import SYSTEM_POLICY, StructuredHTTPProvider, response_schema
+from semantic_api.provider_config import (
+    AZURE_SCOPE,
+    AzureAuth,
+    ProviderConfigError,
+    ProviderRuntime,
+    ProviderSettings,
+)
+from semantic_api.structured_provider import (
+    SYSTEM_POLICY,
+    AzureOpenAIProvider,
+    StructuredHTTPProvider,
+    azure_response_schema,
+    response_schema,
+)
 
 MODEL = "gpt-4o-2024-08-06"
 SECRET = "synthetic-test-credential"
@@ -100,11 +123,12 @@ class MockServer:
 
 
 @asynccontextmanager
-async def mock_server(*replies):
+async def mock_server(*replies, tls=None):
     mock = MockServer(replies)
-    server = await asyncio.start_server(mock.handle, "127.0.0.1", 0)
+    server = await asyncio.start_server(mock.handle, "127.0.0.1", 0, ssl=tls)
     port = server.sockets[0].getsockname()[1]
     mock.endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
+    mock.port = port
     try:
         async with server:
             yield mock
@@ -895,3 +919,709 @@ async def test_exhausted_deadline_does_not_start_repair(registry, compile_reques
         assert result.status is CompileStatus.FAILED
         assert result.diagnostics[-1].code == "REPAIR_TIMEOUT"
         assert len(mock.requests) == 1
+
+
+AZURE_ORIGIN = "https://approved-synthetic.openai.azure.com"
+AZURE_MODEL = "gpt-4.1-mini-2025-04-14"
+AZURE_DEPLOYMENT = "reviewed-synthetic-deployment"
+TENANT = "00000000-0000-0000-0000-000000000001"
+SUBSCRIPTION = "00000000-0000-0000-0000-000000000002"
+
+
+def azure_token(*, tenant=TENANT, audience="https://ai.azure.com", marker="synthetic"):
+    payload = json.dumps({"tid": tenant, "aud": audience, "test_marker": marker}).encode()
+    return "synthetic." + base64.urlsafe_b64encode(payload).decode().rstrip("=") + ".unsigned"
+
+
+AZURE_TOKEN = azure_token()
+
+
+def azure_settings(**overrides):
+    values = {
+        "mode": "azure_openai",
+        "endpoint": AZURE_ORIGIN + "/openai/v1/chat/completions",
+        "azure_approved_origin": AZURE_ORIGIN,
+        "azure_deployment": AZURE_DEPLOYMENT,
+        "model": AZURE_MODEL,
+        "azure_auth": "azure_cli",
+        "azure_tenant_id": TENANT,
+        "azure_subscription_id": SUBSCRIPTION,
+    }
+    return ProviderSettings(**(values | overrides))
+
+
+def azure_completion(candidate):
+    data = completion(candidate)
+    data["model"] = AZURE_MODEL
+    data["choices"][0]["message"]["tool_calls"] = []
+    filters = {
+        name: {"filtered": False, "severity": "safe"}
+        for name in ("hate", "self_harm", "sexual", "violence")
+    }
+    data["choices"][0]["content_filter_results"] = copy.deepcopy(filters)
+    data["prompt_filter_results"] = [{"prompt_index": 0, "content_filter_results": filters}]
+    data["routing"] = {"serving_pipereplica": "synthetic-private-routing"}
+    data["usage"]["latency_checkpoint"] = {
+        name: 1
+        for name in (
+            "engine_tbt_ms",
+            "engine_ttft_ms",
+            "engine_ttlt_ms",
+            "pre_inference_ms",
+            "service_tbt_ms",
+            "service_ttft_ms",
+            "service_ttlt_ms",
+            "user_visible_ttft_ms",
+        )
+    }
+    return data
+
+
+class ControlledCredential:
+    def __init__(self, *, token=AZURE_TOKEN, lifetime=3600, error=None, wait=None):
+        self.token = token
+        self.lifetime = lifetime
+        self.error = error
+        self.wait = wait
+        self.calls = []
+        self.closes = 0
+        self.entered = asyncio.Event()
+        self.cancelled = False
+
+    async def get_token(self, *scopes, **kwargs):
+        self.calls.append((scopes, kwargs))
+        self.entered.set()
+        if self.error:
+            raise self.error
+        if self.wait:
+            try:
+                await self.wait.wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        return AccessToken(self.token, int(time.time()) + self.lifetime)
+
+    async def close(self):
+        self.closes += 1
+
+
+@pytest.fixture
+def azure_tls(tmp_path, monkeypatch):
+    """Real certificate-verified TLS; only test socket routing redirects to loopback."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Synthetic test certificate")])
+    host = "approved-synthetic.openai.azure.com"
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(hours=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path, key_path = tmp_path / "certificate.pem", tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert_path, key_path)
+    client_context = ssl.create_default_context(cafile=str(cert_path))
+    original_client = httpx.AsyncClient
+
+    def route(target_port):
+        class LoopbackBackend(AutoBackend):
+            async def connect_tcp(self, host, port, **kwargs):
+                assert host == "approved-synthetic.openai.azure.com" and port == 443
+                return await super().connect_tcp("127.0.0.1", target_port, **kwargs)
+
+        def client(**kwargs):
+            transport = httpx.AsyncHTTPTransport(verify=client_context, retries=0)
+            transport._pool._network_backend = LoopbackBackend()
+            assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
+            return original_client(**kwargs, transport=transport)
+
+        monkeypatch.setattr(httpx, "AsyncClient", client)
+
+    return server_context, route
+
+
+async def test_azure_tls_actual_wire_and_rotating_identity(
+    azure_tls, compile_context, wire_candidate, monkeypatch, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("HTTPS_PROXY", "http://169.254.169.254:9999")
+    credential = ControlledCredential(lifetime=30)
+    tls, route = azure_tls
+    changed = copy.deepcopy(wire_candidate)
+    changed["nodes"][0]["name"] = "Model returned a distinct candidate"
+    async with mock_server(
+        reply(azure_completion(wire_candidate)), reply(azure_completion(changed)), tls=tls
+    ) as mock:
+        route(mock.port)
+        provider = AzureOpenAIProvider(azure_settings(), token_credential=credential)
+        first = await provider.compile(compile_context)
+        credential.token = azure_token(marker="refreshed")
+        second = await provider.compile(compile_context)
+        assert first.candidate == wire_candidate and second.candidate == changed
+        assert first.metadata.provider == "azure_openai"
+        assert first.metadata.model == AZURE_MODEL
+        assert first.metadata.deployment == AZURE_DEPLOYMENT
+        assert (first.input_tokens, first.output_tokens) == (150, 250)
+        assert len(credential.calls) == 2
+        assert credential.calls == [((AZURE_SCOPE,), {}), ((AZURE_SCOPE,), {})]
+        method, headers, body = mock.requests[0]
+        assert method == "POST /openai/v1/chat/completions HTTP/1.1"
+        assert headers["Host"] == "approved-synthetic.openai.azure.com"
+        assert headers["Authorization"] == f"Bearer {AZURE_TOKEN}"
+        assert "api-key" not in headers
+        assert mock.requests[1][1]["Authorization"] == f"Bearer {credential.token}"
+        assert body["model"] == AZURE_DEPLOYMENT
+        assert body["max_completion_tokens"] == 2048
+        assert body["n"] == 1 and body["store"] is False and body["stream"] is False
+        assert "temperature" not in body and "max_tokens" not in body
+        assert body["response_format"]["json_schema"] == {
+            "name": "sqg_v0",
+            "strict": True,
+            "schema": azure_response_schema(response_schema()),
+        }
+        assert body["messages"][0]["content"] == SYSTEM_POLICY
+        assert AZURE_TOKEN not in caplog.text and credential.token not in caplog.text
+        await provider.aclose()
+        assert credential.closes == 0  # Injected/shared credentials are borrowed.
+        with pytest.raises(ProviderError, match="structured request") as caught:
+            await provider.compile(compile_context)
+        assert caught.value.code == "PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("auth", ["api_key", "managed_identity", "workload_identity", "azure_cli"])
+async def test_azure_runtime_selection_and_owned_lifecycle(auth, monkeypatch):
+    credential = ControlledCredential()
+    overrides = {
+        "azure_auth": auth,
+        "azure_subscription_id": SUBSCRIPTION if auth == "azure_cli" else "",
+    }
+    if auth == AzureAuth.KEY:
+        overrides.update(azure_tenant_id="", credential_env="TEST_MODEL_KEY")
+    if auth == "workload_identity":
+        overrides.update(azure_client_id=SUBSCRIPTION, azure_token_file="synthetic-token-file")
+    config = azure_settings(**overrides)
+    runtime = ProviderRuntime(config, {"TEST_MODEL_KEY": SECRET})
+    provider = runtime.select(ProviderSelection.STATIC)
+    assert isinstance(provider, AzureOpenAIProvider)
+    assert runtime.select(ProviderSelection.OPENAI_COMPATIBLE) is provider
+    assert runtime.ready and not credential.calls  # No model/identity health check.
+    monkeypatch.setattr(provider, "_create_credential", lambda: credential)
+    headers = await provider._auth_headers()
+    if auth == AzureAuth.KEY:
+        assert list(headers) == ["api-key"] and headers["api-key"] == SECRET
+    else:
+        assert headers == {"Authorization": f"Bearer {AZURE_TOKEN}"}
+    await runtime.aclose()
+    await runtime.aclose()
+    assert credential.closes == (0 if auth == AzureAuth.KEY else 1)
+    assert not runtime.ready
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"endpoint": "https://other.openai.azure.com/openai/v1/chat/completions"},
+        {"endpoint": AZURE_ORIGIN + "/openai/deployments/model/chat/completions"},
+        {"endpoint": AZURE_ORIGIN + "/openai/v1/chat/completions?api-version=preview"},
+        {"endpoint": AZURE_ORIGIN + "/openai/v1/chat/completions#fragment"},
+        {
+            "endpoint": AZURE_ORIGIN.replace("https://", "https://user@")
+            + "/openai/v1/chat/completions"
+        },
+        {"endpoint": AZURE_ORIGIN + ":443/openai/v1/chat/completions"},
+        {"azure_approved_origin": "https://approved-synthetic.openai.azure.com.evil.invalid"},
+        {"azure_approved_origin": "https://169.254.169.254"},
+        {"azure_approved_origin": "https://UPPER.openai.azure.com"},
+        {"azure_approved_origin": ""},
+        {"allow_local_mock": True},
+        {"azure_deployment": ""},
+        {"azure_deployment": "../model"},
+        {"model": AZURE_DEPLOYMENT},
+        {"model": "gpt-3.5-turbo"},
+        {"azure_tenant_id": ""},
+        {"azure_tenant_id": "*"},
+        {"azure_subscription_id": ""},
+        {"azure_client_id": SUBSCRIPTION},
+        {"credential_env": "TEST_MODEL_KEY"},
+        {"azure_token_file": "unexpected"},
+        {"azure_auth": "default_credential"},
+        {"max_input_tokens": 131_072},
+    ],
+)
+def test_azure_configuration_is_exact_and_fail_closed(overrides):
+    with pytest.raises(ValidationError):
+        azure_settings(**overrides)
+
+
+def test_azure_does_not_expand_legacy_openai_or_public_selection():
+    with pytest.raises(ValidationError):
+        settings(AZURE_ORIGIN + "/openai/v1/chat/completions")
+    with pytest.raises(ProviderConfigError):
+        StructuredHTTPProvider(azure_settings(), SECRET)
+    with pytest.raises(ProviderConfigError):
+        AzureOpenAIProvider(settings("https://api.openai.com/v1/chat/completions"), SECRET)
+    assert {mode.value for mode in ProviderSelection} == {"static", "openai_compatible"}
+    assert ProviderSettings().mode is ProviderSelection.STATIC
+
+
+@pytest.mark.parametrize("problem", ["expired", "newline", "auth", "timeout", "cancel", "shutdown"])
+async def test_azure_token_failure_is_bounded_without_http(problem, compile_context, monkeypatch):
+    credential = ControlledCredential(
+        lifetime=-1 if problem == "expired" else 3600,
+        token="bad\nheader" if problem == "newline" else AZURE_TOKEN,
+        error=ClientAuthenticationError(PRIVATE) if problem == "auth" else None,
+        wait=asyncio.Event() if problem in {"timeout", "cancel", "shutdown"} else None,
+    )
+    provider = AzureOpenAIProvider(azure_settings(timeout_seconds=0.1))
+    monkeypatch.setattr(provider, "_create_credential", lambda: credential)
+    task = asyncio.create_task(provider.compile(compile_context))
+    await credential.entered.wait()
+    if problem == "cancel":
+        task.cancel()
+    if problem == "shutdown":
+        await provider.aclose()
+    if problem in {"cancel", "shutdown"}:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert credential.cancelled
+    else:
+        with pytest.raises(ProviderError) as caught:
+            await task
+        assert caught.value.code == (
+            "PROVIDER_TIMEOUT" if problem == "timeout" else "PROVIDER_AUTH"
+        )
+        assert caught.value.metadata.input_tokens is None
+        assert caught.value.metadata.provider == "azure_openai"
+        assert PRIVATE not in str(caught.value)
+    await provider.aclose()
+    assert credential.closes == 1 and not provider._active
+
+
+@pytest.mark.parametrize(
+    ("problem", "code"),
+    [
+        ("model", "PROVIDER_MODEL_MISMATCH"),
+        ("unknown_field", "PROVIDER_PROTOCOL"),
+        ("usage", "PROVIDER_USAGE"),
+        ("missing_usage", "PROVIDER_PROTOCOL"),
+        ("string_usage", "PROVIDER_PROTOCOL"),
+        ("refusal", "PROVIDER_REFUSAL"),
+        ("filtered", "PROVIDER_REFUSAL"),
+        ("filter_shape", "PROVIDER_PROTOCOL"),
+        ("length", "PROVIDER_TRUNCATED"),
+        ("tools", "PROVIDER_PROTOCOL"),
+        ("json", "PROVIDER_INVALID_JSON"),
+        ("duplicate", "PROVIDER_INVALID_JSON"),
+        ("schema", "PROVIDER_SCHEMA"),
+        ("local_constraint", "PROVIDER_SCHEMA"),
+    ],
+)
+async def test_azure_tls_response_failures_keep_usage(
+    azure_tls, compile_context, wire_candidate, problem, code
+):
+    data = azure_completion(wire_candidate)
+    choice = data["choices"][0]
+    if problem == "model":
+        data["model"] = AZURE_DEPLOYMENT
+    elif problem == "unknown_field":
+        data["unreviewed"] = PRIVATE
+    elif problem == "usage":
+        data["usage"]["total_tokens"] += 1
+    elif problem == "missing_usage":
+        del data["usage"]
+    elif problem == "string_usage":
+        data["usage"]["prompt_tokens"] = "150"
+    elif problem == "refusal":
+        choice["message"]["refusal"] = PRIVATE
+    elif problem == "filtered":
+        choice["content_filter_results"]["hate"]["filtered"] = True
+    elif problem == "filter_shape":
+        choice["content_filter_results"]["hate"]["filtered"] = "false"
+    elif problem == "length":
+        choice["finish_reason"] = "length"
+    elif problem == "tools":
+        choice["message"]["tool_calls"] = [{"id": PRIVATE}]
+    elif problem == "json":
+        choice["message"]["content"] = PRIVATE
+    elif problem == "duplicate":
+        choice["message"]["content"] = '{"nodes":[],"nodes":[]}'
+    else:
+        candidate = copy.deepcopy(wire_candidate)
+        if problem == "schema":
+            candidate["sql"] = PRIVATE
+        else:
+            candidate["nodes"] = []  # Wire omits minItems; full local schema rejects.
+        choice["message"]["content"] = json.dumps(candidate)
+    tls, route = azure_tls
+    async with mock_server(reply(data), tls=tls) as mock:
+        route(mock.port)
+        provider = AzureOpenAIProvider(azure_settings(), token_credential=ControlledCredential())
+        with pytest.raises(ProviderError) as caught:
+            await provider.compile(compile_context)
+        assert caught.value.code == code
+        known = problem in {
+            "refusal",
+            "filtered",
+            "length",
+            "json",
+            "duplicate",
+            "schema",
+            "local_constraint",
+        }
+        assert caught.value.metadata.input_tokens == (150 if known else None)
+        assert caught.value.metadata.outcome == code
+        assert len(mock.requests) == 1
+        await provider.aclose()
+
+
+@pytest.mark.parametrize("status", [301, 307, 401, 403, 429, 500])
+async def test_azure_tls_http_failures_never_retry(azure_tls, compile_context, status):
+    tls, route = azure_tls
+    async with mock_server(Reply(PRIVATE.encode(), status=status), tls=tls) as mock:
+        route(mock.port)
+        credential = ControlledCredential()
+        provider = AzureOpenAIProvider(azure_settings(), token_credential=credential)
+        with pytest.raises(ProviderError) as caught:
+            await provider.compile(compile_context)
+        assert (
+            caught.value.code
+            == {
+                301: "PROVIDER_REDIRECT",
+                307: "PROVIDER_REDIRECT",
+                401: "PROVIDER_AUTH",
+                403: "PROVIDER_AUTH",
+                429: "PROVIDER_RATE_LIMIT",
+                500: "PROVIDER_UNAVAILABLE",
+            }[status]
+        )
+        assert len(mock.requests) == 1 and len(credential.calls) == 1
+        assert caught.value.metadata.input_tokens is None
+        await provider.aclose()
+
+
+async def test_azure_catalog_fingerprint_and_actual_graph(azure_tls):
+    from dataclasses import FrozenInstanceError
+
+    from test_catalog_v1 import CASES, deadline, setup
+
+    from semantic_api.catalog_v1.provider import CatalogHTTPProvider
+
+    config = azure_settings(max_input_tokens=65_536)
+    credential = ControlledCredential()
+    provider = CatalogHTTPProvider(config, token_credential=credential)
+    with pytest.raises(FrozenInstanceError):
+        provider.settings = azure_settings(azure_deployment="changed")
+    with pytest.raises(ValidationError):
+        config.model = "changed"
+    original_fingerprint = provider.configuration_fingerprint
+    assert (
+        CatalogHTTPProvider(
+            config, token_credential=ControlledCredential()
+        ).configuration_fingerprint
+        == original_fingerprint
+    )
+    for change in (
+        {"azure_deployment": "changed"},
+        {"model": MODEL},
+        {"azure_subscription_id": TENANT},
+        {"timeout_seconds": 10},
+        {
+            "endpoint": "https://other.openai.azure.com/openai/v1/chat/completions",
+            "azure_approved_origin": "https://other.openai.azure.com",
+        },
+    ):
+        assert (
+            CatalogHTTPProvider(
+                azure_settings(max_input_tokens=65_536, **change),
+                token_credential=credential,
+            ).configuration_fingerprint
+            != original_fingerprint
+        )
+    assert SECRET not in json.dumps(config.fingerprint_payload())
+    tls, route = azure_tls
+    async with mock_server(reply(azure_completion(CASES[1]["candidate"])), tls=tls) as mock:
+        route(mock.port)
+        compiler, request, context, authority = setup(1, provider=provider)
+        result = await compiler.compile(request, context=context, deadline=deadline())
+        assert result.status == "compiled", result.diagnostics
+        assert result.graph.model_dump(mode="json") == CASES[1]["candidate"]["graph"]
+        assert result.calls[0].provider == "azure_openai"
+        assert result.calls[0].deployment == AZURE_DEPLOYMENT
+        assert authority.calls == 3
+        assert provider.configuration_fingerprint == original_fingerprint
+        assert "sqg/v1" in mock.requests[0][2]["messages"][0]["content"]
+        assert (
+            mock.requests[0][2]["response_format"]["json_schema"]["name"] == "catalog_candidate_v1"
+        )
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "not-a-jwt",
+        "header.!!!!.signature",
+        azure_token(tenant=SUBSCRIPTION),
+        azure_token(audience="https://cognitiveservices.azure.com"),
+        azure_token(audience="https://unapproved.invalid"),
+    ],
+)
+async def test_azure_token_routing_rejects_wrong_tenant_and_audience(token, compile_context):
+    provider = AzureOpenAIProvider(
+        azure_settings(), token_credential=ControlledCredential(token=token)
+    )
+    with pytest.raises(ProviderError) as caught:
+        await provider.compile(compile_context)
+    assert caught.value.code == "PROVIDER_AUTH"
+    assert caught.value.metadata.input_tokens is None
+    await provider.aclose()
+
+
+def test_azure_cli_is_subscription_pinned_without_mutually_exclusive_tenant(monkeypatch):
+    import semantic_api.structured_provider as transport
+
+    constructed = []
+    credential = ControlledCredential()
+
+    def create(**kwargs):
+        constructed.append(kwargs)
+        return credential
+
+    monkeypatch.setattr(transport, "AzureCliCredential", create)
+    provider = AzureOpenAIProvider(azure_settings())
+    assert provider._create_credential() is credential
+    assert constructed == [{"subscription": SUBSCRIPTION, "process_timeout": 5}]
+
+
+async def test_real_azure_identity_builds_subscription_only_cli_command(monkeypatch):
+    import azure.identity.aio._credentials.azure_cli as cli
+
+    commands = []
+
+    async def command(args, process_timeout):
+        commands.append((args, process_timeout))
+        # This is the CLI's real argument restriction, exercised through the SDK.
+        if "--tenant" in args and "--subscription" in args:
+            raise ClientAuthenticationError("Specify only one of subscription and tenant")
+        return json.dumps({"accessToken": AZURE_TOKEN, "expires_on": int(time.time()) + 3600})
+
+    monkeypatch.setattr(cli, "_run_command", command)
+    provider = AzureOpenAIProvider(azure_settings())
+    try:
+        assert await provider._auth_headers() == {"Authorization": f"Bearer {AZURE_TOKEN}"}
+        assert commands == [
+            (
+                [
+                    "account",
+                    "get-access-token",
+                    "--output",
+                    "json",
+                    "--resource",
+                    "https://ai.azure.com",
+                    "--subscription",
+                    SUBSCRIPTION,
+                ],
+                5,
+            )
+        ]
+    finally:
+        await provider.aclose()
+
+
+async def test_azure_catalog_one_semantic_repair_preserves_trust(azure_tls):
+    from test_catalog_v1 import CASES, deadline, setup
+
+    from semantic_api.catalog_v1.provider import POLICY, CatalogHTTPProvider
+
+    valid = copy.deepcopy(CASES[0]["candidate"])
+    invalid = copy.deepcopy(valid)
+    invalid["graph"]["nodes"][-1]["dependencies"] = []
+    tls, route = azure_tls
+    async with mock_server(
+        reply(azure_completion(invalid)), reply(azure_completion(valid)), tls=tls
+    ) as mock:
+        route(mock.port)
+        provider = CatalogHTTPProvider(
+            azure_settings(max_input_tokens=48_000), token_credential=ControlledCredential()
+        )
+        compiler, request, context, _ = setup(0, provider=provider)
+        result = await compiler.compile(request, context=context, deadline=deadline())
+        assert result.status == "compiled" and result.repair_attempted
+        assert result.graph.model_dump(mode="json") == valid["graph"]
+        assert len(mock.requests) == 2
+        first, second = [json.loads(item[2]["messages"][1]["content"]) for item in mock.requests]
+        assert first["context"] == second["context"]
+        assert second["rejected_candidate"] == invalid
+        assert second["diagnostics"] == ["GRAPH_ARITY"]
+        assert mock.requests[1][2]["messages"][0]["content"] == POLICY
+        assert "only immediate input node IDs" in POLICY
+        await provider.aclose()
+
+
+async def test_azure_tls_key_auth_and_exact_admission(azure_tls, compile_context, wire_candidate):
+    tls, route = azure_tls
+    config = {
+        "azure_auth": "api_key",
+        "azure_tenant_id": "",
+        "azure_subscription_id": "",
+        "credential_env": "TEST_MODEL_KEY",
+    }
+    raw = json.dumps(azure_completion(wire_candidate)).encode()
+    async with mock_server(Reply(raw), Reply(raw), tls=tls) as mock:
+        route(mock.port)
+        provider = AzureOpenAIProvider(azure_settings(**config), SECRET)
+        await provider.compile(compile_context)
+        size = int(mock.requests[0][1]["Content-Length"])
+        assert mock.requests[0][1]["api-key"] == SECRET
+        assert "Authorization" not in mock.requests[0][1]
+        exact = AzureOpenAIProvider(
+            azure_settings(
+                **config,
+                max_request_bytes=size,
+                max_input_tokens=size + 1024,
+                max_response_bytes=len(raw),
+            ),
+            SECRET,
+        )
+        assert (await exact.compile(compile_context)).candidate == wire_candidate
+        for limits in ({"max_request_bytes": size - 1}, {"max_input_tokens": size + 1023}):
+            over = AzureOpenAIProvider(azure_settings(**config, **limits), SECRET)
+            with pytest.raises(ProviderError) as caught:
+                await over.compile(compile_context)
+            assert caught.value.code == "PROVIDER_INPUT_LIMIT"
+            await over.aclose()
+        assert len(mock.requests) == 2
+        await provider.aclose()
+        await exact.aclose()
+
+
+@pytest.mark.parametrize("action", ["timeout", "cancel", "shutdown"])
+async def test_azure_tls_cancellation_closes_owned_socket(azure_tls, compile_context, action):
+    tls, route = azure_tls
+    async with mock_server(Reply(b"{}", pause_body=True), tls=tls) as mock:
+        route(mock.port)
+        provider = AzureOpenAIProvider(
+            azure_settings(timeout_seconds=0.5 if action == "timeout" else 5),
+            token_credential=ControlledCredential(),
+        )
+        task = asyncio.create_task(provider.compile(compile_context))
+        await asyncio.wait_for(mock.entered.wait(), 2)
+        if action == "cancel":
+            task.cancel()
+        elif action == "shutdown":
+            await provider.aclose()
+        if action == "timeout":
+            with pytest.raises(ProviderError) as caught:
+                await task
+            assert caught.value.code == "PROVIDER_TIMEOUT"
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await asyncio.wait_for(mock.disconnected.wait(), 2)
+        assert not provider._active
+        await provider.aclose()
+
+
+async def test_azure_queue_deadline_includes_token_acquisition(compile_context):
+    credential = ControlledCredential(wait=asyncio.Event())
+    provider = AzureOpenAIProvider(
+        azure_settings(timeout_seconds=0.1, max_concurrent_calls=1),
+        token_credential=credential,
+    )
+    first = asyncio.create_task(provider.compile(compile_context))
+    await credential.entered.wait()
+    second = asyncio.create_task(provider.compile(compile_context))
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(
+        isinstance(result, ProviderError) and result.code == "PROVIDER_TIMEOUT"
+        for result in results
+    )
+    assert not provider._active
+    await provider.aclose()
+
+
+def test_metadata_old_and_azure_roundtrip():
+    from semantic_api.models import ProviderCallMetadata
+
+    old = ProviderCallMetadata(model=MODEL)
+    assert (
+        ProviderCallMetadata.model_validate_json(old.model_dump_json()).provider
+        == "openai_compatible"
+    )
+    azure = ProviderCallMetadata(
+        provider="azure_openai", model=AZURE_MODEL, deployment=AZURE_DEPLOYMENT
+    )
+    assert ProviderCallMetadata.model_validate_json(azure.model_dump_json()) == azure
+    assert azure.input_tokens is None and azure.output_tokens is None
+
+
+@pytest.mark.parametrize(
+    ("extension", "value"),
+    [
+        ("routing", "not-an-object"),
+        ("routing", {"serving_pipereplica": "x" * 257}),
+        ("routing", {"serving_pipereplica": "synthetic", "url": PRIVATE}),
+        ("routing", {"serving_pipereplica": {"nested": PRIVATE}}),
+        ("latency", "not-an-object"),
+        ("latency", {"engine_tbt_ms": False}),
+        ("latency", {"engine_tbt_ms": -1}),
+        ("latency", {"engine_tbt_ms": 3_600_001}),
+        ("latency", {"engine_tbt_ms": {"nested": 1}}),
+        ("latency", {"unreviewed": 1}),
+    ],
+)
+async def test_azure_telemetry_extensions_remain_bounded(
+    azure_tls, compile_context, wire_candidate, extension, value
+):
+    payload = azure_completion(wire_candidate)
+    if extension == "routing":
+        payload["routing"] = value
+    elif isinstance(value, dict):
+        payload["usage"]["latency_checkpoint"].update(value)
+    else:
+        payload["usage"]["latency_checkpoint"] = value
+    tls, route = azure_tls
+    async with mock_server(reply(payload), tls=tls) as mock:
+        route(mock.port)
+        provider = AzureOpenAIProvider(azure_settings(), token_credential=ControlledCredential())
+        with pytest.raises(ProviderError) as caught:
+            await provider.compile(compile_context)
+        assert caught.value.code == "PROVIDER_PROTOCOL"
+        assert len(mock.requests) == 1
+        await provider.aclose()
+
+
+def test_azure_telemetry_is_optional_and_never_in_public_metadata(wire_candidate):
+    from semantic_api.models import ProviderCallMetadata
+
+    provider = AzureOpenAIProvider(azure_settings(), token_credential=ControlledCredential())
+    payload = azure_completion(wire_candidate)
+    for present in (True, False):
+        if not present:
+            payload.pop("routing")
+            payload["usage"].pop("latency_checkpoint")
+        result = provider._parse(json.dumps(payload).encode(), provider._metadata("compile"))
+        assert (result.input_tokens, result.output_tokens) == (150, 250)
+        assert "routing" not in result.model_dump_json()
+        assert "latency" not in result.model_dump_json()
+        assert "synthetic-private-routing" not in result.model_dump_json()
+    legacy = StructuredHTTPProvider(settings("https://api.openai.com/v1/chat/completions"), SECRET)
+    payload = completion(wire_candidate)
+    payload["routing"] = {"serving_pipereplica": "synthetic"}
+    with pytest.raises(ProviderError) as caught:
+        legacy._parse(json.dumps(payload).encode(), ProviderCallMetadata(model=MODEL))
+    assert caught.value.code == "PROVIDER_PROTOCOL"
