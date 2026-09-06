@@ -17,7 +17,7 @@ import time
 from collections.abc import Awaitable
 from contextvars import ContextVar
 from pathlib import Path
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Any, Final, Literal, Self
 from urllib.parse import parse_qs, urlsplit
 
@@ -33,7 +33,22 @@ from azure.identity.aio import ManagedIdentityCredential
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AI_SCOPE: Final = "https://ai.azure.com/.default"
-CREDENTIAL_POLICY = "bounded-azure-identity/v2"
+POSTGRES_SCOPE: Final = "https://ossrdbms-aad.database.windows.net/.default"
+STORAGE_SCOPE: Final = "https://storage.azure.com/.default"
+type AzureTokenScope = Literal[
+    "https://ai.azure.com/.default",
+    "https://ossrdbms-aad.database.windows.net/.default",
+    "https://storage.azure.com/.default",
+]
+
+_TOKEN_AUDIENCES = MappingProxyType(
+    {
+        AI_SCOPE: ("https://ai.azure.com", "https://ai.azure.com/"),
+        POSTGRES_SCOPE: ("https://ossrdbms-aad.database.windows.net",),
+        STORAGE_SCOPE: ("https://storage.azure.com", "https://storage.azure.com/"),
+    }
+)
+CREDENTIAL_POLICY = "bounded-azure-identity/v3"
 _UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _IMDS = "http://169.254.169.254/metadata/identity/oauth2/token"
 _ENV_SELECTORS = (
@@ -63,7 +78,7 @@ class AzureCredentialConfig(BaseModel):
     subscription_id: str = Field(default="", pattern=f"^$|{_UUID}")
     client_id: str = Field(default="", pattern=f"^$|{_UUID}")
     token_file: str = Field(default="", max_length=4096, repr=False)
-    scope: Literal["https://ai.azure.com/.default"] = AI_SCOPE
+    scope: AzureTokenScope = AI_SCOPE
     managed_identity_source: Literal["imds", "app_service"] = "imds"
     managed_identity_endpoint: str = Field(default="", max_length=256)
     timeout_seconds: float = Field(default=5, gt=0, le=120, allow_inf_nan=False)
@@ -153,12 +168,11 @@ def validate_token_routing(token: AccessToken, config: AzureCredentialConfig) ->
         )
     except ValueError:
         raise AzureCredentialError("AUTH") from None
-    audience = config.scope.removesuffix("/.default")
     # A routing guard only. Azure services remain responsible for signature and RBAC.
     if (
         not isinstance(claims, dict)
         or claims.get("tid") != config.tenant_id
-        or claims.get("aud") not in (audience, audience + "/")
+        or claims.get("aud") not in _TOKEN_AUDIENCES[config.scope]
     ):
         raise AzureCredentialError("AUTH")
 

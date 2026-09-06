@@ -19,14 +19,18 @@ from azure.identity.aio import (
     WorkloadIdentityCredential,
 )
 from httpcore._backends.auto import AutoBackend
-from test_structured_provider import AZURE_TOKEN, SUBSCRIPTION, TENANT
+from pydantic import ValidationError
+from test_structured_provider import AZURE_TOKEN, SUBSCRIPTION, TENANT, azure_token
 
 import semantic_api.azure_credentials as credentials
 from semantic_api.azure_credentials import (
     AI_SCOPE,
+    POSTGRES_SCOPE,
+    STORAGE_SCOPE,
     AzureCredentialConfig,
     AzureCredentialError,
     create_azure_credential,
+    validate_token_routing,
 )
 from semantic_api.provider import (
     ProviderInvoker,
@@ -127,29 +131,35 @@ def offline_cli(monkeypatch, script):
     return calls, processes
 
 
-async def test_owned_cli_explicit_subscription_and_routing(monkeypatch):
-    response = json.dumps({"accessToken": AZURE_TOKEN, "expires_on": int(time.time()) + 3600})
+@pytest.mark.parametrize("scope", [AI_SCOPE, POSTGRES_SCOPE, STORAGE_SCOPE])
+async def test_owned_cli_explicit_subscription_and_routing(monkeypatch, scope):
+    resource = scope.removesuffix("/.default")
+    expected_token = azure_token(audience=resource)
+    response = json.dumps({"accessToken": expected_token, "expires_on": int(time.time()) + 3600})
     calls, processes = offline_cli(monkeypatch, f"print({response!r})")
-    credential = create_azure_credential(identity_config())
+    credential = create_azure_credential(identity_config(scope=scope))
     try:
-        token = await credential.get_token(AI_SCOPE)
-        assert token.token == AZURE_TOKEN
+        token = await credential.get_token(scope)
+        assert token.token == expected_token
         assert calls[0][1:] == (
             "account",
             "get-access-token",
             "--output",
             "json",
             "--resource",
-            "https://ai.azure.com",
+            resource,
             "--subscription",
             SUBSCRIPTION,
         )
         assert "--tenant" not in calls[0]
         assert processes[0].returncode == 0
-        assert (await credential.get_token(AI_SCOPE)).token == token.token
+        assert (await credential.get_token(scope)).token == token.token
         assert len(calls) == 1
-        with pytest.raises(AzureCredentialError):
-            await credential.get_token("https://unapproved.invalid/.default")
+        for other in {AI_SCOPE, POSTGRES_SCOPE, STORAGE_SCOPE} - {scope}:
+            with pytest.raises(AzureCredentialError) as caught:
+                await credential.get_token(other)
+            assert caught.value.code == "AUTH_UNAVAILABLE"
+        assert len(calls) == 1
     finally:
         await credential.close()
 
@@ -588,9 +598,16 @@ def identity_response(**extra):
 
 
 @pytest.mark.parametrize("source", ["imds", "app_service"])
-async def test_actual_sdk_managed_identity_uses_bounded_transport(monkeypatch, source):
+@pytest.mark.parametrize("scope", [AI_SCOPE, POSTGRES_SCOPE, STORAGE_SCOPE])
+async def test_actual_sdk_managed_identity_uses_bounded_transport(monkeypatch, source, scope):
     clear_identity_environment(monkeypatch)
-    async with identity_server(monkeypatch, identity_response()) as (calls, _, _, port):
+    resource = scope.removesuffix("/.default")
+    expected_token = azure_token(audience=resource)
+    body = identity_response(
+        access_token=expected_token,
+        resource=resource,
+    )
+    async with identity_server(monkeypatch, body) as (calls, _, _, port):
         endpoint = f"http://127.0.0.1:{port}/msi/token" if source == "app_service" else ""
         if source == "app_service":
             monkeypatch.setenv("IDENTITY_ENDPOINT", endpoint)
@@ -598,20 +615,25 @@ async def test_actual_sdk_managed_identity_uses_bounded_transport(monkeypatch, s
         credential = create_azure_credential(
             identity_config(
                 "managed_identity",
+                scope=scope,
                 managed_identity_source=source,
                 managed_identity_endpoint=endpoint,
             )
         )
         try:
-            result = await credential.get_token(AI_SCOPE)
-            assert result.token == AZURE_TOKEN
+            result = await credential.get_token(scope)
+            assert result.token == expected_token
             assert isinstance(credential._sdk, ManagedIdentityCredential)
             assert len(calls) == 1
-            assert "resource=https://ai.azure.com" in calls[0]
+            assert f"resource={resource}" in calls[0]
+            for other in {AI_SCOPE, POSTGRES_SCOPE, STORAGE_SCOPE} - {scope}:
+                with pytest.raises(AzureCredentialError) as caught:
+                    await credential.get_token(other)
+                assert caught.value.code == "AUTH_UNAVAILABLE"
             # Even a cached token cannot conceal a changed identity selector.
             monkeypatch.setenv("AZURE_FEDERATED_TOKEN_FILE", "unapproved-file")
             with pytest.raises(AzureCredentialError) as caught:
-                await credential.get_token(AI_SCOPE)
+                await credential.get_token(scope)
             assert caught.value.code == "AUTH_UNAVAILABLE"
             assert len(calls) == 1
         finally:
@@ -707,3 +729,100 @@ async def test_managed_identity_cannot_switch_ambient_source(monkeypatch, select
     assert caught.value.code == "AUTH_UNAVAILABLE"
     assert bounded._sdk is None
     await bounded.close()
+
+
+@pytest.mark.parametrize(
+    "scope,audience",
+    [
+        (AI_SCOPE, "https://ai.azure.com"),
+        (AI_SCOPE, "https://ai.azure.com/"),
+        (POSTGRES_SCOPE, "https://ossrdbms-aad.database.windows.net"),
+        (STORAGE_SCOPE, "https://storage.azure.com"),
+        (STORAGE_SCOPE, "https://storage.azure.com/"),
+    ],
+)
+def test_token_audience_is_exact_for_each_server_pinned_resource(scope, audience):
+    config = identity_config(scope=scope)
+    token = AccessToken(azure_token(audience=audience), int(time.time()) + 3600)
+    validate_token_routing(token, config)
+    for other in {AI_SCOPE, POSTGRES_SCOPE, STORAGE_SCOPE} - {scope}:
+        with pytest.raises(AzureCredentialError) as caught:
+            validate_token_routing(token, identity_config(scope=other))
+        assert caught.value.code == "AUTH"
+    with pytest.raises(AzureCredentialError) as caught:
+        validate_token_routing(
+            AccessToken(azure_token(tenant=SUBSCRIPTION, audience=audience), token.expires_on),
+            config,
+        )
+    assert caught.value.code == "AUTH"
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "https://management.azure.com/.default",
+        "https://graph.microsoft.com/.default",
+        "https://cognitiveservices.azure.com/.default",
+        "https://storage.azure.com/",
+        "https://storage.azure.com/user_impersonation",
+        "https://synthetic.blob.core.windows.net/.default",
+        "https://ossrdbms-aad.database.windows.net.evil.invalid/.default",
+        "https://storage.azure.com/.default?scope=extra",
+        "http://storage.azure.com/.default",
+    ],
+)
+def test_server_token_scope_allowlist_rejects_aliases_and_fallbacks(scope):
+    with pytest.raises(ValidationError):
+        identity_config(scope=scope)
+
+
+@pytest.mark.parametrize(
+    "scope,audience",
+    [
+        (POSTGRES_SCOPE, "https://ossrdbms-aad.database.windows.net/"),
+        (POSTGRES_SCOPE, "https://ossrdbms-aad.database.windows.net.evil.invalid"),
+        (STORAGE_SCOPE, "https://synthetic.blob.core.windows.net"),
+        (STORAGE_SCOPE, "https://storage.azure.com.evil.invalid"),
+        (STORAGE_SCOPE, "https://storage.azure.com//"),
+        (STORAGE_SCOPE, ["https://storage.azure.com"]),
+    ],
+)
+def test_new_resource_audience_mapping_rejects_unapproved_variants(scope, audience):
+    token = AccessToken(azure_token(audience=audience), int(time.time()) + 3600)
+    with pytest.raises(AzureCredentialError) as caught:
+        validate_token_routing(token, identity_config(scope=scope))
+    assert caught.value.code == "AUTH"
+
+
+def test_scope_configuration_and_audience_allowlist_are_immutable():
+    config = identity_config(scope=POSTGRES_SCOPE)
+    with pytest.raises(ValidationError):
+        config.scope = STORAGE_SCOPE
+    with pytest.raises(TypeError):
+        credentials._TOKEN_AUDIENCES[POSTGRES_SCOPE] = ("https://unapproved.invalid",)
+    assert identity_config().scope == AI_SCOPE
+
+
+@pytest.mark.parametrize("scope", [POSTGRES_SCOPE, STORAGE_SCOPE])
+@pytest.mark.parametrize("problem", ["tenant", "audience", "expired"])
+async def test_new_resource_invalid_token_never_reaches_consumer(monkeypatch, scope, problem):
+    clear_identity_environment(monkeypatch)
+    resource = scope.removesuffix("/.default")
+    token = azure_token(
+        tenant=SUBSCRIPTION if problem == "tenant" else TENANT,
+        audience="https://ai.azure.com" if problem == "audience" else resource,
+    )
+    body = identity_response(
+        access_token=token,
+        resource=resource,
+        expires_on=int(time.time()) + (-1 if problem == "expired" else 3600),
+    )
+    async with identity_server(monkeypatch, body) as (calls, _, _, _):
+        credential = create_azure_credential(identity_config("managed_identity", scope=scope))
+        try:
+            with pytest.raises(AzureCredentialError) as caught:
+                await credential.get_token(scope)
+            assert caught.value.code == "AUTH"
+            assert len(calls) == 1 and credential._cached is None
+        finally:
+            await credential.close()
