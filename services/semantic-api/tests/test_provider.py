@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import ctypes
 import json
 import math
@@ -30,6 +31,7 @@ from semantic_api.azure_credentials import (
     AzureCredentialConfig,
     AzureCredentialError,
     create_azure_credential,
+    validate_azure_credential_configuration,
     validate_token_routing,
 )
 from semantic_api.provider import (
@@ -826,3 +828,119 @@ async def test_new_resource_invalid_token_never_reaches_consumer(monkeypatch, sc
             assert len(calls) == 1 and credential._cached is None
         finally:
             await credential.close()
+
+
+@pytest.fixture
+def prohibit_identity_io(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Configuration admission must not perform identity or filesystem I/O")
+
+    monkeypatch.setattr(credentials, "ManagedIdentityCredential", forbidden)
+    monkeypatch.setattr(credentials, "_IdentityTransport", forbidden)
+    monkeypatch.setattr(credentials, "_windows_cli_command", forbidden)
+    monkeypatch.setattr(credentials.shutil, "which", forbidden)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden)
+    monkeypatch.setattr(builtins, "open", forbidden)
+
+
+@pytest.mark.parametrize(
+    "mode,source",
+    [("azure_cli", "imds"), ("managed_identity", "imds"), ("managed_identity", "app_service")],
+)
+async def test_public_admission_is_read_only_without_identity_io(
+    monkeypatch, prohibit_identity_io, mode, source
+):
+    clear_identity_environment(monkeypatch)
+    endpoint = "http://127.0.0.1:4321/msi/token" if source == "app_service" else ""
+    if source == "app_service":
+        monkeypatch.setenv("IDENTITY_ENDPOINT", endpoint)
+        monkeypatch.setenv("IDENTITY_HEADER", "synthetic-identity-header")
+    config = identity_config(
+        mode, managed_identity_source=source, managed_identity_endpoint=endpoint
+    )
+    before = dict(os.environ)
+    assert validate_azure_credential_configuration(config) is None
+    assert dict(os.environ) == before
+
+
+def test_public_admission_rejects_workload_before_file_read(prohibit_identity_io):
+    config = identity_config(
+        "workload_identity", client_id=SUBSCRIPTION, token_file="synthetic-unreadable-assertion"
+    )
+    with pytest.raises(AzureCredentialError) as caught:
+        validate_azure_credential_configuration(config)
+    assert caught.value.code == "AUTH_UNAVAILABLE"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows CLI requires an active Proactor loop")
+def test_public_admission_does_not_guess_windows_loop(prohibit_identity_io):
+    with pytest.raises(AzureCredentialError) as caught:
+        validate_azure_credential_configuration(identity_config())
+    assert caught.value.code == "AUTH_UNAVAILABLE"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Selector CLI remains unavailable")
+def test_public_admission_rejects_windows_selector(prohibit_identity_io):
+    loop = asyncio.SelectorEventLoop()
+
+    async def check():
+        with pytest.raises(AzureCredentialError) as caught:
+            validate_azure_credential_configuration(identity_config())
+        assert caught.value.code == "AUTH_UNAVAILABLE"
+
+    try:
+        loop.run_until_complete(check())
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("selector", credentials._ENV_SELECTORS)
+def test_public_admission_rejects_imds_ambient_selectors(
+    monkeypatch, prohibit_identity_io, selector
+):
+    clear_identity_environment(monkeypatch)
+    monkeypatch.setenv(selector, "synthetic-unapproved-selector")
+    with pytest.raises(AzureCredentialError) as caught:
+        validate_azure_credential_configuration(identity_config("managed_identity"))
+    assert caught.value.code == "AUTH_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("problem", ["missing_header", "different_endpoint", "workload", "fabric"])
+def test_public_admission_rejects_app_service_selector_mismatch(
+    monkeypatch, prohibit_identity_io, problem
+):
+    clear_identity_environment(monkeypatch)
+    endpoint = "http://127.0.0.1:4321/msi/token"
+    monkeypatch.setenv("IDENTITY_ENDPOINT", endpoint)
+    if problem != "missing_header":
+        monkeypatch.setenv("IDENTITY_HEADER", "synthetic-identity-header")
+    if problem == "different_endpoint":
+        monkeypatch.setenv("IDENTITY_ENDPOINT", "http://127.0.0.1:4322/msi/token")
+    if problem == "workload":
+        monkeypatch.setenv("AZURE_FEDERATED_TOKEN_FILE", "synthetic-unreadable-assertion")
+    if problem == "fabric":
+        monkeypatch.setenv("IDENTITY_SERVER_THUMBPRINT", "synthetic-unapproved-thumbprint")
+    config = identity_config(
+        "managed_identity",
+        managed_identity_source="app_service",
+        managed_identity_endpoint=endpoint,
+    )
+    with pytest.raises(AzureCredentialError) as caught:
+        validate_azure_credential_configuration(config)
+    assert caught.value.code == "AUTH_UNAVAILABLE"
+
+
+async def test_public_admission_is_not_cached_authorization(monkeypatch, prohibit_identity_io):
+    clear_identity_environment(monkeypatch)
+    config = identity_config("managed_identity")
+    assert validate_azure_credential_configuration(config) is None
+    credential = create_azure_credential(config)
+    monkeypatch.setenv("MSI_ENDPOINT", "synthetic-unapproved-selector")
+    try:
+        with pytest.raises(AzureCredentialError) as caught:
+            await credential.get_token(AI_SCOPE)
+        assert caught.value.code == "AUTH_UNAVAILABLE"
+        assert credential._sdk is None
+    finally:
+        await credential.close()

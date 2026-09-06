@@ -429,9 +429,48 @@ async def _read_pipe(reader: asyncio.StreamReader, maximum: int) -> bytes:
 
 
 def _cli_supported() -> bool:
-    return sys.platform != "win32" or isinstance(
-        asyncio.get_running_loop(), asyncio.ProactorEventLoop
+    if sys.platform != "win32":
+        return True
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return isinstance(loop, asyncio.ProactorEventLoop)
+
+
+def _configuration_selection(config: AzureCredentialConfig) -> tuple[str, ...] | None:
+    if config.mode == "workload_identity":
+        # SDK assertion reads are synchronous and unbounded: do not open the file.
+        raise AzureCredentialError("AUTH_UNAVAILABLE")
+    if config.mode == "azure_cli":
+        if not _cli_supported():
+            raise AzureCredentialError("AUTH_UNAVAILABLE")
+        return None
+    values = {name: os.environ.get(name, "") for name in _ENV_SELECTORS}
+    permitted = (
+        {"IDENTITY_ENDPOINT", "IDENTITY_HEADER"}
+        if config.managed_identity_source == "app_service"
+        else set()
     )
+    if any(value for key, value in values.items() if key not in permitted):
+        raise AzureCredentialError("AUTH_UNAVAILABLE")
+    if config.managed_identity_source == "app_service" and (
+        values["IDENTITY_ENDPOINT"] != config.managed_identity_endpoint
+        or not values["IDENTITY_HEADER"]
+    ):
+        raise AzureCredentialError("AUTH_UNAVAILABLE")
+    return tuple(values.values())
+
+
+def validate_azure_credential_configuration(config: AzureCredentialConfig) -> None:
+    """Check local admission using only config, running-loop type and read-only environment.
+
+    No SDK, file lookup, CLI process, token or HTTP request is performed. Success is
+    not proof that the CLI is installed, authentication/RBAC works, or a service is
+    healthy. Windows CLI admission requires an active Proactor loop. Acquisition
+    rechecks these conditions; admission must never be cached as authorization.
+    """
+    _configuration_selection(config)
 
 
 def _windows_cli_command(arguments: list[str]) -> list[str]:
@@ -505,22 +544,8 @@ class BoundedAzureCredential:
     ) -> None:
         await self.close()
 
-    def _managed_selection(self) -> None:
-        config = self.config
-        values = {name: os.environ.get(name, "") for name in _ENV_SELECTORS}
-        permitted = (
-            {"IDENTITY_ENDPOINT", "IDENTITY_HEADER"}
-            if config.managed_identity_source == "app_service"
-            else set()
-        )
-        if any(value for key, value in values.items() if key not in permitted):
-            raise AzureCredentialError("AUTH_UNAVAILABLE")
-        if config.managed_identity_source == "app_service" and (
-            values["IDENTITY_ENDPOINT"] != config.managed_identity_endpoint
-            or not values["IDENTITY_HEADER"]
-        ):
-            raise AzureCredentialError("AUTH_UNAVAILABLE")
-        current = tuple(values.values())
+    def _check_selection(self) -> None:
+        current = _configuration_selection(self.config)
         if self._selection is not None and self._selection != current:
             raise AzureCredentialError("AUTH_UNAVAILABLE")
         self._selection = current
@@ -634,14 +659,9 @@ class BoundedAzureCredential:
         try:
             async with asyncio.timeout(self.config.timeout_seconds):
                 async with self._lock:
-                    if self._closed or self.config.mode == "workload_identity":
-                        # SDK assertion file reads are synchronous and unbounded.
-                        # No file read, thread pool, token exchange or fallback is allowed.
+                    if self._closed:
                         raise AzureCredentialError("AUTH_UNAVAILABLE")
-                    if self.config.mode == "managed_identity":
-                        self._managed_selection()
-                    elif not _cli_supported():
-                        raise AzureCredentialError("AUTH_UNAVAILABLE")
+                    self._check_selection()
                     if self._cached is not None and self._cached.expires_on > time.time() + 300:
                         return self._cached
                     if self.config.mode == "azure_cli":
