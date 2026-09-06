@@ -18,15 +18,14 @@ from azure.core.exceptions import (
     ServiceRequestError,
     ServiceResponseError,
 )
-from azure.core.pipeline.transport import AioHttpTransport
-from azure.identity.aio import (
-    AzureCliCredential,
-    ManagedIdentityCredential,
-    WorkloadIdentityCredential,
-)
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from semantic_api.azure_credentials import (
+    AzureCredentialConfig,
+    AzureCredentialError,
+    create_azure_credential,
+)
 from semantic_api.models import SQG, Diagnostic, ProviderCallMetadata, ProviderSelection
 from semantic_api.provider import ProviderError, ProviderResult, StructuredCompileContext
 from semantic_api.provider_config import (
@@ -722,29 +721,19 @@ class AzureOpenAIProvider(_BoundedHTTPProvider):
 
     def _create_credential(self) -> AsyncTokenCredential:
         settings = self.settings
-        if settings.azure_auth is AzureAuth.CLI:
-            # The CLI rejects simultaneous --tenant and --subscription. Pin the
-            # account here and verify its token tenant before any inference.
-            return AzureCliCredential(
-                subscription=settings.azure_subscription_id,
-                process_timeout=max(1, min(10, int(settings.timeout_seconds))),
+        return create_azure_credential(
+            AzureCredentialConfig.model_validate(
+                {
+                    "mode": settings.azure_auth.value,
+                    "tenant_id": settings.azure_tenant_id,
+                    "client_id": settings.azure_client_id,
+                    "subscription_id": settings.azure_subscription_id,
+                    "token_file": settings.azure_token_file,
+                    "timeout_seconds": settings.timeout_seconds,
+                    "managed_identity_source": settings.azure_managed_identity_source,
+                    "managed_identity_endpoint": settings.azure_managed_identity_endpoint,
+                }
             )
-        transport = AioHttpTransport(use_env_settings=False)
-        if settings.azure_auth is AzureAuth.WORKLOAD_IDENTITY:
-            return WorkloadIdentityCredential(
-                tenant_id=settings.azure_tenant_id,
-                client_id=settings.azure_client_id,
-                token_file_path=settings.azure_token_file,
-                authority="https://login.microsoftonline.com",
-                transport=transport,
-                retry_total=0,
-                logging_enable=False,
-            )
-        return ManagedIdentityCredential(
-            client_id=settings.azure_client_id or None,
-            transport=transport,
-            retry_total=0,
-            logging_enable=False,
         )
 
     async def _auth_headers(self) -> dict[str, str]:
@@ -768,6 +757,8 @@ class AzureOpenAIProvider(_BoundedHTTPProvider):
             if token is None or token.expires_on <= time.time() + 300:
                 try:
                     token = await self._token_credential.get_token(AZURE_SCOPE)
+                except AzureCredentialError as error:
+                    raise ProviderError("PROVIDER_" + error.code) from None
                 except ClientAuthenticationError:
                     raise ProviderError("PROVIDER_AUTH") from None
                 except (ServiceRequestError, ServiceResponseError):

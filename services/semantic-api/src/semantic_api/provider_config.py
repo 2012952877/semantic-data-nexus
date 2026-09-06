@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from semantic_api.azure_credentials import CREDENTIAL_POLICY
 from semantic_api.models import ProviderSelection
 from semantic_api.provider import CompilerProvider, ProviderError, StaticFixtureProvider
 
@@ -66,6 +67,8 @@ class ProviderSettings(BaseModel):
     azure_client_id: str = Field(default="", pattern=_UUID)
     azure_subscription_id: str = Field(default="", pattern=_UUID)
     azure_token_file: str = Field(default="", max_length=4096, repr=False)
+    azure_managed_identity_source: Literal["imds", "app_service"] = "imds"
+    azure_managed_identity_endpoint: str = Field(default="", max_length=256)
 
     @property
     def protocol(self) -> str:
@@ -76,11 +79,16 @@ class ProviderSettings(BaseModel):
             **self.model_dump(mode="json"),
             "protocol": self.protocol,
             "token_scope": AZURE_SCOPE if self.mode == "azure_openai" else None,
+            "credential_policy": CREDENTIAL_POLICY if self.mode == "azure_openai" else None,
         }
 
     @model_validator(mode="after")
     def check_endpoint(self) -> ProviderSettings:
         if self.mode == "azure_openai":
+            if self.azure_auth is not AzureAuth.MANAGED_IDENTITY and (
+                self.azure_managed_identity_source != "imds" or self.azure_managed_identity_endpoint
+            ):
+                raise ProviderConfigError()
             if (
                 not self.azure_approved_origin
                 or self.endpoint != self.azure_approved_origin + AZURE_PATH
@@ -97,6 +105,7 @@ class ProviderSettings(BaseModel):
                         self.azure_client_id,
                         self.azure_subscription_id,
                         self.azure_token_file,
+                        self.azure_managed_identity_endpoint,
                     )
                 ):
                     raise ProviderConfigError()
@@ -127,9 +136,11 @@ class ProviderSettings(BaseModel):
                     self.azure_client_id,
                     self.azure_subscription_id,
                     self.azure_token_file,
+                    self.azure_managed_identity_endpoint,
                 )
             )
             or self.azure_auth is not AzureAuth.MANAGED_IDENTITY
+            or self.azure_managed_identity_source != "imds"
         ):
             raise ProviderConfigError()
         if self.mode is ProviderSelection.STATIC:

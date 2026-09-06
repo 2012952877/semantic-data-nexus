@@ -1176,6 +1176,8 @@ def test_azure_does_not_expand_legacy_openai_or_public_selection():
         AzureOpenAIProvider(settings("https://api.openai.com/v1/chat/completions"), SECRET)
     assert {mode.value for mode in ProviderSelection} == {"static", "openai_compatible"}
     assert ProviderSettings().mode is ProviderSelection.STATIC
+    with pytest.raises(ValidationError):
+        ProviderSettings(azure_managed_identity_endpoint="http://127.0.0.1:1234/msi/token")
 
 
 @pytest.mark.parametrize("problem", ["expired", "newline", "auth", "timeout", "cancel", "shutdown"])
@@ -1391,55 +1393,45 @@ async def test_azure_token_routing_rejects_wrong_tenant_and_audience(token, comp
     await provider.aclose()
 
 
-def test_azure_cli_is_subscription_pinned_without_mutually_exclusive_tenant(monkeypatch):
+async def test_owned_workload_is_explicitly_unavailable_without_identity_or_model_io(
+    monkeypatch, compile_context
+):
+    def no_http(**kwargs):
+        raise AssertionError("Disabled workload credentials cannot perform HTTP")
+
+    monkeypatch.setattr(httpx, "AsyncClient", no_http)
+    provider = AzureOpenAIProvider(
+        azure_settings(
+            azure_auth="workload_identity",
+            azure_subscription_id="",
+            azure_client_id=SUBSCRIPTION,
+            azure_token_file="synthetic-projected-token",
+        )
+    )
+    with pytest.raises(ProviderError) as caught:
+        await provider.compile(compile_context)
+    assert caught.value.code == "PROVIDER_AUTH_UNAVAILABLE"
+    assert caught.value.metadata.input_tokens is None
+    assert caught.value.metadata.provider == "azure_openai"
+    await provider.aclose()
+
+
+def test_shared_credential_factory_receives_explicit_configuration(monkeypatch):
     import semantic_api.structured_provider as transport
 
     constructed = []
     credential = ControlledCredential()
 
-    def create(**kwargs):
-        constructed.append(kwargs)
+    def create(config):
+        constructed.append(config)
         return credential
 
-    monkeypatch.setattr(transport, "AzureCliCredential", create)
+    monkeypatch.setattr(transport, "create_azure_credential", create)
     provider = AzureOpenAIProvider(azure_settings())
     assert provider._create_credential() is credential
-    assert constructed == [{"subscription": SUBSCRIPTION, "process_timeout": 5}]
-
-
-async def test_real_azure_identity_builds_subscription_only_cli_command(monkeypatch):
-    import azure.identity.aio._credentials.azure_cli as cli
-
-    commands = []
-
-    async def command(args, process_timeout):
-        commands.append((args, process_timeout))
-        # This is the CLI's real argument restriction, exercised through the SDK.
-        if "--tenant" in args and "--subscription" in args:
-            raise ClientAuthenticationError("Specify only one of subscription and tenant")
-        return json.dumps({"accessToken": AZURE_TOKEN, "expires_on": int(time.time()) + 3600})
-
-    monkeypatch.setattr(cli, "_run_command", command)
-    provider = AzureOpenAIProvider(azure_settings())
-    try:
-        assert await provider._auth_headers() == {"Authorization": f"Bearer {AZURE_TOKEN}"}
-        assert commands == [
-            (
-                [
-                    "account",
-                    "get-access-token",
-                    "--output",
-                    "json",
-                    "--resource",
-                    "https://ai.azure.com",
-                    "--subscription",
-                    SUBSCRIPTION,
-                ],
-                5,
-            )
-        ]
-    finally:
-        await provider.aclose()
+    config = constructed[0]
+    assert config.subscription_id == SUBSCRIPTION and config.tenant_id == TENANT
+    assert config.timeout_seconds == 5 and config.scope == AZURE_SCOPE
 
 
 async def test_azure_catalog_one_semantic_repair_preserves_trust(azure_tls):
